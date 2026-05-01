@@ -7,7 +7,7 @@ client, and exercises:
   - get_calm_projects    (full round-trip with requests.get monkey-patched
                           via a tiny shim module so we don't hit SAP)
 
-Run with:    python test_server.py
+Run with:    python tests/test_server.py
 """
 
 from __future__ import annotations
@@ -22,9 +22,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 HERE = Path(__file__).parent
+ROOT = HERE.parent
 
-# A fake CALM payload that matches the real /api/calm-projects/v1/projects
-# response shape (a JSON array of project objects).
 FAKE_PROJECTS_PAYLOAD = json.dumps([
     {"id": "P001", "name": "Test Project A", "status": "O", "purpose": "Build"},
     {"id": "P002", "name": "Test Project B", "status": "C", "purpose": "Run"},
@@ -32,12 +31,7 @@ FAKE_PROJECTS_PAYLOAD = json.dumps([
 
 
 def _write_shim() -> Path:
-    """Create a sitecustomize.py that patches requests.get inside the spawned
-    server process so it returns FAKE_PROJECTS_PAYLOAD without hitting the
-    network. Python auto-imports `sitecustomize` on startup if it's on
-    sys.path, so injecting it via PYTHONPATH means the patch is in place
-    before server.py imports anything."""
-    shim_dir = HERE / ".test_shim"
+    shim_dir = ROOT / ".test_shim"
     shim_dir.mkdir(exist_ok=True)
     (shim_dir / "sitecustomize.py").write_text(
         "import json, requests\n"
@@ -60,13 +54,12 @@ async def main() -> int:
     env = {
         **os.environ,
         "CALM_TOKEN": "fake-local-token-for-tests",
-        # Force the shim onto PYTHONPATH for the child process.
-        "PYTHONPATH": f"{shim_dir}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
+        "PYTHONPATH": f"{ROOT}{os.pathsep}{shim_dir}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
     }
 
     params = StdioServerParameters(
         command=sys.executable,
-        args=[str(HERE / "server.py")],
+        args=[str(ROOT / "server.py")],
         env=env,
     )
 
@@ -103,14 +96,12 @@ async def main() -> int:
                 f"got {sorted(tool_names)}",
             )
 
-            # Each tool should have a non-empty description (helps the LLM).
             for t in tools.tools:
                 check(
                     f"'{t.name}' has a description",
                     bool(t.description and t.description.strip()),
                 )
 
-            # get_calm_tasks must declare project_id as a required arg.
             tasks_tool = next(t for t in tools.tools if t.name == "get_calm_tasks")
             schema = tasks_tool.inputSchema or {}
             required = schema.get("required") or []
@@ -123,13 +114,10 @@ async def main() -> int:
             # ---- calm_health --------------------------------------------
             print("\nTest 2: calm_health returns expected diagnostic")
             res = await session.call_tool("calm_health", {})
-            # FastMCP exposes the typed return value via structuredContent.
-            # For dict returns the value is the dict itself; for list returns
-            # the list lives under the "result" key.
             health = res.structuredContent or json.loads(res.content[0].text)
             check("server name", health.get("server") == "sap-cloud-alm")
             check("token configured", health.get("token_configured") is True)
-            check("token source is CALM_TOKEN", health.get("token_source") == "CALM_TOKEN")
+            check("token source is CALM_TOKEN env var", health.get("token_source") == "CALM_TOKEN env var")
             check("base_url present", bool(health.get("base_url")))
 
             # ---- get_calm_projects (with requests.get shimmed) ----------

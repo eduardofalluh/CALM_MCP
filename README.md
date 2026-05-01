@@ -1,173 +1,138 @@
 # SAP Cloud ALM MCP Server
 
-A local [Model Context Protocol](https://modelcontextprotocol.io) server that
-exposes SAP Cloud ALM read-only endpoints (projects, tasks, business
-processes, solution processes, scopes, manual test cases) as MCP tools.
-
-Once running, any MCP-compatible client — Claude Desktop, MCP Inspector,
-Cursor, Syntax GenAI Studio, etc. — can attach the server and call the tools
-just like the Python functions you already use in your existing CALM agent.
+A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes
+SAP Cloud ALM read-only endpoints as MCP tools. Any MCP-compatible client —
+Claude Desktop, MCP Inspector, Cursor, Syntax GenAI Studio — can attach and call
+the tools directly.
 
 ---
 
 ## Project layout
 
 ```
-calm-mcp/
-├── server.py            # FastMCP server — declares the MCP tools
-├── calm_client.py       # HTTP wrappers for the CALM REST APIs (1:1 port of
-│                        # the existing get_calm_* functions)
+CALM_MCP/
+├── src/
+│   └── calm/
+│       ├── client.py          # CALM REST API wrappers
+│       ├── models.py          # CALMHeaders Pydantic model
+│       ├── dependencies.py    # get_calm_headers() — resolves token from header or env var
+│       └── tools/
+│           ├── projects.py    # get_calm_projects, get_calm_tasks
+│           ├── processes.py   # get_calm_business_processes, get_calm_solution_processes
+│           ├── scopes.py      # get_calm_scopes
+│           ├── test_cases.py  # get_calm_test_cases
+│           └── health.py      # calm_health
+├── tests/
+│   └── test_server.py
+├── server.py                  # Entry point
 ├── requirements.txt
-├── .env.example         # Copy to `.env` and fill in CALM_TOKEN
-└── README.md
+└── .env.example
 ```
 
 ## Tools exposed
 
-| MCP tool name                  | What it does                                                    | Args         |
-| ------------------------------ | --------------------------------------------------------------- | ------------ |
-| `get_calm_projects`            | List all projects                                               | —            |
-| `get_calm_tasks`               | List all tasks for a given project                              | `project_id` |
-| `get_calm_business_processes`  | List business processes (process authoring API)                 | —            |
-| `get_calm_solution_processes`  | List solution processes (process authoring API)                 | —            |
-| `get_calm_scopes`              | List scopes (process management API)                            | —            |
-| `get_calm_test_cases`          | List manual test cases (test management API)                    | —            |
-| `calm_health`                  | Diagnostic — confirms server is up and a token is configured    | —            |
-
-All response shapes are identical to those returned by the existing standalone
-Python tools (same field names, same status / type / priority mappings).
+| Tool | Description | Args |
+|------|-------------|------|
+| `get_calm_projects` | List all projects | — |
+| `get_calm_tasks` | List tasks for a project | `project_id` |
+| `get_calm_business_processes` | List business processes | — |
+| `get_calm_solution_processes` | List solution processes | — |
+| `get_calm_scopes` | List process-management scopes | — |
+| `get_calm_test_cases` | List manual test cases | — |
+| `calm_health` | Diagnostic — server up, token configured? | — |
 
 ---
 
 ## 1. Install
 
-You need Python 3.10+.
-
 ```bash
-cd calm-mcp
 python -m venv .venv
-source .venv/bin/activate          # macOS/Linux
-# .\.venv\Scripts\activate         # Windows PowerShell
-
+source .venv/bin/activate      # macOS/Linux
 pip install -r requirements.txt
 ```
 
-## 2. Configure the token
+## 2. Configure credentials
+
+### Local dev / stdio (e.g. Claude Desktop)
 
 ```bash
 cp .env.example .env
+# Open .env and set CALM_TOKEN=<your bearer token>
 ```
 
-Open `.env` and set **one** of:
+### HTTP transport (e.g. Syntax GenAI Studio)
 
-- `CALM_TOKEN=...` — paste a bearer token (what your AI team meant by "make
-  a local token for now"). Easiest for local dev.
-- `CALM_BASIC_AUTH=...` — the base64-encoded `client_id:client_secret`
-  string from the original `get_calm_token()` snippet. The server will fetch
-  a fresh access token automatically.
+No `.env` needed on the server. The client passes credentials as request headers
+on every call:
 
-Optionally override `CALM_BASE_URL` / `CALM_AUTH_URL` to point at a different
-client tenant. Defaults match the `illumiti-corp-cloudalm` tenant used by
-the existing agent.
+| Header | Required | Description |
+|--------|----------|-------------|
+| `x-calm-token` | Yes | Bearer token for the CALM tenant |
+| `x-calm-base-url` | No | Override tenant URL (defaults to `illumiti-corp-cloudalm`) |
+
+Token resolution order: `x-calm-token` header → `CALM_TOKEN` env var → error.
 
 ## 3. Run
 
 ```bash
-# Default: stdio transport (Claude Desktop, MCP Inspector, Cursor, ...)
+# stdio — Claude Desktop, MCP Inspector, Cursor
 python server.py
 
-# Or HTTP transport, e.g. for Syntax GenAI Studio remote MCP:
+# HTTP — Syntax GenAI Studio remote MCP
 python server.py --http --port 8000
 ```
 
-When run over stdio nothing is printed to stdout (that channel is reserved
-for the MCP protocol); logs go to stderr.
-
----
-
-## 4. Try it with MCP Inspector (recommended first step)
-
-The official inspector is the fastest way to confirm everything works:
+## 4. Test
 
 ```bash
-# in another terminal, with your venv active
-mcp dev server.py
+python tests/test_server.py    # must show 19/19 passed
 ```
 
-This launches a small web UI where you can:
+## 5. MCP Inspector (interactive)
 
-1. See the 7 tools the server advertises.
-2. Click `calm_health` -> Run. You should see `token_configured: true`.
-3. Click `get_calm_projects` -> Run. You should see real CALM data come back.
+```bash
+npx @modelcontextprotocol/inspector python3 server.py
+```
 
-## 5. Connect from Claude Desktop
+## 6. Connect from Claude Desktop
 
-Edit `~/Library/Application Support/Claude/claude_desktop_config.json` (macOS)
-or `%APPDATA%\Claude\claude_desktop_config.json` (Windows) and add:
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "sap-cloud-alm": {
       "command": "python",
-      "args": ["/absolute/path/to/calm-mcp/server.py"],
-      "env": {
-        "CALM_TOKEN": "paste-token-here"
-      }
+      "args": ["/absolute/path/to/CALM_MCP/server.py"],
+      "env": { "CALM_TOKEN": "paste-token-here" }
     }
   }
 }
 ```
 
-Restart Claude Desktop. The "sap-cloud-alm" server should appear in the
-tools panel and Claude can now call any of the seven tools directly.
+## 7. Connect from Syntax GenAI Studio
 
-## 6. Connect from Syntax GenAI Studio
-
-Studio supports remote MCP servers over HTTP. Once you're ready to expose
-the server beyond your laptop:
-
-1. Run `python server.py --http --port 8000`.
-2. Put it behind a reachable URL (ngrok for testing, or deploy to your
-   internal network).
-3. In Studio -> your agent -> **Actions and Tools** -> **Add Tool** ->
-   **MCP Server**, point it at `https://<your-host>/mcp`.
-
-The same 7 tools will appear and you can swap them in for the existing
-Python tools you have today.
+1. `python server.py --http --port 8000`
+2. Expose via ngrok or deploy to your network
+3. Studio → agent → **Actions and Tools** → **Add Tool** → **MCP Server** → `https://<host>/mcp`
+4. Set `x-calm-token` as a request header in Studio's MCP config
 
 ---
 
-## How the token swap works for clients
+## Adding more CALM endpoints
 
-Today the existing Python tools talk to one tenant (`illumiti-corp-cloudalm`)
-with credentials hardcoded into `get_calm_token`. With this MCP, switching
-to a different client's CALM is just two env-var changes per deployment:
+Each tool is ~10 lines. To add an "incidents" endpoint:
+
+1. Add `get_incidents(token, base_url)` to `src/calm/client.py`
+2. Create `src/calm/tools/incidents.py` with a `register(mcp)` function
+3. Import and call `incidents.register(mcp)` in `server.py`
+4. Restart — the new tool is immediately discoverable
+
+## Switching client tenants
 
 ```bash
 CALM_BASE_URL=https://<client>.<region>.alm.cloud.sap
-CALM_TOKEN=<token-issued-by-the-client-tenant>
+CALM_TOKEN=<token-for-that-tenant>
 ```
 
-No code changes required. That's the main win versus the current setup.
-
----
-
-## Adding more CALM endpoints later
-
-Each tool is roughly 10 lines: an HTTP wrapper in `calm_client.py` plus a
-`@mcp.tool()` decorated function in `server.py`. To add e.g. an "incidents"
-endpoint:
-
-1. In `calm_client.py`, add a `get_incidents(token, base_url)` function
-   following the same pattern as `get_projects`.
-2. In `server.py`, add:
-
-   ```python
-   @mcp.tool()
-   def get_calm_incidents() -> list[dict]:
-       """List CALM incidents."""
-       return calm_client.get_incidents(_token_or_error(), BASE_URL)
-   ```
-
-3. Restart the server. The new tool is discoverable immediately.
+No code changes required.
