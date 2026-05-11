@@ -6,19 +6,20 @@ Run
     python server.py               # stdio (Claude Desktop, MCP Inspector, Cursor)
     python server.py --http --port 8000   # HTTP for Syntax GenAI Studio
 
-Auth
-----
-- HTTP transport + OAuth (recommended):
-  Set CALM_OAUTH_CLIENT_ID, CALM_OAUTH_CLIENT_SECRET, CALM_OAUTH_AUTH_URL,
-  CALM_OAUTH_TOKEN_URL, CALM_OAUTH_JWKS_URI, CALM_OAUTH_ISSUER, and MCP_BASE_URL.
-  MCP clients will be redirected to SAP BTP for authentication. Tokens are
-  refreshed automatically — no manual copy-paste required.
+Auth  (two separate SAP URLs are involved)
+------------------------------------------
+  Auth URL  → https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token
+  API  URL  → https://<tenant>.<region>.alm.cloud.sap/api/...
 
-- HTTP transport, no OAuth (legacy):
-  Pass x-calm-token (and optionally x-calm-base-url) as request headers.
+Token resolution order:
+  1. Client credentials (recommended) — set CALM_CLIENT_ID + CALM_CLIENT_SECRET.
+     The server calls the SAP XSUAA token endpoint with Basic Auth
+     (Base64 client_id:client_secret), caches the access token, and refreshes
+     it automatically before it expires. No manual token management needed.
 
-- stdio / local dev:
-  Set CALM_TOKEN in your .env file.
+  2. x-calm-token header (legacy HTTP) — pass the token per-request in the header.
+
+  3. CALM_TOKEN env var (stdio / local dev) — static token for development.
 """
 
 from __future__ import annotations
@@ -43,60 +44,19 @@ logging.basicConfig(
 log = logging.getLogger("calm-mcp")
 
 
-def _build_oauth_proxy():
-    """Return an OAuthProxy for SAP BTP if credentials are configured, else None."""
-    client_id = os.getenv("CALM_OAUTH_CLIENT_ID")
-    if not client_id:
-        return None
+def _maybe_init_token_manager() -> bool:
+    """Initialise the client-credentials token manager if credentials are set."""
+    client_id = os.getenv("CALM_CLIENT_ID")
+    client_secret = os.getenv("CALM_CLIENT_SECRET")
+    if not (client_id and client_secret):
+        return False
 
-    client_secret = os.getenv("CALM_OAUTH_CLIENT_SECRET", "")
-    auth_url = os.getenv("CALM_OAUTH_AUTH_URL")
-    token_url = os.getenv("CALM_OAUTH_TOKEN_URL")
-    jwks_uri = os.getenv("CALM_OAUTH_JWKS_URI")
-    issuer = os.getenv("CALM_OAUTH_ISSUER")
-    audience = os.getenv("CALM_OAUTH_AUDIENCE", client_id)
-    base_url = os.getenv("MCP_BASE_URL", "http://127.0.0.1:8000")
-    scopes_env = os.getenv("CALM_OAUTH_SCOPES")
+    from src.calm.token_manager import DEFAULT_AUTH_URL, init_token_manager
 
-    missing = [k for k, v in {
-        "CALM_OAUTH_AUTH_URL": auth_url,
-        "CALM_OAUTH_TOKEN_URL": token_url,
-        "CALM_OAUTH_JWKS_URI": jwks_uri,
-        "CALM_OAUTH_ISSUER": issuer,
-    }.items() if not v]
-    if missing:
-        log.warning("OAuth disabled — missing env vars: %s", ", ".join(missing))
-        return None
-
-    from fastmcp.server.auth import OAuthProxy
-    from fastmcp.server.auth.providers.jwt import JWTVerifier
-
-    token_verifier = JWTVerifier(
-        jwks_uri=jwks_uri,
-        issuer=issuer,
-        audience=audience,
-    )
-
-    extra_authorize = {}
-    if scopes_env:
-        extra_authorize["scope"] = scopes_env
-
-    proxy = OAuthProxy(
-        upstream_authorization_endpoint=auth_url,
-        upstream_token_endpoint=token_url,
-        upstream_client_id=client_id,
-        upstream_client_secret=client_secret or None,
-        token_verifier=token_verifier,
-        base_url=base_url,
-        allowed_client_redirect_uris=[
-            "http://localhost:*",
-            "https://claude.ai/api/mcp/auth_callback",
-            "https://*.syntaxsystems.ai/*",
-        ],
-        extra_authorize_params=extra_authorize if extra_authorize else None,
-    )
-    log.info("OAuth proxy configured (SAP BTP client_id=%s)", client_id)
-    return proxy
+    auth_url = os.getenv("CALM_AUTH_URL", DEFAULT_AUTH_URL)
+    init_token_manager(client_id=client_id, client_secret=client_secret, auth_url=auth_url)
+    log.info("Token manager initialised (client_id=%s, auth_url=%s)", client_id, auth_url)
+    return True
 
 
 mcp = FastMCP("sap-cloud-alm")
@@ -115,17 +75,17 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=int(os.getenv("MCP_PORT", "8000")))
     args = parser.parse_args()
 
+    using_managed_tokens = _maybe_init_token_manager()
+    if not using_managed_tokens:
+        log.info(
+            "CALM_CLIENT_ID/CALM_CLIENT_SECRET not set — "
+            "falling back to x-calm-token header or CALM_TOKEN env var."
+        )
+
     if args.http:
         mcp.settings.host = args.host
         mcp.settings.port = args.port
-
-        auth = _build_oauth_proxy()
-        if auth:
-            mcp.settings.auth = auth
-            log.info("Starting CALM MCP with OAuth on http://%s:%s", args.host, args.port)
-        else:
-            log.info("Starting CALM MCP (no OAuth) on http://%s:%s", args.host, args.port)
-
+        log.info("Starting CALM MCP on http://%s:%s", args.host, args.port)
         mcp.run(transport="streamable-http")
     else:
         log.info("Starting CALM MCP on stdio")

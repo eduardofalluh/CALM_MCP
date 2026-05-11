@@ -2,15 +2,10 @@
 CALM credential resolution.
 
 Resolution order:
-  1. OAuth access token  — set by OAuthProxy when running HTTP + OAuth
-  2. x-calm-token header — HTTP transport without OAuth (legacy / backward-compat)
-  3. CALM_TOKEN env var  — stdio / local dev
-
-This means:
-- In production (HTTP + OAuth) the proxy handles authentication and token
-  refresh automatically. No manual token management needed.
-- In legacy HTTP mode the client passes credentials per-request via headers.
-- In local dev (stdio, MCP Inspector) you still just set CALM_TOKEN in .env.
+  1. Client-credentials token manager — server fetches+caches its own SAP token
+     (set CALM_CLIENT_ID + CALM_CLIENT_SECRET).  Auto-refreshes silently.
+  2. x-calm-token request header — HTTP transport, legacy / per-request.
+  3. CALM_TOKEN env var            — stdio / local dev, static token.
 """
 
 from __future__ import annotations
@@ -18,10 +13,10 @@ from __future__ import annotations
 import os
 
 from fastmcp import Context
-from fastmcp.server.dependencies import get_access_token
 
 from .client import DEFAULT_BASE_URL
 from .models import CALMHeaders
+from .token_manager import get_managed_token
 
 
 def get_calm_headers(ctx: Context) -> CALMHeaders:
@@ -29,13 +24,13 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
     base_url: str = os.getenv("CALM_BASE_URL", DEFAULT_BASE_URL)
     token_source: str | None = None
 
-    # --- 1. OAuth: upstream SAP token from authenticated session ---
-    access_token_obj = get_access_token()
-    if access_token_obj and access_token_obj.token:
-        token = access_token_obj.token
-        token_source = "oauth"
+    # --- 1. Client-credentials (auto-managed, preferred) ---
+    managed = get_managed_token()
+    if managed:
+        token = managed
+        token_source = "client_credentials"
 
-    # --- 2. x-calm-token header (HTTP transport, legacy) ---
+    # --- 2. x-calm-token header (HTTP legacy) ---
     if not token:
         try:
             request = ctx.request_context.request
@@ -50,7 +45,7 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
         except Exception:
             pass
 
-    # --- 3. stdio / local dev: fall back to env var ---
+    # --- 3. CALM_TOKEN env var (stdio / local dev) ---
     if not token:
         env_token = os.getenv("CALM_TOKEN")
         if env_token:
@@ -60,9 +55,9 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
     if not token:
         raise ValueError(
             "Missing CALM token. "
-            "Authenticate via OAuth (HTTP + OAuth mode), "
-            "send x-calm-token header (HTTP legacy mode), "
-            "or set CALM_TOKEN env var (stdio mode)."
+            "Set CALM_CLIENT_ID + CALM_CLIENT_SECRET (recommended), "
+            "send x-calm-token header (HTTP legacy), "
+            "or set CALM_TOKEN env var (stdio)."
         )
 
     return CALMHeaders(token=token, base_url=base_url, token_source=token_source)

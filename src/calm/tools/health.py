@@ -3,9 +3,9 @@ from __future__ import annotations
 import os
 
 from fastmcp import Context, FastMCP
-from fastmcp.server.dependencies import get_access_token
 
 from src.calm.client import DEFAULT_BASE_URL
+from src.calm.token_manager import get_managed_token
 
 
 def register(mcp: FastMCP) -> None:
@@ -17,12 +17,11 @@ def register(mcp: FastMCP) -> None:
         """
         token_source = None
 
-        # Check OAuth token (HTTP + OAuth mode)
-        access_token_obj = get_access_token()
-        if access_token_obj and access_token_obj.token:
-            token_source = "oauth"
+        # Client-credentials token manager
+        if get_managed_token():
+            token_source = "client_credentials"
 
-        # Check x-calm-token header (HTTP legacy mode)
+        # x-calm-token header (HTTP legacy)
         if not token_source:
             try:
                 request = ctx.request_context.request
@@ -31,16 +30,14 @@ def register(mcp: FastMCP) -> None:
             except Exception:
                 pass
 
-        # Check env var (stdio mode)
+        # Static env var (stdio / local dev)
         if not token_source and os.getenv("CALM_TOKEN"):
             token_source = "CALM_TOKEN env var"
-
-        oauth_configured = bool(os.getenv("CALM_OAUTH_CLIENT_ID"))
 
         return {
             "server": "sap-cloud-alm",
             "base_url": os.getenv("CALM_BASE_URL", DEFAULT_BASE_URL),
             "token_configured": token_source is not None,
             "token_source": token_source,
-            "oauth_enabled": oauth_configured,
+            "client_credentials_enabled": bool(os.getenv("CALM_CLIENT_ID")),
         }

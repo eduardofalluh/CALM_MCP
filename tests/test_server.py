@@ -54,6 +54,9 @@ async def main() -> int:
     env = {
         **os.environ,
         "CALM_TOKEN": "fake-local-token-for-tests",
+        # Ensure client-credentials mode is OFF so tests use the env-var path
+        "CALM_CLIENT_ID": "",
+        "CALM_CLIENT_SECRET": "",
         "PYTHONPATH": f"{ROOT}{os.pathsep}{shim_dir}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
     }
 
@@ -119,7 +122,7 @@ async def main() -> int:
             check("token configured", health.get("token_configured") is True)
             check("token source is CALM_TOKEN env var", health.get("token_source") == "CALM_TOKEN env var")
             check("base_url present", bool(health.get("base_url")))
-            check("oauth_enabled is False (no OAuth env vars set)", health.get("oauth_enabled") is False)
+            check("client_credentials_enabled is False", health.get("client_credentials_enabled") is False)
 
             # ---- get_calm_projects (with requests.get shimmed) ----------
             print("\nTest 3: get_calm_projects returns parsed list")
