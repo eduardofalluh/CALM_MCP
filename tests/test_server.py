@@ -119,6 +119,7 @@ async def main() -> int:
             check("token configured", health.get("token_configured") is True)
             check("token source is CALM_TOKEN env var", health.get("token_source") == "CALM_TOKEN env var")
             check("base_url present", bool(health.get("base_url")))
+            check("oauth_enabled is False (no OAuth env vars set)", health.get("oauth_enabled") is False)
 
             # ---- get_calm_projects (with requests.get shimmed) ----------
             print("\nTest 3: get_calm_projects returns parsed list")

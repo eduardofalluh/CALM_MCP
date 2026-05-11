@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from mcp.server.fastmcp import Context, FastMCP
+from fastmcp import Context, FastMCP
 
 from src.calm import client
 from src.calm.dependencies import get_calm_headers
