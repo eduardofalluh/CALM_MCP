@@ -7,24 +7,48 @@ the tools directly.
 
 ---
 
+## Authentication
+
+The server implements **OAuth2 Client Credentials flow** to fetch and cache bearer tokens automatically. No hourly copy-paste required.
+
+### How it works
+
+SAP Cloud ALM uses two separate URLs:
+
+| Purpose | URL | Auth method |
+|---------|-----|-------------|
+| **Token endpoint** | `https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token` | Basic Auth with `Base64(client_id:client_secret)` |
+| **API endpoint** | `https://<tenant>.<region>.alm.cloud.sap/api/...` | Bearer token from token endpoint |
+
+The `TokenManager` (in `src/calm/token_manager.py`) calls the token endpoint once on first use, caches the access token, and silently refreshes it 60 seconds before expiry. You never touch a token manually.
+
+### Token resolution (fallback order)
+
+1. **Client Credentials** (preferred) — set `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET`. Server fetches and manages tokens.
+2. **Header** — pass `x-calm-token` in request headers (legacy HTTP mode).
+3. **Env var** — set `CALM_TOKEN` (local dev / stdio).
+
+---
+
 ## Project layout
 
 ```
 CALM_MCP/
 ├── src/
 │   └── calm/
-│       ├── client.py          # CALM REST API wrappers
-│       ├── models.py          # CALMHeaders Pydantic model
-│       ├── dependencies.py    # get_calm_headers() — resolves token from header or env var
+│       ├── client.py           # CALM REST API wrappers
+│       ├── models.py           # CALMHeaders Pydantic model
+│       ├── token_manager.py    # OAuth2 client credentials + token cache
+│       ├── dependencies.py     # get_calm_headers() — resolves token
 │       └── tools/
-│           ├── projects.py    # get_calm_projects, get_calm_tasks
-│           ├── processes.py   # get_calm_business_processes, get_calm_solution_processes
-│           ├── scopes.py      # get_calm_scopes
-│           ├── test_cases.py  # get_calm_test_cases
-│           └── health.py      # calm_health
+│           ├── projects.py     # get_calm_projects, get_calm_tasks
+│           ├── processes.py    # get_calm_business_processes, get_calm_solution_processes
+│           ├── scopes.py       # get_calm_scopes
+│           ├── test_cases.py   # get_calm_test_cases
+│           └── health.py       # calm_health
 ├── tests/
 │   └── test_server.py
-├── server.py                  # Entry point
+├── server.py                   # Entry point
 ├── requirements.txt
 └── .env.example
 ```
@@ -53,24 +77,39 @@ pip install -r requirements.txt
 
 ## 2. Configure credentials
 
-### Local dev / stdio (e.g. Claude Desktop)
+### Option A: Client Credentials (recommended for production)
+
+Register an OAuth client in your SAP BTP subaccount, then set:
 
 ```bash
 cp .env.example .env
-# Open .env and set CALM_TOKEN=<your bearer token>
+# Open .env and set:
+CALM_CLIENT_ID=<your-oauth-client-id>
+CALM_CLIENT_SECRET=<your-oauth-client-secret>
+# Optional: override the XSUAA token endpoint (defaults to illumiti-corp-cloudalm eu10)
+# CALM_AUTH_URL=https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/token
 ```
 
-### HTTP transport (e.g. Syntax GenAI Studio)
+The server automatically fetches a token on first use and refreshes it before expiry.
 
-No `.env` needed on the server. The client passes credentials as request headers
-on every call:
+### Option B: Bearer token env var (local dev / stdio)
+
+```bash
+cp .env.example .env
+# Open .env and set:
+CALM_TOKEN=<your-bearer-token>
+```
+
+### Option C: Bearer token header (HTTP legacy / per-request)
+
+No `.env` needed. Pass credentials as request headers on each call:
 
 | Header | Required | Description |
 |--------|----------|-------------|
 | `x-calm-token` | Yes | Bearer token for the CALM tenant |
 | `x-calm-base-url` | No | Override tenant URL (defaults to `illumiti-corp-cloudalm`) |
 
-Token resolution order: `x-calm-token` header → `CALM_TOKEN` env var → error.
+Token resolution order: client credentials → `x-calm-token` header → `CALM_TOKEN` env var → error.
 
 ## 3. Run
 
@@ -104,7 +143,10 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
     "sap-cloud-alm": {
       "command": "python",
       "args": ["/absolute/path/to/CALM_MCP/server.py"],
-      "env": { "CALM_TOKEN": "paste-token-here" }
+      "env": {
+        "CALM_CLIENT_ID": "your-client-id",
+        "CALM_CLIENT_SECRET": "your-client-secret"
+      }
     }
   }
 }
@@ -112,10 +154,19 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ## 7. Connect from Syntax GenAI Studio
 
-1. `python server.py --http --port 8000`
-2. Expose via ngrok or deploy to your network
-3. Studio → agent → **Actions and Tools** → **Add Tool** → **MCP Server** → `https://<host>/mcp`
-4. Set `x-calm-token` as a request header in Studio's MCP config
+### With client credentials (recommended)
+
+1. Deploy server to your network (HTTP mode)
+2. Studio → agent → **Actions and Tools** → **Add Tool** → **MCP Server** → `https://<host>/mcp`
+3. Leave the "Bearer token" field **empty** — the server manages tokens automatically
+4. The server will use `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET` from deployment environment
+
+### Legacy (x-calm-token header)
+
+1. Deploy server to your network (HTTP mode)
+2. Studio → agent → **Actions and Tools** → **Add Tool** → **MCP Server** → `https://<host>/mcp`
+3. Set `x-calm-token` as a request header in Studio's MCP config
+4. Paste a bearer token each time it expires
 
 ---
 
@@ -132,7 +183,23 @@ Each tool is ~10 lines. To add an "incidents" endpoint:
 
 ```bash
 CALM_BASE_URL=https://<client>.<region>.alm.cloud.sap
-CALM_TOKEN=<token-for-that-tenant>
+CALM_CLIENT_ID=<client-id-for-that-tenant>
+CALM_CLIENT_SECRET=<client-secret-for-that-tenant>
 ```
 
 No code changes required.
+
+---
+
+## How TokenManager works
+
+When you set `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET`:
+
+1. On first tool call, `TokenManager` POSTs to the SAP XSUAA token endpoint with Basic Auth
+2. SAP returns `{ "access_token": "...", "expires_in": 3600 }`
+3. Token is cached in memory
+4. On subsequent calls within the TTL, the cached token is reused
+5. When the token expires, `TokenManager` automatically fetches a fresh one
+6. No token field in Studio UI needed — it all happens transparently
+
+This is OAuth2 Client Credentials flow — the standard for server-to-server authentication.
