@@ -4,7 +4,7 @@ import os
 
 from fastmcp import Context, FastMCP
 
-from src.calm.client import DEFAULT_BASE_URL
+from src.calm.config import get_base_url
 from src.calm.token_manager import get_managed_token
 
 
@@ -36,7 +36,7 @@ def register(mcp: FastMCP) -> None:
 
         return {
             "server": "sap-cloud-alm",
-            "base_url": os.getenv("CALM_BASE_URL", DEFAULT_BASE_URL),
+            "base_url": get_base_url(),
             "token_configured": token_source is not None,
             "token_source": token_source,
             "client_credentials_enabled": bool(os.getenv("CALM_CLIENT_ID")),

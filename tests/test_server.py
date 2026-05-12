@@ -54,6 +54,10 @@ async def main() -> int:
     env = {
         **os.environ,
         "CALM_TOKEN": "fake-local-token-for-tests",
+        "IDENTITY_ZONE": "test-cloudalm",
+        "REGION_ZONE": "us10",
+        "CALM_BASE_URL": "",
+        "CALM_AUTH_URL": "",
         # Ensure client-credentials mode is OFF so tests use the env-var path
         "CALM_CLIENT_ID": "",
         "CALM_CLIENT_SECRET": "",
@@ -121,7 +125,11 @@ async def main() -> int:
             check("server name", health.get("server") == "sap-cloud-alm")
             check("token configured", health.get("token_configured") is True)
             check("token source is CALM_TOKEN env var", health.get("token_source") == "CALM_TOKEN env var")
-            check("base_url present", bool(health.get("base_url")))
+            check(
+                "base_url derived from BTP zone config",
+                health.get("base_url") == "https://test-cloudalm.us10.alm.cloud.sap",
+                f"got {health.get('base_url')}",
+            )
             check("client_credentials_enabled is False", health.get("client_credentials_enabled") is False)
 
             # ---- get_calm_projects (with requests.get shimmed) ----------

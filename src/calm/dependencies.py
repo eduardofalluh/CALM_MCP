@@ -14,14 +14,14 @@ import os
 
 from fastmcp import Context
 
-from .client import DEFAULT_BASE_URL
+from .config import get_base_url
 from .models import CALMHeaders
 from .token_manager import get_managed_token
 
 
 def get_calm_headers(ctx: Context) -> CALMHeaders:
     token: str | None = None
-    base_url: str = os.getenv("CALM_BASE_URL", DEFAULT_BASE_URL)
+    base_url: str = get_base_url()
     token_source: str | None = None
 
     # --- 1. Client-credentials (auto-managed, preferred) ---

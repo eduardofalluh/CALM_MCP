@@ -79,18 +79,27 @@ pip install -r requirements.txt
 
 ### Option A: Client Credentials (recommended for production)
 
-For a deployed GenAI Studio MCP server, we need the SAP OAuth **client ID and client secret**. These are deployment secrets for the MCP server, not values that a user pastes into the GenAI Studio chat or Bearer token field.
+For a deployed GenAI Studio MCP server, we need the SAP OAuth **client ID and client secret** plus the tenant identity zone and region zone from BTP. These are deployment settings for the MCP server, not values that a user pastes into the GenAI Studio chat or Bearer token field.
 
 Register an OAuth client in the SAP BTP subaccount that has access to the Cloud ALM APIs, then set:
 
 ```bash
 cp .env.example .env
 # Open .env and set:
-CALM_BASE_URL=https://<tenant>.<region>.alm.cloud.sap
-CALM_AUTH_URL=https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token
+IDENTITY_ZONE=<your-btp-identity-zone>
+REGION_ZONE=<your-btp-region-zone>
 CALM_CLIENT_ID=<your-oauth-client-id>
 CALM_CLIENT_SECRET=<your-oauth-client-secret>
 ```
+
+The server derives the URLs from those BTP values:
+
+```bash
+CALM_AUTH_URL=https://<identity-zone>.authentication.<region-zone>.hana.ondemand.com/oauth/token
+CALM_BASE_URL=https://<identity-zone>.<region-zone>.alm.cloud.sap
+```
+
+You can still set `CALM_AUTH_URL` or `CALM_BASE_URL` directly if a deployment needs explicit URL overrides.
 
 The server automatically fetches a token on first use and refreshes it before expiry.
 
@@ -109,7 +118,7 @@ No `.env` needed. Pass credentials as request headers on each call:
 | Header | Required | Description |
 |--------|----------|-------------|
 | `x-calm-token` | Yes | Bearer token for the CALM tenant |
-| `x-calm-base-url` | No | Override tenant URL (defaults to `illumiti-corp-cloudalm`) |
+| `x-calm-base-url` | No | Override tenant URL for that request |
 
 Token resolution order: client credentials → `x-calm-token` header → `CALM_TOKEN` env var → error.
 
@@ -146,8 +155,8 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
       "command": "python3",
       "args": ["/absolute/path/to/CALM_MCP/server.py"],
       "env": {
-        "CALM_BASE_URL": "https://<tenant>.<region>.alm.cloud.sap",
-        "CALM_AUTH_URL": "https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token",
+        "IDENTITY_ZONE": "<your-btp-identity-zone>",
+        "REGION_ZONE": "<your-btp-region-zone>",
         "CALM_CLIENT_ID": "your-client-id",
         "CALM_CLIENT_SECRET": "your-client-secret"
       }
@@ -166,10 +175,12 @@ What the deployed MCP server needs as environment variables:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `CALM_BASE_URL` | Yes | SAP Cloud ALM API base URL, for example `https://<tenant>.<region>.alm.cloud.sap` |
-| `CALM_AUTH_URL` | Yes | SAP XSUAA token URL, for example `https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token` |
+| `IDENTITY_ZONE` | Yes | BTP identity zone, for example `illumiti-corp-cloudalm` |
+| `REGION_ZONE` | Yes | BTP region zone, for example `eu10` |
 | `CALM_CLIENT_ID` | Yes | OAuth client ID from SAP BTP |
 | `CALM_CLIENT_SECRET` | Yes | OAuth client secret from SAP BTP |
+| `CALM_BASE_URL` | Optional | Explicit SAP Cloud ALM API base URL override |
+| `CALM_AUTH_URL` | Optional | Explicit SAP XSUAA token URL override |
 | `MCP_HOST` | Recommended | Use `0.0.0.0` in hosted/container deployments |
 | `MCP_PORT` | Recommended | Port exposed by the hosting platform, for example `8000` |
 | `LOG_LEVEL` | Optional | Defaults to `INFO` |
@@ -187,7 +198,7 @@ Connection steps:
 1. Start the server with `python3 server.py --http --host 0.0.0.0 --port 8000`, or set `MCP_HOST=0.0.0.0` and `MCP_PORT=8000`.
 2. In Studio, go to agent → **Actions and Tools** → **Add Tool** → **MCP Server**.
 3. Enter `https://<deployed-host>/mcp`.
-4. Leave the "Bearer token" field **empty**. The server uses `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET` from the deployment environment to fetch SAP tokens.
+4. Leave the "Bearer token" field **empty**. The server derives the SAP URLs from `IDENTITY_ZONE` + `REGION_ZONE`, then uses `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET` to fetch SAP tokens.
 
 ### Legacy (x-calm-token header)
 
@@ -210,8 +221,8 @@ Each tool is ~10 lines. To add an "incidents" endpoint:
 ## Switching client tenants
 
 ```bash
-CALM_BASE_URL=https://<client>.<region>.alm.cloud.sap
-CALM_AUTH_URL=https://<client>.authentication.<region>.hana.ondemand.com/oauth/token
+IDENTITY_ZONE=<client-identity-zone>
+REGION_ZONE=<client-region-zone>
 CALM_CLIENT_ID=<client-id-for-that-tenant>
 CALM_CLIENT_SECRET=<client-secret-for-that-tenant>
 ```

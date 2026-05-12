@@ -51,9 +51,10 @@ def _maybe_init_token_manager() -> bool:
     if not (client_id and client_secret):
         return False
 
-    from src.calm.token_manager import DEFAULT_AUTH_URL, init_token_manager
+    from src.calm.config import get_auth_url
+    from src.calm.token_manager import init_token_manager
 
-    auth_url = os.getenv("CALM_AUTH_URL", DEFAULT_AUTH_URL)
+    auth_url = get_auth_url()
     init_token_manager(client_id=client_id, client_secret=client_secret, auth_url=auth_url)
     log.info("Token manager initialised (client_id=%s, auth_url=%s)", client_id, auth_url)
     return True

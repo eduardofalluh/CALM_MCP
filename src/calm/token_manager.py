@@ -22,10 +22,7 @@ import time
 
 import requests
 
-DEFAULT_AUTH_URL = (
-    "https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com"
-    "/oauth/token"
-)
+from .config import build_auth_url
 
 _REFRESH_BUFFER_SECONDS = 60  # refresh this many seconds before expiry
 
@@ -33,10 +30,10 @@ _REFRESH_BUFFER_SECONDS = 60  # refresh this many seconds before expiry
 class TokenManager:
     """Thread-safe SAP XSUAA client-credentials token cache."""
 
-    def __init__(self, client_id: str, client_secret: str, auth_url: str = DEFAULT_AUTH_URL) -> None:
+    def __init__(self, client_id: str, client_secret: str, auth_url: str | None = None) -> None:
         self._client_id = client_id
         self._client_secret = client_secret
-        self._auth_url = auth_url
+        self._auth_url = auth_url or build_auth_url()
         self._token: str | None = None
         self._expires_at: float = 0.0
         self._lock = threading.Lock()
@@ -72,7 +69,7 @@ class TokenManager:
 _manager: TokenManager | None = None
 
 
-def init_token_manager(client_id: str, client_secret: str, auth_url: str = DEFAULT_AUTH_URL) -> None:
+def init_token_manager(client_id: str, client_secret: str, auth_url: str | None = None) -> None:
     global _manager
     _manager = TokenManager(client_id=client_id, client_secret=client_secret, auth_url=auth_url)
 

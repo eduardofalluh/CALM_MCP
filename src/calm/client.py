@@ -14,7 +14,7 @@ from typing import Any
 
 import requests
 
-DEFAULT_BASE_URL = "https://illumiti-corp-cloudalm.eu10.alm.cloud.sap"
+from .config import build_base_url
 
 REQUEST_TIMEOUT = 30  # seconds
 
@@ -68,12 +68,16 @@ def _get(url: str, token: str) -> Any:
     return resp.json()
 
 
+def _base_url(base_url: str | None = None) -> str:
+    return base_url or build_base_url()
+
+
 # ---------------------------------------------------------------------------
 # CALM read functions
 # ---------------------------------------------------------------------------
 
-def get_tasks(project_id: str, token: str, base_url: str = DEFAULT_BASE_URL) -> list[dict]:
-    url = f"{base_url}/api/calm-tasks/v1/tasks?projectId={project_id}"
+def get_tasks(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks?projectId={project_id}"
     result = _get(url, token)
     return [
         {
@@ -86,8 +90,8 @@ def get_tasks(project_id: str, token: str, base_url: str = DEFAULT_BASE_URL) -> 
     ]
 
 
-def get_projects(token: str, base_url: str = DEFAULT_BASE_URL) -> list[dict]:
-    url = f"{base_url}/api/calm-projects/v1/projects"
+def get_projects(token: str, base_url: str | None = None) -> list[dict]:
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects"
     result = _get(url, token)
     return [
         {
@@ -100,8 +104,8 @@ def get_projects(token: str, base_url: str = DEFAULT_BASE_URL) -> list[dict]:
     ]
 
 
-def get_business_processes(token: str, base_url: str = DEFAULT_BASE_URL) -> list[dict]:
-    url = f"{base_url}/api/calm-processauthoring/v1/businessProcesses"
+def get_business_processes(token: str, base_url: str | None = None) -> list[dict]:
+    url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/businessProcesses"
     result = _get(url, token)
     return [
         {
@@ -113,8 +117,8 @@ def get_business_processes(token: str, base_url: str = DEFAULT_BASE_URL) -> list
     ]
 
 
-def get_solution_processes(token: str, base_url: str = DEFAULT_BASE_URL) -> list[dict]:
-    url = f"{base_url}/api/calm-processauthoring/v1/solutionProcesses"
+def get_solution_processes(token: str, base_url: str | None = None) -> list[dict]:
+    url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses"
     result = _get(url, token)
     return [
         {
@@ -129,8 +133,8 @@ def get_solution_processes(token: str, base_url: str = DEFAULT_BASE_URL) -> list
     ]
 
 
-def get_scopes(token: str, base_url: str = DEFAULT_BASE_URL) -> list[dict]:
-    url = f"{base_url}/api/calm-processmanagement/v1/scopes"
+def get_scopes(token: str, base_url: str | None = None) -> list[dict]:
+    url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes"
     result = _get(url, token)
     return [
         {
@@ -143,8 +147,8 @@ def get_scopes(token: str, base_url: str = DEFAULT_BASE_URL) -> list[dict]:
     ]
 
 
-def get_test_cases(token: str, base_url: str = DEFAULT_BASE_URL) -> list[dict]:
-    url = f"{base_url}/api/calm-testmanagement/v1/ManualTestCases"
+def get_test_cases(token: str, base_url: str | None = None) -> list[dict]:
+    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases"
     result = _get(url, token)
     parsed = []
     for item in result.get("value", []):
