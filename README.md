@@ -70,7 +70,7 @@ CALM_MCP/
 ## 1. Install
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 source .venv/bin/activate      # macOS/Linux
 pip install -r requirements.txt
 ```
@@ -79,15 +79,17 @@ pip install -r requirements.txt
 
 ### Option A: Client Credentials (recommended for production)
 
-Register an OAuth client in your SAP BTP subaccount, then set:
+For a deployed GenAI Studio MCP server, we need the SAP OAuth **client ID and client secret**. These are deployment secrets for the MCP server, not values that a user pastes into the GenAI Studio chat or Bearer token field.
+
+Register an OAuth client in the SAP BTP subaccount that has access to the Cloud ALM APIs, then set:
 
 ```bash
 cp .env.example .env
 # Open .env and set:
+CALM_BASE_URL=https://<tenant>.<region>.alm.cloud.sap
+CALM_AUTH_URL=https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token
 CALM_CLIENT_ID=<your-oauth-client-id>
 CALM_CLIENT_SECRET=<your-oauth-client-secret>
-# Optional: override the XSUAA token endpoint (defaults to illumiti-corp-cloudalm eu10)
-# CALM_AUTH_URL=https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/token
 ```
 
 The server automatically fetches a token on first use and refreshes it before expiry.
@@ -115,16 +117,16 @@ Token resolution order: client credentials → `x-calm-token` header → `CALM_T
 
 ```bash
 # stdio — Claude Desktop, MCP Inspector, Cursor
-python server.py
+python3 server.py
 
 # HTTP — Syntax GenAI Studio remote MCP
-python server.py --http --port 8000
+python3 server.py --http --host 0.0.0.0 --port 8000
 ```
 
 ## 4. Test
 
 ```bash
-python tests/test_server.py    # must show 19/19 passed
+python3 tests/test_server.py    # must show 19/19 passed
 ```
 
 ## 5. MCP Inspector (interactive)
@@ -141,9 +143,11 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 {
   "mcpServers": {
     "sap-cloud-alm": {
-      "command": "python",
+      "command": "python3",
       "args": ["/absolute/path/to/CALM_MCP/server.py"],
       "env": {
+        "CALM_BASE_URL": "https://<tenant>.<region>.alm.cloud.sap",
+        "CALM_AUTH_URL": "https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token",
         "CALM_CLIENT_ID": "your-client-id",
         "CALM_CLIENT_SECRET": "your-client-secret"
       }
@@ -156,10 +160,34 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ### With client credentials (recommended)
 
-1. Deploy server to your network (HTTP mode)
-2. Studio → agent → **Actions and Tools** → **Add Tool** → **MCP Server** → `https://<host>/mcp`
-3. Leave the "Bearer token" field **empty** — the server manages tokens automatically
-4. The server will use `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET` from deployment environment
+Deploy the MCP server in HTTP mode and expose it over HTTPS so GenAI Studio can reach it.
+
+What the deployed MCP server needs as environment variables:
+
+| Variable | Required | Purpose |
+|----------|----------|---------|
+| `CALM_BASE_URL` | Yes | SAP Cloud ALM API base URL, for example `https://<tenant>.<region>.alm.cloud.sap` |
+| `CALM_AUTH_URL` | Yes | SAP XSUAA token URL, for example `https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token` |
+| `CALM_CLIENT_ID` | Yes | OAuth client ID from SAP BTP |
+| `CALM_CLIENT_SECRET` | Yes | OAuth client secret from SAP BTP |
+| `MCP_HOST` | Recommended | Use `0.0.0.0` in hosted/container deployments |
+| `MCP_PORT` | Recommended | Port exposed by the hosting platform, for example `8000` |
+| `LOG_LEVEL` | Optional | Defaults to `INFO` |
+
+What GenAI Studio needs:
+
+| Studio setting | Value |
+|----------------|-------|
+| MCP server URL | `https://<deployed-host>/mcp` |
+| Bearer token | Leave empty when using client credentials |
+| Custom headers | None required for the recommended deployment |
+
+Connection steps:
+
+1. Start the server with `python3 server.py --http --host 0.0.0.0 --port 8000`, or set `MCP_HOST=0.0.0.0` and `MCP_PORT=8000`.
+2. In Studio, go to agent → **Actions and Tools** → **Add Tool** → **MCP Server**.
+3. Enter `https://<deployed-host>/mcp`.
+4. Leave the "Bearer token" field **empty**. The server uses `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET` from the deployment environment to fetch SAP tokens.
 
 ### Legacy (x-calm-token header)
 
@@ -183,6 +211,7 @@ Each tool is ~10 lines. To add an "incidents" endpoint:
 
 ```bash
 CALM_BASE_URL=https://<client>.<region>.alm.cloud.sap
+CALM_AUTH_URL=https://<client>.authentication.<region>.hana.ondemand.com/oauth/token
 CALM_CLIENT_ID=<client-id-for-that-tenant>
 CALM_CLIENT_SECRET=<client-secret-for-that-tenant>
 ```
