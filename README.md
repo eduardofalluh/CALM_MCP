@@ -25,7 +25,7 @@ The `TokenManager` (in `src/calm/token_manager.py`) calls the token endpoint onc
 ### Token resolution (fallback order)
 
 1. **Client Credentials** (preferred) — set `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET`. Server fetches and manages tokens.
-2. **Header** — pass `x-calm-token` in request headers (legacy HTTP mode).
+2. **Header** — pass `Authorization: Bearer <token>` in request headers (legacy HTTP mode).
 3. **Env var** — set `CALM_TOKEN` (local dev / stdio).
 
 ---
@@ -117,10 +117,10 @@ No `.env` needed. Pass credentials as request headers on each call:
 
 | Header | Required | Description |
 |--------|----------|-------------|
-| `x-calm-token` | Yes | Bearer token for the CALM tenant |
+| `Authorization` | Yes | Bearer token for the CALM tenant, formatted as `Bearer <token>` |
 | `x-calm-base-url` | No | Override tenant URL for that request |
 
-Token resolution order: client credentials → `x-calm-token` header → `CALM_TOKEN` env var → error.
+Token resolution order: client credentials → `Authorization` header → `CALM_TOKEN` env var → error.
 
 ## 3. Run
 
@@ -200,11 +200,11 @@ Connection steps:
 3. Enter `https://<deployed-host>/mcp`.
 4. Leave the "Bearer token" field **empty**. The server derives the SAP URLs from `IDENTITY_ZONE` + `REGION_ZONE`, then uses `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET` to fetch SAP tokens.
 
-### Legacy (x-calm-token header)
+### Legacy (Authorization header)
 
 1. Deploy server to your network (HTTP mode)
 2. Studio → agent → **Actions and Tools** → **Add Tool** → **MCP Server** → `https://<host>/mcp`
-3. Set `x-calm-token` as a request header in Studio's MCP config
+3. Set `Authorization` as a request header in Studio's MCP config, with value `Bearer <token>`
 4. Paste a bearer token each time it expires
 
 ---
