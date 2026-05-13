@@ -21,12 +21,12 @@ def register(mcp: FastMCP) -> None:
         if get_managed_token():
             token_source = "client_credentials"
 
-        # x-calm-token header (HTTP legacy)
+        # Authorization header (HTTP legacy)
         if not token_source:
             try:
                 request = ctx.request_context.request
-                if request is not None and request.headers.get("x-calm-token"):
-                    token_source = "x-calm-token header"
+                if request is not None and request.headers.get("Authorization"):
+                    token_source = "Authorization header"
             except Exception:
                 pass
 

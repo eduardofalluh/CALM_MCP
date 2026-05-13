@@ -17,7 +17,8 @@ Token resolution order:
      (Base64 client_id:client_secret), caches the access token, and refreshes
      it automatically before it expires. No manual token management needed.
 
-  2. x-calm-token header (legacy HTTP) — pass the token per-request in the header.
+  2. Authorization header (legacy HTTP) — pass the token per-request as
+     Authorization: Bearer <token>.
 
   3. CALM_TOKEN env var (stdio / local dev) — static token for development.
 """
@@ -80,7 +81,7 @@ def main() -> None:
     if not using_managed_tokens:
         log.info(
             "CALM_CLIENT_ID/CALM_CLIENT_SECRET not set — "
-            "falling back to x-calm-token header or CALM_TOKEN env var."
+            "falling back to Authorization header or CALM_TOKEN env var."
         )
 
     if args.http:
