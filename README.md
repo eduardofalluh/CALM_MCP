@@ -24,9 +24,10 @@ The `TokenManager` (in `src/calm/token_manager.py`) calls the token endpoint onc
 
 ### Token resolution (fallback order)
 
-1. **Client Credentials** (preferred) — set `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET`. Server fetches and manages tokens.
-2. **Header** — pass `Authorization: Bearer <token>` in request headers (legacy HTTP mode).
-3. **Env var** — set `CALM_TOKEN` (local dev / stdio).
+1. **Request headers** (preferred for HTTP / multi-tenant) — client sends `x-calm-client-id` + `x-calm-client-secret` (+ optional zone headers). Server fetches and caches a token per tenant.
+2. **Server env vars** — set `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET` at startup. Single-tenant server-managed mode.
+3. **Authorization header** — pass `Authorization: Bearer <token>` per request (legacy HTTP).
+4. **Env var** — set `CALM_TOKEN` (local dev / stdio).
 
 ---
 
@@ -77,11 +78,23 @@ pip install -r requirements.txt
 
 ## 2. Configure credentials
 
-### Option A: Client Credentials (recommended for production)
+### Option A: Client-side headers (recommended for GenAI Studio / HTTP)
 
-For a deployed GenAI Studio MCP server, we need the SAP OAuth **client ID and client secret** plus the tenant identity zone and region zone from BTP. These are deployment settings for the MCP server, not values that a user pastes into the GenAI Studio chat or Bearer token field.
+No `.env` file needed on the server. The MCP client (e.g. GenAI Studio) injects the four headers with every request. The server derives both the auth URL and the API base URL from the zone headers, fetches an OAuth token, and caches it per tenant automatically.
 
-Register an OAuth client in the SAP BTP subaccount that has access to the Cloud ALM APIs, then set:
+| Header | Required | Example |
+|--------|----------|---------|
+| `x-calm-identity-zone` | Yes | `illumiti-corp-cloudalm` |
+| `x-calm-region-zone` | Yes | `eu10` |
+| `x-calm-client-id` | Yes | `sb-cloud-alm-api!b175722\|sapcloudalm!b16907` |
+| `x-calm-client-secret` | Yes | `<your-client-secret>` |
+| `x-calm-base-url` | No | Explicit API base URL override |
+
+A single server instance can serve multiple tenants — each request's headers are resolved independently and cached per `(client_id, auth_url)` pair.
+
+### Option B: Server env vars (single-tenant server-managed)
+
+Set credentials once at server startup. Useful when all users share the same CALM tenant.
 
 ```bash
 cp .env.example .env
@@ -94,16 +107,14 @@ CALM_CLIENT_SECRET=<your-oauth-client-secret>
 
 The server derives the URLs from those BTP values:
 
-```bash
-CALM_AUTH_URL=https://<identity-zone>.authentication.<region-zone>.hana.ondemand.com/oauth/token
-CALM_BASE_URL=https://<identity-zone>.<region-zone>.alm.cloud.sap
+```
+CALM_AUTH_URL → https://<identity-zone>.authentication.<region-zone>.hana.ondemand.com/oauth/token
+CALM_BASE_URL → https://<identity-zone>.<region-zone>.alm.cloud.sap
 ```
 
 You can still set `CALM_AUTH_URL` or `CALM_BASE_URL` directly if a deployment needs explicit URL overrides.
 
-The server automatically fetches a token on first use and refreshes it before expiry.
-
-### Option B: Bearer token env var (local dev / stdio)
+### Option C: Bearer token env var (local dev / stdio)
 
 ```bash
 cp .env.example .env
@@ -111,16 +122,14 @@ cp .env.example .env
 CALM_TOKEN=<your-bearer-token>
 ```
 
-### Option C: Bearer token header (HTTP legacy / per-request)
+### Option D: Bearer token header (HTTP legacy / per-request)
 
-No `.env` needed. Pass credentials as request headers on each call:
+Pass a pre-fetched token per request — no credential management by the server.
 
-| Header | Required | Description |
-|--------|----------|-------------|
-| `Authorization` | Yes | Bearer token for the CALM tenant, formatted as `Bearer <token>` |
-| `x-calm-base-url` | No | Override tenant URL for that request |
-
-Token resolution order: client credentials → `Authorization` header → `CALM_TOKEN` env var → error.
+| Header | Description |
+|--------|-------------|
+| `Authorization` | `Bearer <token>` |
+| `x-calm-base-url` | Optional tenant URL override |
 
 ## 3. Run
 
@@ -167,45 +176,51 @@ Edit `~/Library/Application Support/Claude/claude_desktop_config.json`:
 
 ## 7. Connect from Syntax GenAI Studio
 
-### With client credentials (recommended)
+### With client-side headers (recommended)
 
-Deploy the MCP server in HTTP mode and expose it over HTTPS so GenAI Studio can reach it.
+Deploy the MCP server with **no credential env vars** — credentials come entirely from GenAI Studio's header configuration. This is the recommended approach for multi-tenant or managed deployments.
 
-What the deployed MCP server needs as environment variables:
+**Server** only needs:
 
 | Variable | Required | Purpose |
 |----------|----------|---------|
-| `IDENTITY_ZONE` | Yes | BTP identity zone, for example `illumiti-corp-cloudalm` |
-| `REGION_ZONE` | Yes | BTP region zone, for example `eu10` |
-| `CALM_CLIENT_ID` | Yes | OAuth client ID from SAP BTP |
-| `CALM_CLIENT_SECRET` | Yes | OAuth client secret from SAP BTP |
-| `CALM_BASE_URL` | Optional | Explicit SAP Cloud ALM API base URL override |
-| `CALM_AUTH_URL` | Optional | Explicit SAP XSUAA token URL override |
-| `MCP_HOST` | Recommended | Use `0.0.0.0` in hosted/container deployments |
-| `MCP_PORT` | Recommended | Port exposed by the hosting platform, for example `8000` |
+| `MCP_HOST` | Recommended | `0.0.0.0` for hosted/container deployments |
+| `MCP_PORT` | Recommended | Port exposed by the platform, e.g. `8000` |
 | `LOG_LEVEL` | Optional | Defaults to `INFO` |
 
-What GenAI Studio needs:
+**GenAI Studio** MCP connection settings:
 
-| Studio setting | Value |
-|----------------|-------|
+| Setting | Value |
+|---------|-------|
 | MCP server URL | `https://<deployed-host>/mcp` |
-| Bearer token | Leave empty when using client credentials |
-| Custom headers | None required for the recommended deployment |
+| Bearer token | Leave empty |
+| Custom headers | See table below |
+
+Custom headers to configure in Studio:
+
+| Header | Value |
+|--------|-------|
+| `x-calm-identity-zone` | `illumiti-corp-cloudalm` |
+| `x-calm-region-zone` | `eu10` |
+| `x-calm-client-id` | `<your-oauth-client-id>` |
+| `x-calm-client-secret` | `<your-oauth-client-secret>` |
 
 Connection steps:
 
-1. Start the server with `python3 server.py --http --host 0.0.0.0 --port 8000`, or set `MCP_HOST=0.0.0.0` and `MCP_PORT=8000`.
-2. In Studio, go to agent → **Actions and Tools** → **Add Tool** → **MCP Server**.
-3. Enter `https://<deployed-host>/mcp`.
-4. Leave the "Bearer token" field **empty**. The server derives the SAP URLs from `IDENTITY_ZONE` + `REGION_ZONE`, then uses `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET` to fetch SAP tokens.
+1. Start the server: `python3 server.py --http --host 0.0.0.0 --port 8000`
+2. In Studio → agent → **Actions and Tools** → **Add Tool** → **MCP Server**
+3. Enter `https://<deployed-host>/mcp`
+4. Add the four headers above in Studio's custom headers field
+5. Leave the "Bearer token" field empty — the server fetches SAP tokens using the header credentials
+
+### With server env vars (single-tenant alternative)
+
+Set `IDENTITY_ZONE`, `REGION_ZONE`, `CALM_CLIENT_ID`, `CALM_CLIENT_SECRET` on the server (see Option B above). Studio connects to `https://<host>/mcp` with no custom headers.
 
 ### Legacy (Authorization header)
 
-1. Deploy server to your network (HTTP mode)
-2. Studio → agent → **Actions and Tools** → **Add Tool** → **MCP Server** → `https://<host>/mcp`
-3. Set `Authorization` as a request header in Studio's MCP config, with value `Bearer <token>`
-4. Paste a bearer token each time it expires
+Studio → agent → **Actions and Tools** → **Add Tool** → **MCP Server** → `https://<host>/mcp`  
+Set `Authorization: Bearer <token>` as a custom header. Requires manual token refresh on expiry.
 
 ---
 
@@ -220,26 +235,16 @@ Each tool is ~10 lines. To add an "incidents" endpoint:
 
 ## Switching client tenants
 
-```bash
-IDENTITY_ZONE=<client-identity-zone>
-REGION_ZONE=<client-region-zone>
-CALM_CLIENT_ID=<client-id-for-that-tenant>
-CALM_CLIENT_SECRET=<client-secret-for-that-tenant>
-```
+**Header mode (recommended):** update the four `x-calm-*` headers in GenAI Studio. No server restart needed — each request is resolved independently and cached per tenant.
 
-No code changes required.
+**Env var mode:** update `IDENTITY_ZONE`, `REGION_ZONE`, `CALM_CLIENT_ID`, `CALM_CLIENT_SECRET` and restart the server. No code changes required.
 
 ---
 
 ## How TokenManager works
 
-When you set `CALM_CLIENT_ID` + `CALM_CLIENT_SECRET`:
+On first use, `TokenManager` POSTs to the SAP XSUAA token endpoint with Basic Auth (`Base64(client_id:client_secret)`). SAP returns `{ "access_token": "...", "expires_in": 3600 }`. The token is cached in memory and silently refreshed 60 seconds before expiry — no manual token management needed.
 
-1. On first tool call, `TokenManager` POSTs to the SAP XSUAA token endpoint with Basic Auth
-2. SAP returns `{ "access_token": "...", "expires_in": 3600 }`
-3. Token is cached in memory
-4. On subsequent calls within the TTL, the cached token is reused
-5. When the token expires, `TokenManager` automatically fetches a fresh one
-6. No token field in Studio UI needed — it all happens transparently
+**Per-tenant cache:** when credentials arrive via request headers, the server maintains a separate `TokenManager` per `(client_id, auth_url)` pair. A single server process can therefore serve multiple CALM tenants simultaneously without credential bleed between requests.
 
 This is OAuth2 Client Credentials flow — the standard for server-to-server authentication.
