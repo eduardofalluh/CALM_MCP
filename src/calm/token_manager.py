@@ -12,6 +12,13 @@ Flow
 Two separate URLs are involved:
   Auth  → https://<tenant>.authentication.<region>.hana.ondemand.com/oauth/token
   API   → https://<tenant>.<region>.alm.cloud.sap/api/...
+
+Per-tenant cache
+----------------
+get_or_create_token_manager(client_id, client_secret, auth_url) returns a cached
+TokenManager keyed by (client_id, auth_url), creating one on first use.  This
+lets a single server process serve multiple tenants when credentials arrive via
+request headers rather than server env vars.
 """
 
 from __future__ import annotations
@@ -63,7 +70,7 @@ class TokenManager:
 
 
 # ---------------------------------------------------------------------------
-# Module-level singleton — initialised once at server startup
+# Module-level singleton — initialised once at server startup (env-var mode)
 # ---------------------------------------------------------------------------
 
 _manager: TokenManager | None = None
@@ -76,3 +83,22 @@ def init_token_manager(client_id: str, client_secret: str, auth_url: str | None 
 
 def get_managed_token() -> str | None:
     return _manager.get_token() if _manager else None
+
+
+# ---------------------------------------------------------------------------
+# Per-tenant cache — used when credentials arrive via request headers
+# ---------------------------------------------------------------------------
+
+_tenant_managers: dict[tuple[str, str], TokenManager] = {}
+_tenant_lock = threading.Lock()
+
+
+def get_or_create_token_manager(client_id: str, client_secret: str, auth_url: str) -> TokenManager:
+    """Return a cached TokenManager for (client_id, auth_url), creating one if needed."""
+    key = (client_id, auth_url)
+    with _tenant_lock:
+        if key not in _tenant_managers:
+            _tenant_managers[key] = TokenManager(
+                client_id=client_id, client_secret=client_secret, auth_url=auth_url
+            )
+        return _tenant_managers[key]

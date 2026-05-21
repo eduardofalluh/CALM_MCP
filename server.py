@@ -85,10 +85,8 @@ def main() -> None:
         )
 
     if args.http:
-        mcp.settings.host = args.host
-        mcp.settings.port = args.port
         log.info("Starting CALM MCP on http://%s:%s", args.host, args.port)
-        mcp.run(transport="streamable-http")
+        mcp.run(transport="streamable-http", host=args.host, port=args.port)
     else:
         log.info("Starting CALM MCP on stdio")
         mcp.run()
