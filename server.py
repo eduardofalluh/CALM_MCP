@@ -29,9 +29,12 @@ import argparse
 import logging
 import os
 import sys
+from typing import Any
 
 from dotenv import load_dotenv
 from fastmcp import FastMCP
+from starlette.middleware import Middleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.calm.tools import health, processes, projects, scopes, test_cases
 
@@ -61,6 +64,26 @@ def _maybe_init_token_manager() -> bool:
     return True
 
 
+class _TrustProxyMiddleware:
+    """Rewrites the Host header to 'localhost' before the MCP transport security check.
+
+    In k8s/reverse-proxy deployments the Host header is the internal service name
+    (e.g. mcp-calm.genai-mcp), which some versions of the MCP SDK reject with 421.
+    The cluster ingress already handles external exposure so disabling the check here
+    is safe.  Set MCP_TRUST_PROXY=false to opt out.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http":
+            headers = [(k, v) for k, v in scope.get("headers", []) if k.lower() != b"host"]
+            headers.append((b"host", b"localhost"))
+            scope = {**scope, "headers": headers}
+        await self.app(scope, receive, send)
+
+
 mcp = FastMCP("sap-cloud-alm")
 
 projects.register(mcp)
@@ -86,7 +109,11 @@ def main() -> None:
 
     if args.http:
         log.info("Starting CALM MCP on http://%s:%s", args.host, args.port)
-        mcp.run(transport="streamable-http", host=args.host, port=args.port)
+        trust_proxy = os.getenv("MCP_TRUST_PROXY", "true").lower() not in ("false", "0", "no")
+        middleware: list[Any] = [Middleware(_TrustProxyMiddleware)] if trust_proxy else []
+        if trust_proxy:
+            log.info("MCP_TRUST_PROXY enabled — Host header normalised for proxy deployments")
+        mcp.run(transport="streamable-http", host=args.host, port=args.port, middleware=middleware)
     else:
         log.info("Starting CALM MCP on stdio")
         mcp.run()
