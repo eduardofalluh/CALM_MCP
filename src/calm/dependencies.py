@@ -8,8 +8,11 @@ Resolution order:
   3. Authorization: Bearer <token> request header — HTTP legacy / per-request.
   4. CALM_TOKEN env var — stdio / local dev, static token.
 
+Auth URL resolution order:
+  x-calm-auth-url header (full URL) > zone headers (x-calm-identity-zone + x-calm-region-zone) > env vars.
+
 Base URL resolution order:
-  x-calm-base-url header > zone headers (x-calm-identity-zone + x-calm-region-zone) > env vars.
+  x-calm-base-url header > zone headers > env vars.
 """
 
 from __future__ import annotations
@@ -44,19 +47,23 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
     client_id_hdr: str | None = None
     client_secret_hdr: str | None = None
     auth_bearer_token: str | None = None
+    auth_url_hdr: str | None = None
 
     # Read all CALM-related request headers in one pass
     try:
         request = ctx.request_context.request
         if request is not None:
             h = request.headers
-            identity_zone = h.get("x-calm-identity-zone")
-            region_zone = h.get("x-calm-region-zone")
+            identity_zone = h.get("x-calm-identity-zone") or None
+            region_zone = h.get("x-calm-region-zone") or None
             client_id_hdr = h.get("x-calm-client-id")
             client_secret_hdr = h.get("x-calm-client-secret")
             auth_bearer_token = _token_from_authorization(h.get("Authorization"))
+            raw_auth = h.get("x-calm-auth-url")
+            if raw_auth and raw_auth.strip().startswith("https://"):
+                auth_url_hdr = raw_auth.strip()
             raw_base = h.get("x-calm-base-url")
-            if raw_base:
+            if raw_base and raw_base.strip().startswith("https://"):
                 base_url = raw_base.strip()
     except Exception:
         pass
@@ -70,11 +77,12 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
 
     # --- 1. Client credentials from request headers (per-tenant OAuth) ---
     if client_id_hdr and client_secret_hdr:
-        auth_url = (
-            build_auth_url(identity_zone, region_zone)
-            if (identity_zone or region_zone)
-            else get_auth_url()
-        )
+        if auth_url_hdr:
+            auth_url = auth_url_hdr
+        elif identity_zone or region_zone:
+            auth_url = build_auth_url(identity_zone, region_zone)
+        else:
+            auth_url = get_auth_url()
         mgr = get_or_create_token_manager(client_id_hdr, client_secret_hdr, auth_url)
         token = mgr.get_token()
         token_source = "client_credentials (header)"

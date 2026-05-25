@@ -12,38 +12,51 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def calm_health(ctx: Context) -> dict:
-        """Diagnostic tool. Confirms the MCP server is up and reports whether a
-        token is currently resolvable. Does NOT make a live CALM API call.
+        """Diagnostic tool. Confirms the MCP server is up and reports token status,
+        resolved URLs, and the raw zone header values received. Use this to verify
+        that GenAI Studio is injecting the correct header values.
+        Does NOT make a live CALM API call.
         """
         token_source = None
         identity_zone = None
         region_zone = None
         client_id_hdr = None
         client_secret_hdr = None
+        auth_url_hdr = None
         base_url = None
 
         try:
             request = ctx.request_context.request
             if request is not None:
                 h = request.headers
-                identity_zone = h.get("x-calm-identity-zone")
-                region_zone = h.get("x-calm-region-zone")
+                identity_zone = h.get("x-calm-identity-zone") or None
+                region_zone = h.get("x-calm-region-zone") or None
                 client_id_hdr = h.get("x-calm-client-id")
                 client_secret_hdr = h.get("x-calm-client-secret")
+                raw_auth = h.get("x-calm-auth-url")
+                if raw_auth and raw_auth.strip().startswith("https://"):
+                    auth_url_hdr = raw_auth.strip()
                 raw_base = h.get("x-calm-base-url")
-                if raw_base:
+                if raw_base and raw_base.strip().startswith("https://"):
                     base_url = raw_base.strip()
         except Exception:
             pass
 
-        # Resolve base URL using same logic as dependencies.py
+        # Resolve URLs using same logic as dependencies.py
         if not base_url:
             if identity_zone or region_zone:
                 base_url = build_base_url(identity_zone, region_zone)
             else:
                 base_url = get_base_url()
 
-        # Mirror resolution order from dependencies.py
+        if auth_url_hdr:
+            auth_url = auth_url_hdr
+        elif identity_zone or region_zone:
+            auth_url = build_auth_url(identity_zone, region_zone)
+        else:
+            auth_url = get_auth_url()
+
+        # Mirror token resolution order from dependencies.py
         if client_id_hdr and client_secret_hdr:
             token_source = "client_credentials (header)"
         elif get_managed_token():
@@ -61,10 +74,19 @@ def register(mcp: FastMCP) -> None:
 
         return {
             "server": "sap-cloud-alm",
-            "base_url": base_url,
             "token_configured": token_source is not None,
             "token_source": token_source,
             "client_credentials_enabled": bool(
                 (client_id_hdr and client_secret_hdr) or os.getenv("CALM_CLIENT_ID")
             ),
+            "auth_url": auth_url,
+            "base_url": base_url,
+            "headers_received": {
+                "x-calm-identity-zone": identity_zone or "(not set)",
+                "x-calm-region-zone": region_zone or "(not set)",
+                "x-calm-client-id": ("set" if client_id_hdr else "(not set)"),
+                "x-calm-client-secret": ("set" if client_secret_hdr else "(not set)"),
+                "x-calm-auth-url": auth_url_hdr or "(not set)",
+                "x-calm-base-url": base_url if base_url != build_base_url(identity_zone, region_zone) else "(not set)",
+            },
         }
