@@ -19,3 +19,6 @@ venv/
 
 # Test artifacts
 .test_shim/
+
+# Claude Code
+.claude/
