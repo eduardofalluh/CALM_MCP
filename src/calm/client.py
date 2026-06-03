@@ -46,6 +46,13 @@ TASK_TYPE_MAP = {
     "CALMCHKLI": "Checklist Item",
 }
 
+TASK_APPROVAL_STATE_MAP = {
+    "APPROVED": "Approved",
+    "REJECTED": "Rejected",
+    "READY_4_APPR": "Ready for Approval",
+    "NO_APPR_REQ": "No Approval Required",
+}
+
 PROJECT_STATUS_MAP = {"O": "Active", "C": "Hidden"}
 
 TESTCASE_PRIORITY_MAP = {
@@ -85,6 +92,11 @@ def get_tasks(project_id: str, token: str, base_url: str | None = None) -> list[
             "Title": item.get("title"),
             "Type": TASK_TYPE_MAP.get(item.get("type"), item.get("type")),
             "Status": TASK_STATUS_MAP.get(item.get("status"), item.get("status")),
+            "StartDate": item.get("startDate"),
+            "DueDate": item.get("dueDate"),
+            "AssigneeName": item.get("assigneeName"),
+            "ApprovalState": TASK_APPROVAL_STATE_MAP.get(item.get("approvalState"), item.get("approvalState")),
+            "Obsolete": item.get("obsolete"),
         }
         for item in result
     ]
@@ -99,6 +111,7 @@ def get_projects(token: str, base_url: str | None = None) -> list[dict]:
             "Name": item.get("name"),
             "Status": PROJECT_STATUS_MAP.get(item.get("status"), item.get("status")),
             "Purpose": item.get("purpose"),
+            "OperationalStatus": item.get("operationalStatus"),
         }
         for item in result
     ]

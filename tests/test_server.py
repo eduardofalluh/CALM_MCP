@@ -25,8 +25,8 @@ HERE = Path(__file__).parent
 ROOT = HERE.parent
 
 FAKE_PROJECTS_PAYLOAD = json.dumps([
-    {"id": "P001", "name": "Test Project A", "status": "O", "purpose": "Build"},
-    {"id": "P002", "name": "Test Project B", "status": "C", "purpose": "Run"},
+    {"id": "P001", "name": "Test Project A", "status": "O", "purpose": "Build", "operationalStatus": "In Progress"},
+    {"id": "P002", "name": "Test Project B", "status": "C", "purpose": "Run", "operationalStatus": "Completed"},
 ])
 
 
@@ -150,7 +150,7 @@ async def main() -> int:
             )
             check(
                 "field names match contract",
-                set(projects[0].keys()) == {"ID", "Name", "Status", "Purpose"},
+                set(projects[0].keys()) == {"ID", "Name", "Status", "Purpose", "OperationalStatus"},
                 f"got {sorted(projects[0].keys())}",
             )
 

@@ -12,8 +12,9 @@ def register(mcp: FastMCP) -> None:
     def get_calm_projects(ctx: Context) -> list[dict]:
         """List all Cloud ALM projects visible to the configured tenant.
 
-        Returns a list of {ID, Name, Status, Purpose}. Status is human-readable
-        ("Active" / "Hidden").
+        Returns projects with fields: ID, Name, Status, Purpose, OperationalStatus.
+        - Status: "Active" or "Hidden" (project visibility)
+        - OperationalStatus: Current operational state of the project
         """
         h = get_calm_headers(ctx)
         return client.get_projects(h.token, h.base_url)
@@ -25,9 +26,13 @@ def register(mcp: FastMCP) -> None:
         Args:
             project_id: The CALM project ID (use `get_calm_projects` to discover).
 
-        Each task has: ID, Title, Type (Roadmap Task / Project Task / User Story /
-        Sub-task / Requirement / Defect / Quality Gate / Checklist Item) and
-        Status (Open / In Progress / Blocked / Done / Not Relevant).
+        Returns tasks with fields: ID, Title, Type, Status, StartDate, DueDate,
+        AssigneeName, ApprovalState, Obsolete.
+        - Type: Roadmap Task, Project Task, User Story, Sub-task, Requirement,
+          Defect, Quality Gate, or Checklist Item
+        - Status: Open, In Progress, Blocked, Done, or Not Relevant
+        - ApprovalState: Approved, Rejected, Ready for Approval, or No Approval Required
+        - Obsolete: Boolean indicating if task is archived
         """
         if not project_id:
             raise ValueError("project_id is required")
