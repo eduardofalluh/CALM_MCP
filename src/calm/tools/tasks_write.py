@@ -252,3 +252,93 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("comment_id is required")
         h = get_calm_headers(ctx)
         return client.delete_task_comment(token=h.token, comment_id=comment_id, base_url=h.base_url)
+
+    # --- Requirements (tasks of type "Requirement") -------------------------
+
+    @mcp.tool()
+    def create_calm_requirement(
+        project_id: str,
+        title: str,
+        ctx: Context,
+        status: str | None = None,
+        description: str | None = None,
+        assignee_id: str | None = None,
+        start_date: str | None = None,
+        due_date: str | None = None,
+        priority_id: int | None = None,
+        sub_status: str | None = None,
+        extra_fields: dict | None = None,
+    ) -> dict:
+        """Create a requirement (a task of type "Requirement"). Requires CALM_ENABLE_WRITES=true.
+
+        Args:
+            project_id: Target CALM project ID.
+            title: Requirement title.
+            status: Optional human label ("Open", "In Progress", "Blocked", "Done",
+                "Not Relevant") — resolved to the requirement (CIPREQU*) codes.
+            description / assignee_id (email) / start_date / due_date (YYYY-MM-DD) /
+            priority_id (10/20/30/40): optional, as for tasks.
+            sub_status: Optional requirement sub-status code — one of CREATED,
+                TO_BE_APPROVED, IN_PLANNING, IN_REALIZATION, APPROVED_FOR_DEPLOYMENT,
+                SUCCESSFULLY_TESTED, CONFIRMED, BLOCKED, NOT_PLANNED.
+            extra_fields: Any other raw task fields.
+        """
+        ensure_writes_enabled()
+        if not project_id:
+            raise ValueError("project_id is required")
+        if not title:
+            raise ValueError("title is required")
+        extra = dict(extra_fields or {})
+        if sub_status is not None:
+            extra["subStatus"] = sub_status
+        h = get_calm_headers(ctx)
+        return client.create_task(
+            token=h.token, project_id=project_id, title=title, task_type="Requirement",
+            status=status, start_date=start_date, due_date=due_date, assignee_id=assignee_id,
+            description=description, priority_id=priority_id, extra_fields=extra or None,
+            base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def update_calm_requirement(
+        task_id: str,
+        ctx: Context,
+        title: str | None = None,
+        status: str | None = None,
+        description: str | None = None,
+        assignee_id: str | None = None,
+        start_date: str | None = None,
+        due_date: str | None = None,
+        priority_id: int | None = None,
+        sub_status: str | None = None,
+        obsolete: bool | None = None,
+        extra_fields: dict | None = None,
+    ) -> dict:
+        """Update a requirement by task ID (partial). Requires CALM_ENABLE_WRITES=true.
+
+        The type is pinned to "Requirement" so a human `status` label resolves to the
+        correct requirement (CIPREQU*) code. `sub_status` sets the requirement
+        sub-status code (see create_calm_requirement for values).
+        """
+        ensure_writes_enabled()
+        if not task_id:
+            raise ValueError("task_id is required")
+        extra = dict(extra_fields or {})
+        if sub_status is not None:
+            extra["subStatus"] = sub_status
+        h = get_calm_headers(ctx)
+        return client.update_task(
+            token=h.token, task_id=task_id, task_type="Requirement", title=title, status=status,
+            start_date=start_date, due_date=due_date, assignee_id=assignee_id,
+            description=description, priority_id=priority_id, obsolete=obsolete,
+            extra_fields=extra or None, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def delete_calm_requirement(task_id: str, ctx: Context) -> dict:
+        """Delete a requirement by its task ID. Requires CALM_ENABLE_WRITES=true."""
+        ensure_writes_enabled()
+        if not task_id:
+            raise ValueError("task_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_task(token=h.token, task_id=task_id, base_url=h.base_url)

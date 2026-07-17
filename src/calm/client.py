@@ -279,23 +279,24 @@ def _base_url(base_url: str | None = None) -> str:
 # CALM read functions
 # ---------------------------------------------------------------------------
 
-def get_tasks(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
+def get_tasks(
+    project_id: str, token: str, base_url: str | None = None, task_type: str | None = None
+) -> list[dict]:
+    """Return tasks for a project. `task_type` (human label or raw code) filters to
+    one type — e.g. "Requirement" (CALMREQU) for requirements. The type is sent as a
+    query param and also filtered client-side so the result is correct even if the
+    API ignores the param.
+    """
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks?projectId={project_id}"
+    type_code: str | None = None
+    if task_type:
+        type_code = resolve_task_type_code(task_type)
+        url += f"&type={type_code}"
     result = _get(url, token)
-    return [
-        {
-            "ID": item.get("id"),
-            "Title": item.get("title"),
-            "Type": TASK_TYPE_MAP.get(item.get("type"), item.get("type")),
-            "Status": TASK_STATUS_MAP.get(item.get("status"), item.get("status")),
-            "StartDate": item.get("startDate"),
-            "DueDate": item.get("dueDate"),
-            "AssigneeName": item.get("assigneeName"),
-            "ApprovalState": TASK_APPROVAL_STATE_MAP.get(item.get("approvalState"), item.get("approvalState")),
-            "Obsolete": item.get("obsolete"),
-        }
-        for item in result
-    ]
+    items = result if isinstance(result, list) else result.get("value", [])
+    if type_code:
+        items = [it for it in items if it.get("type") == type_code]
+    return [_format_task(item) for item in items]
 
 
 def get_projects(token: str, base_url: str | None = None) -> list[dict]:

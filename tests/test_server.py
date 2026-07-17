@@ -56,6 +56,12 @@ def _write_shim() -> Path:
         "    if '/tasks/' in url:\n"
         "        # Single-task GET used to auto-detect type for status-by-label updates.\n"
         "        return _FakeResp(json.dumps({'id': 'T1', 'type': 'CALMTASK', 'title': 'old'}))\n"
+        "    if 'calm-tasks/v1/tasks' in url:\n"
+        "        # Task LIST: mix of types so the type filter can be exercised.\n"
+        "        return _FakeResp(json.dumps([\n"
+        "            {'id': 'R1', 'title': 'Req A', 'type': 'CALMREQU', 'status': 'CIPREQUOPEN'},\n"
+        "            {'id': 'K1', 'title': 'Task B', 'type': 'CALMTASK', 'status': 'CIPTKOPEN'},\n"
+        "        ]))\n"
         "    return _FakeResp(_PAYLOAD)\n"
         "def _fake_request(method, url, *a, **kw):\n"
         "    # Echo the submitted body back with a generated id, mimicking a create/update.\n"
@@ -146,6 +152,8 @@ async def main() -> int:
                 "assign_calm_scenario_versions", "update_calm_scope_assignments",
                 "update_calm_test_activity", "delete_calm_test_activity",
                 "create_calm_test_action", "update_calm_test_action", "delete_calm_test_action",
+                "create_calm_requirement", "update_calm_requirement", "delete_calm_requirement",
+                "get_calm_requirements",
                 "calm_api_write", "calm_api_delete",
             }
             check(
@@ -519,6 +527,42 @@ async def main() -> int:
                 "create_calm_test_case", {"title": "no scope", "project_id": "P001"},
             )
             check("missing scope_id errors", res.isError is True)
+
+            # ---- requirements (tasks of type Requirement) ----------------
+            print("\nTest 35: get_calm_requirements filters to type Requirement")
+            res = await session.call_tool("get_calm_requirements", {"project_id": "P001"})
+            reqs = (res.structuredContent or {}).get("result")
+            check("requirements returned a list", isinstance(reqs, list), f"got {reqs}")
+            check("only requirements returned", len(reqs) == 1 and reqs[0]["Type"] == "Requirement", f"got {reqs}")
+
+            print("\nTest 36: get_calm_tasks task_type filter (Project Task only)")
+            res = await session.call_tool("get_calm_tasks", {"project_id": "P001", "task_type": "Project Task"})
+            only = (res.structuredContent or {}).get("result")
+            check("filtered to Project Task", len(only) == 1 and only[0]["Type"] == "Project Task", f"got {only}")
+
+            print("\nTest 37: create_calm_requirement round-trips (status -> CIPREQU*)")
+            res = await session.call_tool(
+                "create_calm_requirement",
+                {"project_id": "P001", "title": "Need SSO", "status": "In Progress"},
+            )
+            rq = res.structuredContent or json.loads(res.content[0].text)
+            check("requirement create did not error", res.isError is not True, f"got {rq}")
+            check("requirement type is Requirement", rq.get("Type") == "Requirement", f"got {rq}")
+            check("requirement status round-trips", rq.get("Status") == "In Progress", f"got {rq.get('Status')}")
+
+            print("\nTest 38: update_calm_requirement with sub_status")
+            res = await session.call_tool(
+                "update_calm_requirement",
+                {"task_id": "R1", "status": "Done", "sub_status": "IN_PLANNING"},
+            )
+            ru = res.structuredContent or json.loads(res.content[0].text)
+            check("requirement update did not error", res.isError is not True, f"got {ru}")
+            check("requirement update status round-trips", ru.get("Status") == "Done", f"got {ru.get('Status')}")
+
+            print("\nTest 39: delete_calm_requirement")
+            res = await session.call_tool("delete_calm_requirement", {"task_id": "R1"})
+            rd = res.structuredContent or json.loads(res.content[0].text)
+            check("requirement delete confirms id", rd.get("deleted") == "R1", f"got {rd}")
 
     print("\n" + "=" * 60)
     if failures:

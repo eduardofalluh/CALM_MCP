@@ -69,6 +69,8 @@ CALM_MCP/
 | `get_calm_solution_processes` | List solution processes | — |
 | `get_calm_scopes` | List process-management scopes | — |
 | `get_calm_test_cases` | List manual test cases | — |
+| `get_calm_tasks` (filter) | Tasks of one type | `project_id`, `task_type` |
+| `get_calm_requirements` | Requirements of a project (type=Requirement) | `project_id` |
 | `calm_health` | Diagnostic — server up, token configured? | — |
 
 ### Write tools (guarded)
@@ -96,6 +98,16 @@ nothing can accidentally change the tenant.
 | `delete_calm_solution_process` | Delete a solution process | `solution_process_id` (+ optional `if_match`) |
 | `delete_calm_scope` | Delete a scope | `scope_id` (+ optional `if_match`) |
 | `delete_calm_test_case` | Delete a test case (`force` incl. runs/results) | `test_case_id` (+ optional `force`, `if_match`) |
+| `create_calm_requirement` | Create a requirement (task type=Requirement) | `project_id`, `title` (+ optional `status`, `sub_status`, `description`, `assignee_id`, dates, `priority_id`) |
+| `update_calm_requirement` | Update a requirement by task ID | `task_id` (+ any of `title`, `status`, `sub_status`, …) |
+| `delete_calm_requirement` | Delete a requirement by task ID | `task_id` |
+
+> **Requirements** are Cloud ALM tasks with `type = Requirement` (served by the
+> Tasks API), so they use the already-verified task write path — no new auth/ETag
+> handling. `sub_status` accepts the requirement codes (CREATED, TO_BE_APPROVED,
+> IN_PLANNING, IN_REALIZATION, APPROVED_FOR_DEPLOYMENT, SUCCESSFULLY_TESTED,
+> CONFIRMED, BLOCKED, NOT_PLANNED). You can equally use `get_calm_tasks(task_type="Requirement")`
+> and `create_calm_task(task_type="Requirement")`.
 
 `task_type`/`status` (tasks), `status` (projects: Active/Hidden), and `priority`
 (test cases: Very High/High/Medium/Low) accept human labels or raw CALM codes.
