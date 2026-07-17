@@ -5,6 +5,7 @@ import os
 from fastmcp import Context, FastMCP
 
 from src.calm.config import build_auth_url, build_base_url, get_auth_url, get_base_url
+from src.calm.dependencies import writes_enabled
 from src.calm.token_manager import get_managed_token
 
 
@@ -79,6 +80,7 @@ def register(mcp: FastMCP) -> None:
             "client_credentials_enabled": bool(
                 (client_id_hdr and client_secret_hdr) or os.getenv("CALM_CLIENT_ID")
             ),
+            "writes_enabled": writes_enabled(),
             "auth_url": auth_url,
             "base_url": base_url,
             "headers_received": {

@@ -62,6 +62,68 @@ TESTCASE_PRIORITY_MAP = {
     "40": "Low",
 }
 
+# ---------------------------------------------------------------------------
+# Reverse mappings for writes (human label -> CALM code)
+#
+# The CALM status code depends on the task *type* (CIPTK* for project tasks,
+# CIPUS* for user stories, etc.), so status resolution is type-aware. Callers
+# may also pass a raw CALM code directly, in which case it is used unchanged.
+# ---------------------------------------------------------------------------
+
+TASK_TYPE_REVERSE_MAP = {label.lower(): code for code, label in TASK_TYPE_MAP.items()}
+
+# Human status label -> CALM code, grouped by task type code.
+STATUS_CODE_BY_TYPE = {
+    "CALMTASK": {"open": "CIPTKOPEN", "in progress": "CIPTKINP", "blocked": "CIPTKBLK",
+                 "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
+    "CALMTMPL": {"open": "CIPTKOPEN", "in progress": "CIPTKINP", "blocked": "CIPTKBLK",
+                 "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
+    "CALMUS": {"open": "CIPUSOPEN", "in progress": "CIPUSINP", "blocked": "CIPUSBLK",
+               "done": "CIPUSCLOSE", "not relevant": "CIPUSNO"},
+    "CALMST": {"open": "CIPUSOPEN", "in progress": "CIPUSINP", "blocked": "CIPUSBLK",
+               "done": "CIPUSCLOSE", "not relevant": "CIPUSNO"},
+    "CALMREQU": {"open": "CIPREQUOPEN", "in progress": "CIPREQUINP", "blocked": "CIPREQUBLK",
+                 "done": "CIPREQUCLOSE", "not relevant": "CIPREQUNO"},
+    "CALMDEF": {"open": "CIPDFCTOPEN", "in progress": "CIPDFCTINP", "blocked": "CIPDFCTBLK",
+                "done": "CIPDFCTDONE"},
+    "CALMQGATE": {"open": "CIPQGOPEN", "blocked": "CIPQGBLK", "not relevant": "CIPQGNR",
+                  "done": "CIPQGDONE"},
+}
+
+# All known status codes, so a raw code passed by the caller is recognised.
+_KNOWN_STATUS_CODES = set(TASK_STATUS_MAP)
+
+
+def resolve_task_type_code(value: str) -> str:
+    """Accept a human label ("User Story") or a raw code ("CALMUS") and return the code."""
+    if value in TASK_TYPE_MAP:  # already a raw code
+        return value
+    code = TASK_TYPE_REVERSE_MAP.get(value.strip().lower())
+    if not code:
+        raise ValueError(
+            f"Unknown task type '{value}'. Use one of: "
+            f"{', '.join(sorted(TASK_TYPE_MAP.values()))} (or a raw CALM code)."
+        )
+    return code
+
+
+def resolve_status_code(value: str, type_code: str) -> str:
+    """Resolve a human status label to the type-specific CALM code.
+
+    A raw CALM status code is accepted and returned unchanged.
+    """
+    if value in _KNOWN_STATUS_CODES:  # already a raw code
+        return value
+    by_type = STATUS_CODE_BY_TYPE.get(type_code, {})
+    code = by_type.get(value.strip().lower())
+    if not code:
+        allowed = ", ".join(sorted(by_type)) or "(none for this type)"
+        raise ValueError(
+            f"Unknown status '{value}' for task type '{type_code}'. "
+            f"Allowed labels: {allowed} (or a raw CALM code)."
+        )
+    return code
+
 
 # ---------------------------------------------------------------------------
 # Internal helper
@@ -72,6 +134,25 @@ def _get(url: str, token: str) -> Any:
     payload = json.dumps({"session_id": str(uuid.uuid4())})
     resp = requests.get(url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT)
     resp.raise_for_status()
+    return resp.json()
+
+
+def _write(method: str, url: str, token: str, body: dict) -> Any:
+    """Send a JSON write request (POST/PATCH) and return the parsed response.
+
+    Returns the parsed JSON body, or {} when the API responds with no content
+    (e.g. 204 on a PATCH).
+    """
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    resp = requests.request(
+        method, url, headers=headers, data=json.dumps(body), timeout=REQUEST_TIMEOUT
+    )
+    resp.raise_for_status()
+    if resp.status_code == 204 or not (resp.text or "").strip():
+        return {}
     return resp.json()
 
 
@@ -175,3 +256,114 @@ def get_test_cases(token: str, base_url: str | None = None) -> list[dict]:
             "Priority": TESTCASE_PRIORITY_MAP.get(priority_code, priority_code),
         })
     return parsed
+
+
+# ---------------------------------------------------------------------------
+# CALM write functions
+#
+# Payloads use the same camelCase field names the read functions parse back,
+# so create/read stay consistent. Field contracts should be confirmed against
+# the target tenant; raw CALM codes are accepted for `type`/`status` so callers
+# can bypass label mapping if a tenant differs.
+# ---------------------------------------------------------------------------
+
+def _format_task(item: dict) -> dict:
+    """Format a single raw task the same way get_tasks() formats a list item."""
+    return {
+        "ID": item.get("id"),
+        "Title": item.get("title"),
+        "Type": TASK_TYPE_MAP.get(item.get("type"), item.get("type")),
+        "Status": TASK_STATUS_MAP.get(item.get("status"), item.get("status")),
+        "StartDate": item.get("startDate"),
+        "DueDate": item.get("dueDate"),
+        "AssigneeName": item.get("assigneeName"),
+        "ApprovalState": TASK_APPROVAL_STATE_MAP.get(item.get("approvalState"), item.get("approvalState")),
+        "Obsolete": item.get("obsolete"),
+    }
+
+
+def create_task(
+    token: str,
+    project_id: str,
+    title: str,
+    task_type: str,
+    status: str | None = None,
+    start_date: str | None = None,
+    due_date: str | None = None,
+    assignee_id: str | None = None,
+    description: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Create a task in a Cloud ALM project. Returns the created task, formatted."""
+    type_code = resolve_task_type_code(task_type)
+    body: dict[str, Any] = {
+        "projectId": project_id,
+        "title": title,
+        "type": type_code,
+    }
+    if status is not None:
+        body["status"] = resolve_status_code(status, type_code)
+    if start_date is not None:
+        body["startDate"] = start_date
+    if due_date is not None:
+        body["dueDate"] = due_date
+    if assignee_id is not None:
+        body["assigneeId"] = assignee_id
+    if description is not None:
+        body["description"] = description
+
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks"
+    result = _write("POST", url, token, body)
+    return _format_task(result) if isinstance(result, dict) and result else {"submitted": body}
+
+
+def update_task(
+    token: str,
+    task_id: str,
+    title: str | None = None,
+    task_type: str | None = None,
+    status: str | None = None,
+    start_date: str | None = None,
+    due_date: str | None = None,
+    assignee_id: str | None = None,
+    description: str | None = None,
+    obsolete: bool | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Update fields of an existing task (partial PATCH). Only provided fields are sent.
+
+    `status` needs the task type to resolve a human label to a code; pass
+    `task_type` alongside a human status, or pass a raw CALM status code.
+    """
+    body: dict[str, Any] = {}
+    if title is not None:
+        body["title"] = title
+    if task_type is not None:
+        body["type"] = resolve_task_type_code(task_type)
+    if status is not None:
+        # If a human label is given we need the type to pick the right code.
+        type_code = body.get("type") or (resolve_task_type_code(task_type) if task_type else None)
+        if status in _KNOWN_STATUS_CODES or type_code:
+            body["status"] = resolve_status_code(status, type_code or "")
+        else:
+            raise ValueError(
+                "Updating status by human label requires `task_type`; "
+                "or pass a raw CALM status code."
+            )
+    if start_date is not None:
+        body["startDate"] = start_date
+    if due_date is not None:
+        body["dueDate"] = due_date
+    if assignee_id is not None:
+        body["assigneeId"] = assignee_id
+    if description is not None:
+        body["description"] = description
+    if obsolete is not None:
+        body["obsolete"] = obsolete
+
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}"
+    result = _write("PATCH", url, token, body)
+    return _format_task(result) if isinstance(result, dict) and result else {"updated": task_id, "fields": body}

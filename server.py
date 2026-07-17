@@ -36,7 +36,7 @@ from fastmcp import FastMCP
 from starlette.middleware import Middleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from src.calm.tools import health, processes, projects, scopes, test_cases
+from src.calm.tools import health, processes, projects, scopes, tasks_write, test_cases
 
 load_dotenv()
 
@@ -90,6 +90,7 @@ projects.register(mcp)
 processes.register(mcp)
 scopes.register(mcp)
 test_cases.register(mcp)
+tasks_write.register(mcp)
 health.register(mcp)
 
 

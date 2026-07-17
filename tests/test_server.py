@@ -2,10 +2,12 @@
 
 Spawns server.py as a stdio subprocess, connects with the official MCP
 client, and exercises:
-  - tools/list           (all 7 tools advertised, correct schemas)
-  - calm_health          (token resolution)
+  - tools/list           (read + write tools advertised, correct schemas)
+  - calm_health          (token resolution, writes_enabled flag)
   - get_calm_projects    (full round-trip with requests.get monkey-patched
                           via a tiny shim module so we don't hit SAP)
+  - create/update tasks  (guard blocks by default; round-trips when
+                          CALM_ENABLE_WRITES=true, with requests.request shimmed)
 
 Run with:    python tests/test_server.py
 """
@@ -36,21 +38,24 @@ def _write_shim() -> Path:
     (shim_dir / "sitecustomize.py").write_text(
         "import json, requests\n"
         "class _FakeResp:\n"
-        "    status_code = 200\n"
-        "    def __init__(self, text): self.text = text\n"
+        "    def __init__(self, text, status_code=200): self.text = text; self.status_code = status_code\n"
         "    def raise_for_status(self): pass\n"
         "    def json(self): return json.loads(self.text)\n"
         f"_PAYLOAD = {FAKE_PROJECTS_PAYLOAD!r}\n"
         "def _fake_get(url, *a, **kw):\n"
         "    return _FakeResp(_PAYLOAD)\n"
+        "def _fake_request(method, url, *a, **kw):\n"
+        "    # Echo the submitted body back with a generated id, mimicking a create/update.\n"
+        "    body = json.loads(kw.get('data') or '{}')\n"
+        "    body.setdefault('id', 'T999')\n"
+        "    return _FakeResp(json.dumps(body))\n"
         "requests.get = _fake_get\n"
+        "requests.request = _fake_request\n"
     )
     return shim_dir
 
 
-async def main() -> int:
-    shim_dir = _write_shim()
-
+def _make_params(shim_dir: Path, extra_env: dict | None = None) -> StdioServerParameters:
     env = {
         **os.environ,
         "CALM_TOKEN": "fake-local-token-for-tests",
@@ -61,14 +66,23 @@ async def main() -> int:
         # Ensure client-credentials mode is OFF so tests use the env-var path
         "CALM_CLIENT_ID": "",
         "CALM_CLIENT_SECRET": "",
+        # Writes off by default; individual tests opt in via extra_env.
+        "CALM_ENABLE_WRITES": "",
         "PYTHONPATH": f"{ROOT}{os.pathsep}{shim_dir}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
     }
-
-    params = StdioServerParameters(
+    if extra_env:
+        env.update(extra_env)
+    return StdioServerParameters(
         command=sys.executable,
         args=[str(ROOT / "server.py")],
         env=env,
     )
+
+
+async def main() -> int:
+    shim_dir = _write_shim()
+
+    params = _make_params(shim_dir)
 
     failures: list[str] = []
 
@@ -98,8 +112,14 @@ async def main() -> int:
                 "calm_health",
             }
             check(
-                "all 7 tools advertised",
+                "all 7 read tools advertised",
                 expected.issubset(tool_names),
+                f"got {sorted(tool_names)}",
+            )
+            write_tools = {"create_calm_task", "update_calm_task"}
+            check(
+                "write tools advertised",
+                write_tools.issubset(tool_names),
                 f"got {sorted(tool_names)}",
             )
 
@@ -158,6 +178,62 @@ async def main() -> int:
             print("\nTest 4: missing project_id surfaces a clear error")
             res = await session.call_tool("get_calm_tasks", {"project_id": ""})
             check("error flag set", res.isError is True)
+
+            # ---- writes disabled by default -----------------------------
+            print("\nTest 5: create_calm_task is blocked when writes are disabled")
+            res = await session.call_tool(
+                "create_calm_task",
+                {"project_id": "P001", "title": "Should be blocked", "task_type": "Project Task"},
+            )
+            check("write blocked (error flag set)", res.isError is True)
+            err_text = res.content[0].text if res.content else ""
+            check(
+                "error mentions CALM_ENABLE_WRITES",
+                "CALM_ENABLE_WRITES" in err_text,
+                f"got {err_text!r}",
+            )
+
+    # ---- writes enabled (separate server process) -------------------
+    print("\nTest 6: with CALM_ENABLE_WRITES=true, create/update round-trip")
+    write_params = _make_params(shim_dir, {"CALM_ENABLE_WRITES": "true"})
+    async with stdio_client(write_params) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            res = await session.call_tool("calm_health", {})
+            health = res.structuredContent or json.loads(res.content[0].text)
+            check("writes_enabled true in health", health.get("writes_enabled") is True)
+
+            res = await session.call_tool(
+                "create_calm_task",
+                {
+                    "project_id": "P001",
+                    "title": "New task from test",
+                    "task_type": "Project Task",
+                    "status": "In Progress",
+                },
+            )
+            created = res.structuredContent or json.loads(res.content[0].text)
+            check("create did not error", res.isError is not True, f"got {created}")
+            check("created task echoes title", created.get("Title") == "New task from test", f"got {created}")
+            check(
+                "human status mapped to code and back to label",
+                created.get("Status") == "In Progress",
+                f"got {created.get('Status')}",
+            )
+
+            print("\nTest 7: update_calm_task round-trips a partial change")
+            res = await session.call_tool(
+                "update_calm_task",
+                {"task_id": "T123", "title": "Renamed", "status": "Done", "task_type": "Project Task"},
+            )
+            updated = res.structuredContent or json.loads(res.content[0].text)
+            check("update did not error", res.isError is not True, f"got {updated}")
+            check("updated task echoes new title", updated.get("Title") == "Renamed", f"got {updated}")
+
+            print("\nTest 8: update with no fields surfaces a clear error")
+            res = await session.call_tool("update_calm_task", {"task_id": "T123"})
+            check("empty update errors", res.isError is True)
 
     print("\n" + "=" * 60)
     if failures:

@@ -46,6 +46,7 @@ CALM_MCP/
 │           ├── processes.py    # get_calm_business_processes, get_calm_solution_processes
 │           ├── scopes.py       # get_calm_scopes
 │           ├── test_cases.py   # get_calm_test_cases
+│           ├── tasks_write.py   # create_calm_task, update_calm_task (guarded)
 │           └── health.py       # calm_health
 ├── tests/
 │   └── test_server.py
@@ -65,6 +66,22 @@ CALM_MCP/
 | `get_calm_scopes` | List process-management scopes | — |
 | `get_calm_test_cases` | List manual test cases | — |
 | `calm_health` | Diagnostic — server up, token configured? | — |
+
+### Write tools (guarded)
+
+Disabled unless `CALM_ENABLE_WRITES=true` is set. When off, these tools are still
+advertised but return a clear error, so the server is read-only by default and
+nothing can accidentally change the tenant.
+
+| Tool | Description | Args |
+|------|-------------|------|
+| `create_calm_task` | Create a task in a project | `project_id`, `title`, `task_type` (+ optional `status`, `start_date`, `due_date`, `assignee_id`, `description`) |
+| `update_calm_task` | Partial-update an existing task | `task_id` (+ any of `title`, `task_type`, `status`, `start_date`, `due_date`, `assignee_id`, `description`, `obsolete`) |
+
+`task_type` and `status` accept human labels ("User Story", "In Progress") or raw
+CALM codes. Because status codes are type-specific, pass `task_type` alongside a
+human `status` when updating. Write payloads are derived from the same field names
+the read tools parse; confirm the field contract against your tenant.
 
 ---
 

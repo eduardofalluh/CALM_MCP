@@ -26,6 +26,20 @@ from .models import CALMHeaders
 from .token_manager import get_managed_token, get_or_create_token_manager
 
 
+def writes_enabled() -> bool:
+    """Whether write tools are permitted. Off unless CALM_ENABLE_WRITES is truthy."""
+    return os.getenv("CALM_ENABLE_WRITES", "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def ensure_writes_enabled() -> None:
+    """Raise a clear error if write operations are disabled."""
+    if not writes_enabled():
+        raise ValueError(
+            "Write operations are disabled. Set CALM_ENABLE_WRITES=true to enable "
+            "create/update tools. This guard prevents accidental changes to the tenant."
+        )
+
+
 def _token_from_authorization(value: str | None) -> str | None:
     if not value:
         return None
