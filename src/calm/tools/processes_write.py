@@ -45,15 +45,19 @@ def register(mcp: FastMCP) -> None:
         ctx: Context,
         name: str | None = None,
         description: str | None = None,
+        if_match: str | None = None,
     ) -> dict:
         """Update fields of an existing business process (partial update).
 
         Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        This is an OData service: PATCH needs an If-Match ETag. If you don't pass
+        `if_match`, the current ETag is fetched from the entity automatically.
 
         Args:
             business_process_id: ID of the business process to update.
             name: Optional new name.
             description: Optional new description.
+            if_match: Optional ETag for optimistic locking (auto-fetched if omitted).
         """
         ensure_writes_enabled()
         if not business_process_id:
@@ -64,6 +68,7 @@ def register(mcp: FastMCP) -> None:
             business_process_id=business_process_id,
             name=name,
             description=description,
+            if_match=if_match,
             base_url=h.base_url,
         )
 
@@ -75,8 +80,10 @@ def register(mcp: FastMCP) -> None:
         ctx: Context,
         description: str | None = None,
         status: str | None = None,
-        countries: list | None = None,
+        countries: list | str | None = None,
         state: str | None = None,
+        business_process_id: str | None = None,
+        external_id: str | None = None,
     ) -> dict:
         """Create a new solution process.
 
@@ -86,8 +93,12 @@ def register(mcp: FastMCP) -> None:
             name: Solution process name.
             description: Optional description.
             status: Optional status string.
-            countries: Optional list of country codes.
+            countries: Optional country codes — a list (["DE","FR"]) or a
+                comma-string ("DE,FR"). Sent to CALM as a comma-separated string.
             state: Optional state string.
+            business_process_id: Optional parent business process ID (sent as the
+                nested businessProcess object CALM expects).
+            external_id: Optional free-text external reference.
 
         Returns the created process (ID, Name, Description, Status, Countries, State)
         or the submitted payload.
@@ -103,6 +114,8 @@ def register(mcp: FastMCP) -> None:
             status=status,
             countries=countries,
             state=state,
+            business_process_id=business_process_id,
+            external_id=external_id,
             base_url=h.base_url,
         )
 
@@ -113,20 +126,25 @@ def register(mcp: FastMCP) -> None:
         name: str | None = None,
         description: str | None = None,
         status: str | None = None,
-        countries: list | None = None,
+        countries: list | str | None = None,
         state: str | None = None,
+        external_id: str | None = None,
+        if_match: str | None = None,
     ) -> dict:
         """Update fields of an existing solution process (partial update).
 
         Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        OData service: PATCH needs an If-Match ETag (auto-fetched if omitted).
 
         Args:
             solution_process_id: ID of the solution process to update.
             name: Optional new name.
             description: Optional new description.
             status: Optional status.
-            countries: Optional list of country codes.
+            countries: Optional country codes — list or comma-string.
             state: Optional state.
+            external_id: Optional external reference.
+            if_match: Optional ETag for optimistic locking (auto-fetched if omitted).
         """
         ensure_writes_enabled()
         if not solution_process_id:
@@ -140,5 +158,7 @@ def register(mcp: FastMCP) -> None:
             status=status,
             countries=countries,
             state=state,
+            external_id=external_id,
+            if_match=if_match,
             base_url=h.base_url,
         )

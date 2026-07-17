@@ -20,6 +20,7 @@ def register(mcp: FastMCP) -> None:
         status: str | None = None,
         purpose: str | None = None,
         operational_status: str | None = None,
+        phase_id: str | None = None,
     ) -> dict:
         """Create a new Cloud ALM project.
 
@@ -30,6 +31,7 @@ def register(mcp: FastMCP) -> None:
             status: Optional. "Active" or "Hidden" (or raw code O/C).
             purpose: Optional project purpose.
             operational_status: Optional operational status string.
+            phase_id: Optional current-phase ID (2025+).
 
         Returns the created project (ID, Name, Status, Purpose, OperationalStatus)
         or the submitted payload if the API returns no body.
@@ -44,6 +46,7 @@ def register(mcp: FastMCP) -> None:
             status=status,
             purpose=purpose,
             operational_status=operational_status,
+            phase_id=phase_id,
             base_url=h.base_url,
         )
 
@@ -55,6 +58,7 @@ def register(mcp: FastMCP) -> None:
         status: str | None = None,
         purpose: str | None = None,
         operational_status: str | None = None,
+        phase_id: str | None = None,
     ) -> dict:
         """Update fields of an existing Cloud ALM project (partial update).
 
@@ -67,6 +71,7 @@ def register(mcp: FastMCP) -> None:
             status: Optional "Active"/"Hidden" (or raw code O/C).
             purpose: Optional purpose.
             operational_status: Optional operational status.
+            phase_id: Optional current-phase ID (2025+).
         """
         ensure_writes_enabled()
         if not project_id:
@@ -79,5 +84,6 @@ def register(mcp: FastMCP) -> None:
             status=status,
             purpose=purpose,
             operational_status=operational_status,
+            phase_id=phase_id,
             base_url=h.base_url,
         )

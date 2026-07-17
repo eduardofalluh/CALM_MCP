@@ -97,13 +97,28 @@ nothing can accidentally change the tenant.
 Because task status codes are type-specific, pass `task_type` alongside a human
 `status` when updating a task.
 
-> **Payloads are derived**, not verified. SAP's API docs are JavaScript-rendered
-> and could not be read programmatically, so create/update request bodies use the
-> same camelCase field names the read tools parse (`projectId`, `title`, `type`,
-> `status`, `startDate`, `priorityCode`, …). The OData-backed services (processes,
-> scopes, test cases) may need a different id-in-URL format for updates
-> (`Entity('id')` rather than `Entity/id`). **Confirm against a live tenant before
-> merging to main.**
+### Write contract notes (reconciled against SAP docs 2026-07-17)
+
+- **Single-entity URL is a path segment** (`/entity/{id}`) for every API, including
+  the OData services — *not* `Entity('id')`.
+- **No CSRF token** is used (stateless OAuth Bearer).
+- **`If-Match: <etag>` is required** on PATCH for the OData services (Process
+  Authoring, Test Management). The update tools **auto-fetch the ETag** from the
+  entity first, or you can pass `if_match` explicitly. For Test Management the ETag
+  is the entity's `modifiedAt` timestamp. Tasks and Projects (plain REST) need no
+  If-Match.
+- **Tasks:** `assigneeId` is the assignee's **email**; `priorityId` is numeric
+  (10/20/30/40); sub-tasks take `parentId`.
+- **Solution process:** `countries` is sent as a **comma-string** (`"DE,FR"`);
+  the parent business process is the nested `businessProcess:{id}` object
+  (pass `business_process_id`).
+- **Test case:** id field is `uuid`.
+
+> Still unconfirmed (get from each API's OpenAPI/EDMX or a tenant `$metadata`):
+> requirement/defect status-code lists, whether Projects support write of
+> `purpose`/`operationalStatus`, If-Match requirement on `scopes`, and test-case
+> status codes. See `API_WRITE_SPEC_NEEDED.md`. **Verify against a live tenant
+> before merging to main.**
 
 ---
 

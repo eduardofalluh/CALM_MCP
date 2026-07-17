@@ -51,15 +51,19 @@ def register(mcp: FastMCP) -> None:
         ctx: Context,
         name: str | None = None,
         description: str | None = None,
+        if_match: str | None = None,
     ) -> dict:
         """Update fields of an existing scope (partial update).
 
         Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        OData service: an If-Match ETag is fetched and sent defensively (its
+        requirement on scopes is unconfirmed); a supplied `if_match` wins.
 
         Args:
             scope_id: ID of the scope to update.
             name: Optional new name.
             description: Optional new description.
+            if_match: Optional ETag for optimistic locking (auto-fetched if omitted).
         """
         ensure_writes_enabled()
         if not scope_id:
@@ -70,5 +74,6 @@ def register(mcp: FastMCP) -> None:
             scope_id=scope_id,
             name=name,
             description=description,
+            if_match=if_match,
             base_url=h.base_url,
         )

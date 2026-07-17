@@ -25,6 +25,9 @@ def register(mcp: FastMCP) -> None:
         due_date: str | None = None,
         assignee_id: str | None = None,
         description: str | None = None,
+        priority_id: int | None = None,
+        external_id: str | None = None,
+        parent_id: str | None = None,
     ) -> dict:
         """Create a new task in a Cloud ALM project.
 
@@ -41,8 +44,12 @@ def register(mcp: FastMCP) -> None:
                 on the task type.
             start_date: Optional ISO date (YYYY-MM-DD).
             due_date: Optional ISO date (YYYY-MM-DD).
-            assignee_id: Optional assignee user ID.
+            assignee_id: Optional assignee — the user's EMAIL address.
             description: Optional task description.
+            priority_id: Optional numeric priority (10/20/30/40 = Very High/High/
+                Medium/Low).
+            external_id: Optional free-text external reference.
+            parent_id: Optional parent task ID (required for sub-tasks).
 
         Returns the created task (ID, Title, Type, Status, dates, AssigneeName,
         ApprovalState, Obsolete), or the submitted payload if the API returns no body.
@@ -65,6 +72,9 @@ def register(mcp: FastMCP) -> None:
             due_date=due_date,
             assignee_id=assignee_id,
             description=description,
+            priority_id=priority_id,
+            external_id=external_id,
+            parent_id=parent_id,
             base_url=h.base_url,
         )
 
@@ -79,6 +89,8 @@ def register(mcp: FastMCP) -> None:
         due_date: str | None = None,
         assignee_id: str | None = None,
         description: str | None = None,
+        priority_id: int | None = None,
+        external_id: str | None = None,
         obsolete: bool | None = None,
     ) -> dict:
         """Update fields of an existing Cloud ALM task (partial update).
@@ -94,8 +106,10 @@ def register(mcp: FastMCP) -> None:
             status: Optional new status (human label or raw CALM code). If given as a
                 human label, pass `task_type` too.
             start_date / due_date: Optional ISO dates (YYYY-MM-DD).
-            assignee_id: Optional assignee user ID.
+            assignee_id: Optional assignee — the user's EMAIL address.
             description: Optional description.
+            priority_id: Optional numeric priority (10/20/30/40).
+            external_id: Optional free-text external reference.
             obsolete: Optional boolean to archive/unarchive the task.
 
         Returns the updated task, or a confirmation of the fields sent.
@@ -114,6 +128,8 @@ def register(mcp: FastMCP) -> None:
             due_date=due_date,
             assignee_id=assignee_id,
             description=description,
+            priority_id=priority_id,
+            external_id=external_id,
             obsolete=obsolete,
             base_url=h.base_url,
         )

@@ -62,18 +62,25 @@ def register(mcp: FastMCP) -> None:
         solution_process_id: str | None = None,
         priority: str | None = None,
         is_prepared: bool | None = None,
+        if_match: str | None = None,
     ) -> dict:
         """Update fields of an existing manual test case (partial update).
 
         Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        OData service: PATCH needs an If-Match ETag — which for Test Management is
+        the entity's modifiedAt timestamp. If you don't pass `if_match`, it's
+        fetched from the entity automatically. Nested Activities/Actions are not
+        editable here — use their own endpoints.
 
         Args:
-            test_case_id: ID of the test case to update.
+            test_case_id: UUID of the test case to update.
             title: Optional new title.
             scope_id: Optional scope ID.
             solution_process_id: Optional solution process ID.
             priority: Optional priority label or raw code.
             is_prepared: Optional boolean.
+            if_match: Optional ETag/modifiedAt for optimistic locking (auto-fetched
+                if omitted).
         """
         ensure_writes_enabled()
         if not test_case_id:
@@ -87,5 +94,6 @@ def register(mcp: FastMCP) -> None:
             solution_process_id=solution_process_id,
             priority=priority,
             is_prepared=is_prepared,
+            if_match=if_match,
             base_url=h.base_url,
         )

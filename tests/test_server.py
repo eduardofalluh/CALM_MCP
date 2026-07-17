@@ -38,11 +38,18 @@ def _write_shim() -> Path:
     (shim_dir / "sitecustomize.py").write_text(
         "import json, requests\n"
         "class _FakeResp:\n"
-        "    def __init__(self, text, status_code=200): self.text = text; self.status_code = status_code\n"
+        "    def __init__(self, text, status_code=200, headers=None):\n"
+        "        self.text = text; self.status_code = status_code; self.headers = headers or {}\n"
         "    def raise_for_status(self): pass\n"
         "    def json(self): return json.loads(self.text)\n"
         f"_PAYLOAD = {FAKE_PROJECTS_PAYLOAD!r}\n"
         "def _fake_get(url, *a, **kw):\n"
+        "    # Single-entity GETs used by OData ETag auto-fetch.\n"
+        "    if '/ManualTestCases/' in url:\n"
+        "        # Test Management: ETag is the modifiedAt timestamp (no ETag header).\n"
+        "        return _FakeResp(json.dumps({'uuid': 'TC-1', 'title': 'old', 'modifiedAt': '2025-11-17T15:51:04Z'}))\n"
+        "    if '/businessProcesses/' in url or '/solutionProcesses/' in url or '/scopes/' in url:\n"
+        "        return _FakeResp(json.dumps({'id': 'X', 'name': 'old'}), headers={'ETag': 'W/\\\"1\\\"'})\n"
         "    return _FakeResp(_PAYLOAD)\n"
         "def _fake_request(method, url, *a, **kw):\n"
         "    # Echo the submitted body back with a generated id, mimicking a create/update.\n"
@@ -262,14 +269,18 @@ async def main() -> int:
             check("business process create did not error", res.isError is not True, f"got {bp}")
             check("business process name echoed", bp.get("Name") == "Order to Cash", f"got {bp}")
 
-            print("\nTest 11: create_calm_solution_process round-trips")
+            print("\nTest 11: create_calm_solution_process (countries list -> comma string)")
             res = await session.call_tool(
                 "create_calm_solution_process",
-                {"name": "SP1", "countries": ["US", "CA"]},
+                {"name": "SP1", "countries": ["US", "CA"], "business_process_id": "BP-1"},
             )
             sp = res.structuredContent or json.loads(res.content[0].text)
             check("solution process create did not error", res.isError is not True, f"got {sp}")
-            check("solution process countries echoed", sp.get("Countries") == ["US", "CA"], f"got {sp}")
+            check(
+                "countries sent as comma string",
+                sp.get("Countries") == "US,CA",
+                f"got {sp.get('Countries')!r}",
+            )
 
             print("\nTest 12: create_calm_scope round-trips")
             res = await session.call_tool(
@@ -297,6 +308,35 @@ async def main() -> int:
                 {"title": "TC2", "priority": "Bogus"},
             )
             check("bad priority errors", res.isError is True)
+
+            # ---- OData updates auto-fetch the If-Match ETag ---------------
+            print("\nTest 15: update_calm_business_process auto-fetches ETag and round-trips")
+            res = await session.call_tool(
+                "update_calm_business_process",
+                {"business_process_id": "BP-1", "name": "Renamed BP"},
+            )
+            bp = res.structuredContent or json.loads(res.content[0].text)
+            check("business process update did not error", res.isError is not True, f"got {bp}")
+            check("business process new name echoed", bp.get("Name") == "Renamed BP", f"got {bp}")
+
+            print("\nTest 16: update_calm_test_case (ETag = modifiedAt) round-trips")
+            res = await session.call_tool(
+                "update_calm_test_case",
+                {"test_case_id": "TC-1", "title": "Renamed TC", "priority": "Low"},
+            )
+            tc = res.structuredContent or json.loads(res.content[0].text)
+            check("test case update did not error", res.isError is not True, f"got {tc}")
+            check("test case new title echoed", tc.get("Title") == "Renamed TC", f"got {tc}")
+            check("test case priority label round-trips", tc.get("Priority") == "Low", f"got {tc}")
+
+            print("\nTest 17: explicit if_match is honoured on update")
+            res = await session.call_tool(
+                "update_calm_scope",
+                {"scope_id": "SC-1", "name": "Renamed scope", "if_match": "W/\"custom\""},
+            )
+            sc = res.structuredContent or json.loads(res.content[0].text)
+            check("scope update with explicit if_match did not error", res.isError is not True, f"got {sc}")
+            check("scope new name echoed", sc.get("Name") == "Renamed scope", f"got {sc}")
 
     print("\n" + "=" * 60)
     if failures:

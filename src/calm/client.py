@@ -168,16 +168,19 @@ def _get(url: str, token: str) -> Any:
     return resp.json()
 
 
-def _write(method: str, url: str, token: str, body: dict) -> Any:
+def _write(method: str, url: str, token: str, body: dict, if_match: str | None = None) -> Any:
     """Send a JSON write request (POST/PATCH) and return the parsed response.
 
     Returns the parsed JSON body, or {} when the API responds with no content
-    (e.g. 204 on a PATCH).
+    (e.g. 204 on a PATCH). `if_match` sets the If-Match header, required by the
+    OData services (Process Authoring, Test Management) for PATCH/DELETE.
     """
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
     }
+    if if_match:
+        headers["If-Match"] = if_match
     resp = requests.request(
         method, url, headers=headers, data=json.dumps(body), timeout=REQUEST_TIMEOUT
     )
@@ -185,6 +188,41 @@ def _write(method: str, url: str, token: str, body: dict) -> Any:
     if resp.status_code == 204 or not (resp.text or "").strip():
         return {}
     return resp.json()
+
+
+def _get_with_meta(url: str, token: str) -> tuple[Any, str | None]:
+    """GET a single entity, returning (parsed_json, etag).
+
+    etag is taken from the ETag response header when present. Used to obtain the
+    If-Match token for OData updates when the caller did not supply one.
+    """
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    data = resp.json() if (resp.text or "").strip() else {}
+    try:
+        etag = resp.headers.get("ETag") or resp.headers.get("etag")
+    except Exception:
+        etag = None
+    return data, etag
+
+
+def _resolve_etag(
+    url: str, token: str, if_match: str | None, modified_at_fallback: bool = False
+) -> str | None:
+    """Return the If-Match token: the caller's value, else fetched from the entity.
+
+    When `modified_at_fallback` is set (Test Management), the entity's modifiedAt
+    timestamp is used as the ETag if no ETag header is present.
+    """
+    if if_match:
+        return if_match
+    data, etag = _get_with_meta(url, token)
+    if etag:
+        return etag
+    if modified_at_fallback and isinstance(data, dict):
+        return data.get("modifiedAt")
+    return None
 
 
 def _base_url(base_url: str | None = None) -> str:
@@ -323,9 +361,17 @@ def create_task(
     due_date: str | None = None,
     assignee_id: str | None = None,
     description: str | None = None,
+    priority_id: int | None = None,
+    external_id: str | None = None,
+    parent_id: str | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """Create a task in a Cloud ALM project. Returns the created task, formatted."""
+    """Create a task in a Cloud ALM project. Returns the created task, formatted.
+
+    `assignee_id` is the assignee's email address. `priority_id` is numeric
+    (10/20/30/40 = Very High/High/Medium/Low). `parent_id` links a sub-task to
+    its parent.
+    """
     type_code = resolve_task_type_code(task_type)
     body: dict[str, Any] = {
         "projectId": project_id,
@@ -342,6 +388,12 @@ def create_task(
         body["assigneeId"] = assignee_id
     if description is not None:
         body["description"] = description
+    if priority_id is not None:
+        body["priorityId"] = priority_id
+    if external_id is not None:
+        body["externalId"] = external_id
+    if parent_id is not None:
+        body["parentId"] = parent_id
 
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks"
     result = _write("POST", url, token, body)
@@ -358,6 +410,8 @@ def update_task(
     due_date: str | None = None,
     assignee_id: str | None = None,
     description: str | None = None,
+    priority_id: int | None = None,
+    external_id: str | None = None,
     obsolete: bool | None = None,
     base_url: str | None = None,
 ) -> dict:
@@ -365,6 +419,7 @@ def update_task(
 
     `status` needs the task type to resolve a human label to a code; pass
     `task_type` alongside a human status, or pass a raw CALM status code.
+    Tasks are a plain REST API — no If-Match/ETag needed.
     """
     body: dict[str, Any] = {}
     if title is not None:
@@ -389,6 +444,10 @@ def update_task(
         body["assigneeId"] = assignee_id
     if description is not None:
         body["description"] = description
+    if priority_id is not None:
+        body["priorityId"] = priority_id
+    if external_id is not None:
+        body["externalId"] = external_id
     if obsolete is not None:
         body["obsolete"] = obsolete
 
@@ -418,9 +477,15 @@ def create_project(
     status: str | None = None,
     purpose: str | None = None,
     operational_status: str | None = None,
+    phase_id: str | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """Create a Cloud ALM project. Returns the created project, formatted."""
+    """Create a Cloud ALM project. Returns the created project, formatted.
+
+    Plain REST API — no If-Match needed. `phase_id` is the current phase (2025+).
+    `operational_status`/`purpose` are only sent if provided (their write support
+    is not fully confirmed against the spec).
+    """
     body: dict[str, Any] = {"name": name}
     if status is not None:
         body["status"] = resolve_project_status(status)
@@ -428,6 +493,8 @@ def create_project(
         body["purpose"] = purpose
     if operational_status is not None:
         body["operationalStatus"] = operational_status
+    if phase_id is not None:
+        body["phaseId"] = phase_id
 
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects"
     result = _write("POST", url, token, body)
@@ -441,6 +508,7 @@ def update_project(
     status: str | None = None,
     purpose: str | None = None,
     operational_status: str | None = None,
+    phase_id: str | None = None,
     base_url: str | None = None,
 ) -> dict:
     """Partial-update a project. Only provided fields are sent."""
@@ -453,6 +521,8 @@ def update_project(
         body["purpose"] = purpose
     if operational_status is not None:
         body["operationalStatus"] = operational_status
+    if phase_id is not None:
+        body["phaseId"] = phase_id
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
 
@@ -492,9 +562,14 @@ def update_business_process(
     business_process_id: str,
     name: str | None = None,
     description: str | None = None,
+    if_match: str | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """Partial-update a business process. Only provided fields are sent."""
+    """Partial-update a business process. Only provided fields are sent.
+
+    OData service — PATCH requires If-Match. If `if_match` is not supplied, the
+    current ETag is fetched from the entity first.
+    """
     body: dict[str, Any] = {}
     if name is not None:
         body["name"] = name
@@ -504,7 +579,8 @@ def update_business_process(
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/businessProcesses/{business_process_id}"
-    result = _write("PATCH", url, token, body)
+    etag = _resolve_etag(url, token, if_match)
+    result = _write("PATCH", url, token, body, if_match=etag)
     return _format_business_process(result) if isinstance(result, dict) and result else {"updated": business_process_id, "fields": body}
 
 
@@ -521,25 +597,43 @@ def _format_solution_process(item: dict) -> dict:
     }
 
 
+def _countries_to_str(countries: Any) -> str:
+    """CALM expects countries as a comma-separated string ("DE,FR"), not an array."""
+    if isinstance(countries, (list, tuple)):
+        return ",".join(str(c).strip() for c in countries)
+    return str(countries)
+
+
 def create_solution_process(
     token: str,
     name: str,
     description: str | None = None,
     status: str | None = None,
-    countries: list | None = None,
+    countries: Any = None,
     state: str | None = None,
+    business_process_id: str | None = None,
+    external_id: str | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """Create a solution process. Returns the created process, formatted."""
+    """Create a solution process. Returns the created process, formatted.
+
+    `countries` may be a list (["DE","FR"]) or a comma-string ("DE,FR"); it is
+    sent as a comma-separated string. `business_process_id` links the parent
+    business process (sent as the nested {"businessProcess": {"id": ...}}).
+    """
     body: dict[str, Any] = {"name": name}
     if description is not None:
         body["description"] = description
     if status is not None:
         body["status"] = status
     if countries is not None:
-        body["countries"] = countries
+        body["countries"] = _countries_to_str(countries)
     if state is not None:
         body["state"] = state
+    if external_id is not None:
+        body["externalId"] = external_id
+    if business_process_id is not None:
+        body["businessProcess"] = {"id": business_process_id}
 
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses"
     result = _write("POST", url, token, body)
@@ -552,11 +646,16 @@ def update_solution_process(
     name: str | None = None,
     description: str | None = None,
     status: str | None = None,
-    countries: list | None = None,
+    countries: Any = None,
     state: str | None = None,
+    external_id: str | None = None,
+    if_match: str | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """Partial-update a solution process. Only provided fields are sent."""
+    """Partial-update a solution process. Only provided fields are sent.
+
+    OData service — PATCH requires If-Match (auto-fetched if not supplied).
+    """
     body: dict[str, Any] = {}
     if name is not None:
         body["name"] = name
@@ -565,14 +664,17 @@ def update_solution_process(
     if status is not None:
         body["status"] = status
     if countries is not None:
-        body["countries"] = countries
+        body["countries"] = _countries_to_str(countries)
     if state is not None:
         body["state"] = state
+    if external_id is not None:
+        body["externalId"] = external_id
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses/{solution_process_id}"
-    result = _write("PATCH", url, token, body)
+    etag = _resolve_etag(url, token, if_match)
+    result = _write("PATCH", url, token, body, if_match=etag)
     return _format_solution_process(result) if isinstance(result, dict) and result else {"updated": solution_process_id, "fields": body}
 
 
@@ -609,9 +711,14 @@ def update_scope(
     scope_id: str,
     name: str | None = None,
     description: str | None = None,
+    if_match: str | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """Partial-update a scope. Only provided fields are sent."""
+    """Partial-update a scope. Only provided fields are sent.
+
+    OData service. If-Match requirement is unconfirmed for scopes, so the ETag
+    is fetched defensively and sent when available (a supplied `if_match` wins).
+    """
     body: dict[str, Any] = {}
     if name is not None:
         body["name"] = name
@@ -621,7 +728,8 @@ def update_scope(
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes/{scope_id}"
-    result = _write("PATCH", url, token, body)
+    etag = _resolve_etag(url, token, if_match)
+    result = _write("PATCH", url, token, body, if_match=etag)
     return _format_scope(result) if isinstance(result, dict) and result else {"updated": scope_id, "fields": body}
 
 
@@ -630,7 +738,8 @@ def update_scope(
 def _format_test_case(item: dict) -> dict:
     priority_code = str(item.get("priorityCode"))
     return {
-        "ID": item.get("id"),
+        # Test Management is OData; the key is `uuid` (fall back to `id`).
+        "ID": item.get("uuid") or item.get("id"),
         "Project ID": item.get("projectId"),
         "Scope ID": item.get("scopeId"),
         "Solution Process ID": item.get("solutionProcessId"),
@@ -676,9 +785,16 @@ def update_test_case(
     solution_process_id: str | None = None,
     priority: str | None = None,
     is_prepared: bool | None = None,
+    if_match: str | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """Partial-update a manual test case. Only provided fields are sent."""
+    """Partial-update a manual test case. Only provided fields are sent.
+
+    OData service — PATCH requires If-Match. The ETag is the entity's modifiedAt
+    timestamp; if `if_match` is not supplied it is fetched from the entity.
+    Note: deep updates of nested Activities/Actions are not supported here — use
+    their own endpoints.
+    """
     body: dict[str, Any] = {}
     if title is not None:
         body["title"] = title
@@ -694,5 +810,6 @@ def update_test_case(
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}"
-    result = _write("PATCH", url, token, body)
+    etag = _resolve_etag(url, token, if_match, modified_at_fallback=True)
+    result = _write("PATCH", url, token, body, if_match=etag)
     return _format_test_case(result) if isinstance(result, dict) and result else {"updated": test_case_id, "fields": body}
