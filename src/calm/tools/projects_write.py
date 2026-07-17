@@ -108,7 +108,10 @@ def register(mcp: FastMCP) -> None:
             project_id: The project to add the timebox to.
             name: Timebox name.
             timebox_type: Numeric type (e.g. 0).
-            start_date / end_date: ISO dates (YYYY-MM-DD).
+            start_date / end_date: ISO dates (YYYY-MM-DD). Note: `start_date` is
+                sent correctly but CALM may return it null on create — a timebox's
+                start is typically derived server-side from the preceding phase;
+                set it via update_calm_timebox if you need an explicit value.
             closed: Whether the timebox is closed.
             extra_fields: Any additional raw fields.
         """

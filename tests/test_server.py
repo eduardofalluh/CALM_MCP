@@ -315,7 +315,7 @@ async def main() -> int:
             print("\nTest 13: create_calm_test_case round-trips (priority label mapping)")
             res = await session.call_tool(
                 "create_calm_test_case",
-                {"title": "TC1", "project_id": "P001", "priority": "High", "is_prepared": True},
+                {"title": "TC1", "project_id": "P001", "scope_id": "SC1", "priority": "High", "is_prepared": True},
             )
             tc = res.structuredContent or json.loads(res.content[0].text)
             check("test case create did not error", res.isError is not True, f"got {tc}")
@@ -366,6 +366,7 @@ async def main() -> int:
                 {
                     "title": "TC deep",
                     "project_id": "P001",
+                    "scope_id": "SC1",
                     "priority": "Medium",
                     "activities": [
                         {"title": "Login", "sequence": 1, "isInScope": True,
@@ -512,6 +513,12 @@ async def main() -> int:
             au = res.structuredContent or json.loads(res.content[0].text)
             check("status-by-label update did not error", res.isError is not True, f"got {au}")
             check("auto-detected type resolved status", au.get("Status") == "In Progress", f"got {au.get('Status')}")
+
+            print("\nTest 34: create_calm_test_case without scope_id is rejected")
+            res = await session.call_tool(
+                "create_calm_test_case", {"title": "no scope", "project_id": "P001"},
+            )
+            check("missing scope_id errors", res.isError is True)
 
     print("\n" + "=" * 60)
     if failures:

@@ -16,9 +16,9 @@ def register(mcp: FastMCP) -> None:
     @mcp.tool()
     def create_calm_test_case(
         title: str,
+        project_id: str,
+        scope_id: str,
         ctx: Context,
-        project_id: str | None = None,
-        scope_id: str | None = None,
         solution_process_id: str | None = None,
         priority: str | None = None,
         is_prepared: bool | None = None,
@@ -33,9 +33,10 @@ def register(mcp: FastMCP) -> None:
         Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
 
         Args:
-            title: Test case title.
-            project_id: Optional target project ID.
-            scope_id: Optional scope ID.
+            title: Test case title (required).
+            project_id: Target project ID (required by the API).
+            scope_id: Scope ID (required by the API — omitting it returns
+                400 "Provide the missing value: scopeId").
             solution_process_id: Optional solution process ID.
             priority: Optional. "Very High"/"High"/"Medium"/"Low" (or raw 10/20/30/40).
             is_prepared: Optional boolean — whether the test case is prepared.
@@ -55,6 +56,10 @@ def register(mcp: FastMCP) -> None:
         ensure_writes_enabled()
         if not title:
             raise ValueError("title is required")
+        if not project_id:
+            raise ValueError("project_id is required")
+        if not scope_id:
+            raise ValueError("scope_id is required (the API rejects a test case without one)")
         h = get_calm_headers(ctx)
         return client.create_test_case(
             token=h.token,
