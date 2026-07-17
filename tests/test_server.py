@@ -45,7 +45,7 @@ def _write_shim() -> Path:
         f"_PAYLOAD = {FAKE_PROJECTS_PAYLOAD!r}\n"
         "def _fake_get(url, *a, **kw):\n"
         "    # Single-entity GETs used by OData ETag auto-fetch.\n"
-        "    if '/ManualTestCases/' in url:\n"
+        "    if '/ManualTestCases/' in url or '/Activities/' in url or '/Actions/' in url:\n"
         "        # Test Management: ETag is the modifiedAt timestamp (no ETag header).\n"
         "        return _FakeResp(json.dumps({'uuid': 'TC-1', 'title': 'old', 'modifiedAt': '2025-11-17T15:51:04Z'}))\n"
         "    if '/businessProcesses/' in url or '/solutionProcesses/' in url or '/scopes/' in url:\n"
@@ -136,10 +136,24 @@ async def main() -> int:
                 "create_calm_scope", "update_calm_scope", "delete_calm_scope",
                 "create_calm_test_case", "update_calm_test_case", "delete_calm_test_case",
             }
+            sub_entity_tools = {
+                "create_calm_task_relation", "delete_calm_task_relation", "set_calm_task_tags",
+                "create_calm_task_comment", "update_calm_task_comment", "delete_calm_task_comment",
+                "create_calm_timebox", "update_calm_timebox", "delete_calm_timebox",
+                "assign_calm_scenario_versions", "update_calm_scope_assignments",
+                "update_calm_test_activity", "delete_calm_test_activity",
+                "create_calm_test_action", "update_calm_test_action", "delete_calm_test_action",
+                "calm_api_write", "calm_api_delete",
+            }
             check(
-                "all 18 write/delete tools advertised",
+                "all top-level write/delete tools advertised",
                 write_tools.issubset(tool_names),
                 f"missing {sorted(write_tools - tool_names)}",
+            )
+            check(
+                "all sub-entity + generic tools advertised",
+                sub_entity_tools.issubset(tool_names),
+                f"missing {sorted(sub_entity_tools - tool_names)}",
             )
 
             for t in tools.tools:
@@ -412,6 +426,81 @@ async def main() -> int:
             st = res.structuredContent or json.loads(res.content[0].text)
             check("sub-task create did not error", res.isError is not True, f"got {st}")
             check("sub-task Done round-trips", st.get("Status") == "Done", f"got {st.get('Status')}")
+
+            # ---- sub-entities --------------------------------------------
+            print("\nTest 26: task relation + tags")
+            res = await session.call_tool(
+                "create_calm_task_relation",
+                {"task_id": "T1", "relation_task_id": "T2", "relation_type": "0"},
+            )
+            check("create relation did not error", res.isError is not True)
+            res = await session.call_tool("set_calm_task_tags", {"task_id": "T1", "tags": ["Group: A"]})
+            tg = res.structuredContent or json.loads(res.content[0].text)
+            check("set tags did not error", res.isError is not True, f"got {tg}")
+
+            print("\nTest 27: task comment create/delete")
+            res = await session.call_tool("create_calm_task_comment", {"task_id": "T1", "text": "hi"})
+            check("create comment did not error", res.isError is not True)
+            res = await session.call_tool("delete_calm_task_comment", {"comment_id": "C1"})
+            cd = res.structuredContent or json.loads(res.content[0].text)
+            check("delete comment confirms id", cd.get("deleted") == "C1", f"got {cd}")
+
+            print("\nTest 28: timebox create/update/delete")
+            res = await session.call_tool(
+                "create_calm_timebox",
+                {"project_id": "P001", "name": "Sprint 1", "timebox_type": 0, "start_date": "2026-01-01"},
+            )
+            check("create timebox did not error", res.isError is not True)
+            res = await session.call_tool("delete_calm_timebox", {"timebox_id": "TB1"})
+            tbd = res.structuredContent or json.loads(res.content[0].text)
+            check("delete timebox confirms id", tbd.get("deleted") == "TB1", f"got {tbd}")
+
+            print("\nTest 29: test action create + update (activity If-Match auto-fetch)")
+            res = await session.call_tool(
+                "create_calm_test_action",
+                {"activity_id": "ACT-1", "title": "Step 1", "sequence": 1, "is_evidence_required": True},
+            )
+            check("create action did not error", res.isError is not True)
+            res = await session.call_tool(
+                "update_calm_test_action",
+                {"action_id": "ACN-1", "title": "Step 1 renamed"},
+            )
+            check("update action did not error", res.isError is not True)
+
+            print("\nTest 30: scope assignments (scope/unscope) + scenario versions")
+            res = await session.call_tool(
+                "update_calm_scope_assignments",
+                {"assignments": [
+                    {"scopeId": "S1", "solutionScenarioVersionId": "SSV1",
+                     "solutionProcessVersionId": "SPV1", "isScoped": True, "statusId": "DESIGN"},
+                ]},
+            )
+            sa = res.structuredContent or json.loads(res.content[0].text)
+            check("scope assignments did not error", res.isError is not True, f"got {sa}")
+            res = await session.call_tool(
+                "assign_calm_scenario_versions", {"scope_id": "S1", "version_ids": ["SSV1", "SSV2"]},
+            )
+            check("assign scenario versions did not error", res.isError is not True)
+
+            print("\nTest 31: generic escape hatch (calm_api_write / calm_api_delete)")
+            res = await session.call_tool(
+                "calm_api_write",
+                {"method": "POST", "path": "api/calm-tasks/v1/workstreams", "body": {"name": "WS A"}},
+            )
+            gw = res.structuredContent or json.loads(res.content[0].text)
+            check("generic write did not error", res.isError is not True, f"got {gw}")
+            check("generic write echoes name", gw.get("name") == "WS A", f"got {gw}")
+            res = await session.call_tool(
+                "calm_api_delete", {"path": "api/calm-tasks/v1/workstreams/WS-1"},
+            )
+            gd = res.structuredContent or json.loads(res.content[0].text)
+            check("generic delete confirms path", "workstreams/WS-1" in str(gd.get("deleted")), f"got {gd}")
+
+            print("\nTest 32: generic write rejects bad method")
+            res = await session.call_tool(
+                "calm_api_write", {"method": "GET", "path": "api/calm-tasks/v1/tasks"},
+            )
+            check("bad method errors", res.isError is True)
 
     print("\n" + "=" * 60)
     if failures:

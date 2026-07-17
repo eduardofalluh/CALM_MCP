@@ -88,3 +88,65 @@ def register(mcp: FastMCP) -> None:
             extra_fields=extra_fields,
             base_url=h.base_url,
         )
+
+    # --- Timeboxes (no If-Match) -------------------------------------------
+
+    @mcp.tool()
+    def create_calm_timebox(
+        project_id: str,
+        ctx: Context,
+        name: str | None = None,
+        timebox_type: int | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        closed: bool | None = None,
+        extra_fields: dict | None = None,
+    ) -> dict:
+        """Create a timebox in a project. Requires CALM_ENABLE_WRITES=true.
+
+        Args:
+            project_id: The project to add the timebox to.
+            name: Timebox name.
+            timebox_type: Numeric type (e.g. 0).
+            start_date / end_date: ISO dates (YYYY-MM-DD).
+            closed: Whether the timebox is closed.
+            extra_fields: Any additional raw fields.
+        """
+        ensure_writes_enabled()
+        if not project_id:
+            raise ValueError("project_id is required")
+        h = get_calm_headers(ctx)
+        return client.create_timebox(
+            token=h.token, project_id=project_id, name=name, timebox_type=timebox_type,
+            start_date=start_date, end_date=end_date, closed=closed,
+            extra_fields=extra_fields, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def update_calm_timebox(
+        timebox_id: str,
+        ctx: Context,
+        name: str | None = None,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        closed: bool | None = None,
+        extra_fields: dict | None = None,
+    ) -> dict:
+        """Update a timebox by its ID (partial). Requires CALM_ENABLE_WRITES=true."""
+        ensure_writes_enabled()
+        if not timebox_id:
+            raise ValueError("timebox_id is required")
+        h = get_calm_headers(ctx)
+        return client.update_timebox(
+            token=h.token, timebox_id=timebox_id, name=name, start_date=start_date,
+            end_date=end_date, closed=closed, extra_fields=extra_fields, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def delete_calm_timebox(timebox_id: str, ctx: Context) -> dict:
+        """Delete a timebox by its ID. Requires CALM_ENABLE_WRITES=true."""
+        ensure_writes_enabled()
+        if not timebox_id:
+            raise ValueError("timebox_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_timebox(token=h.token, timebox_id=timebox_id, base_url=h.base_url)

@@ -159,3 +159,96 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("task_id is required")
         h = get_calm_headers(ctx)
         return client.delete_task(token=h.token, task_id=task_id, base_url=h.base_url)
+
+    # --- Task sub-entities --------------------------------------------------
+
+    @mcp.tool()
+    def create_calm_task_relation(
+        task_id: str,
+        relation_task_id: str,
+        ctx: Context,
+        relation_type: str = "0",
+    ) -> dict:
+        """Link a task to another task (relation). Requires CALM_ENABLE_WRITES=true.
+
+        Args:
+            task_id: The task the relation is created on.
+            relation_task_id: The related task's ID.
+            relation_type: Relation type code (default "0").
+        """
+        ensure_writes_enabled()
+        if not task_id or not relation_task_id:
+            raise ValueError("task_id and relation_task_id are required")
+        h = get_calm_headers(ctx)
+        return client.create_task_relation(
+            token=h.token, task_id=task_id, relation_task_id=relation_task_id,
+            relation_type=relation_type, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def delete_calm_task_relation(relation_id: str, ctx: Context) -> dict:
+        """Delete a task relation by its relation ID. Requires CALM_ENABLE_WRITES=true."""
+        ensure_writes_enabled()
+        if not relation_id:
+            raise ValueError("relation_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_task_relation(token=h.token, relation_id=relation_id, base_url=h.base_url)
+
+    @mcp.tool()
+    def set_calm_task_tags(task_id: str, tags: list, ctx: Context) -> dict:
+        """Replace a task's tag assignments. Requires CALM_ENABLE_WRITES=true.
+
+        Args:
+            task_id: The task to tag.
+            tags: List of tag strings, each formatted "Group: Tag".
+        """
+        ensure_writes_enabled()
+        if not task_id:
+            raise ValueError("task_id is required")
+        h = get_calm_headers(ctx)
+        return client.set_task_tags(token=h.token, task_id=task_id, tags=tags, base_url=h.base_url)
+
+    @mcp.tool()
+    def create_calm_task_comment(
+        task_id: str,
+        ctx: Context,
+        text: str | None = None,
+        extra_fields: dict | None = None,
+    ) -> dict:
+        """Add a comment to a task. Requires CALM_ENABLE_WRITES=true.
+
+        The comment body field is not fully documented; `text` is sent as-is and
+        `extra_fields` can override/add fields if your tenant expects a different key.
+        """
+        ensure_writes_enabled()
+        if not task_id:
+            raise ValueError("task_id is required")
+        h = get_calm_headers(ctx)
+        return client.create_task_comment(
+            token=h.token, task_id=task_id, text=text, extra_fields=extra_fields, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def update_calm_task_comment(
+        comment_id: str,
+        ctx: Context,
+        text: str | None = None,
+        extra_fields: dict | None = None,
+    ) -> dict:
+        """Update a task comment by its comment ID. Requires CALM_ENABLE_WRITES=true."""
+        ensure_writes_enabled()
+        if not comment_id:
+            raise ValueError("comment_id is required")
+        h = get_calm_headers(ctx)
+        return client.update_task_comment(
+            token=h.token, comment_id=comment_id, text=text, extra_fields=extra_fields, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def delete_calm_task_comment(comment_id: str, ctx: Context) -> dict:
+        """Delete a task comment by its comment ID. Requires CALM_ENABLE_WRITES=true."""
+        ensure_writes_enabled()
+        if not comment_id:
+            raise ValueError("comment_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_task_comment(token=h.token, comment_id=comment_id, base_url=h.base_url)

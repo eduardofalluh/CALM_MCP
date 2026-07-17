@@ -138,6 +138,36 @@ Because task status codes are type-specific, pass `task_type` alongside a human
 > CALM_PJM, CALM_PM) — no open documentation gaps. Payload shapes should still be
 > smoke-tested against a live tenant before merging to main.
 
+### Sub-entity tools
+
+Typed tools for the documented sub-entities:
+
+| Tool | Description |
+|------|-------------|
+| `create_calm_task_relation` / `delete_calm_task_relation` | Link/unlink tasks |
+| `set_calm_task_tags` | Replace a task's tags (`"Group: Tag"`) |
+| `create/update/delete_calm_task_comment` | Task comments |
+| `create/update/delete_calm_timebox` | Project timeboxes |
+| `assign_calm_scenario_versions` | Assign scenario versions to a scope |
+| `update_calm_scope_assignments` | Scope/unscope solution processes |
+| `update/delete_calm_test_activity` | Test-case activities (step groups) |
+| `create/update/delete_calm_test_action` | Test-case actions (steps) |
+
+### Generic escape hatch
+
+For any endpoint without a dedicated tool (feature/document/hierarchy assignments,
+workstreams, deliverables, programs, system groups, deployment plans, external
+integrations, process-authoring assets/flows/diagrams/activities, publish/draft
+actions, test-case applications/references/task assignments, …):
+
+| Tool | Description |
+|------|-------------|
+| `calm_api_write` | `method` (POST/PATCH) + API-relative `path` + `body` (+ optional `if_match`) |
+| `calm_api_delete` | API-relative `path` (+ optional `if_match`) |
+
+`calm_api_*` do **not** auto-fetch ETags — pass `if_match` explicitly for the
+OData services / Projects PATCH, or use the dedicated typed tool which does.
+
 ---
 
 ## 1. Install

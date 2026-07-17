@@ -148,3 +148,99 @@ def register(mcp: FastMCP) -> None:
             if_match=if_match,
             base_url=h.base_url,
         )
+
+    # --- Activities & Actions (OData; PATCH/DELETE need If-Match=modifiedAt) --
+
+    @mcp.tool()
+    def update_calm_test_activity(
+        activity_id: str,
+        ctx: Context,
+        title: str | None = None,
+        sequence: int | None = None,
+        is_in_scope: bool | None = None,
+        if_match: str | None = None,
+    ) -> dict:
+        """Update a test-case activity (step group). Requires CALM_ENABLE_WRITES=true.
+        If-Match (modifiedAt) is auto-fetched if omitted."""
+        ensure_writes_enabled()
+        if not activity_id:
+            raise ValueError("activity_id is required")
+        h = get_calm_headers(ctx)
+        return client.update_test_activity(
+            token=h.token, activity_id=activity_id, title=title, sequence=sequence,
+            is_in_scope=is_in_scope, if_match=if_match, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def delete_calm_test_activity(activity_id: str, ctx: Context, if_match: str | None = None) -> dict:
+        """Delete a test-case activity. Requires CALM_ENABLE_WRITES=true."""
+        ensure_writes_enabled()
+        if not activity_id:
+            raise ValueError("activity_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_test_activity(
+            token=h.token, activity_id=activity_id, if_match=if_match, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def create_calm_test_action(
+        activity_id: str,
+        title: str,
+        ctx: Context,
+        description: str | None = None,
+        expected_result: str | None = None,
+        sequence: int | None = None,
+        is_evidence_required: bool | None = None,
+    ) -> dict:
+        """Create an action (step) under a test-case activity. Requires CALM_ENABLE_WRITES=true.
+
+        Args:
+            activity_id: Parent activity UUID.
+            title: Action title.
+            description / expected_result: Rich-text fields.
+            sequence: Numeric order.
+            is_evidence_required: Whether evidence is required.
+        """
+        ensure_writes_enabled()
+        if not activity_id or not title:
+            raise ValueError("activity_id and title are required")
+        h = get_calm_headers(ctx)
+        return client.create_test_action(
+            token=h.token, activity_id=activity_id, title=title, description=description,
+            expected_result=expected_result, sequence=sequence,
+            is_evidence_required=is_evidence_required, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def update_calm_test_action(
+        action_id: str,
+        ctx: Context,
+        title: str | None = None,
+        description: str | None = None,
+        expected_result: str | None = None,
+        sequence: int | None = None,
+        is_evidence_required: bool | None = None,
+        if_match: str | None = None,
+    ) -> dict:
+        """Update a test-case action. Requires CALM_ENABLE_WRITES=true.
+        If-Match (modifiedAt) is auto-fetched if omitted."""
+        ensure_writes_enabled()
+        if not action_id:
+            raise ValueError("action_id is required")
+        h = get_calm_headers(ctx)
+        return client.update_test_action(
+            token=h.token, action_id=action_id, title=title, description=description,
+            expected_result=expected_result, sequence=sequence,
+            is_evidence_required=is_evidence_required, if_match=if_match, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def delete_calm_test_action(action_id: str, ctx: Context, if_match: str | None = None) -> dict:
+        """Delete a test-case action. Requires CALM_ENABLE_WRITES=true."""
+        ensure_writes_enabled()
+        if not action_id:
+            raise ValueError("action_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_test_action(
+            token=h.token, action_id=action_id, if_match=if_match, base_url=h.base_url,
+        )

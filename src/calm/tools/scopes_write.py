@@ -99,3 +99,36 @@ def register(mcp: FastMCP) -> None:
             if_match=if_match,
             base_url=h.base_url,
         )
+
+    @mcp.tool()
+    def assign_calm_scenario_versions(scope_id: str, version_ids: list, ctx: Context) -> dict:
+        """Assign solution-scenario versions to a scope. Requires CALM_ENABLE_WRITES=true.
+
+        Args:
+            scope_id: The scope to assign versions to.
+            version_ids: List of solutionScenarioVersion UUIDs.
+        """
+        ensure_writes_enabled()
+        if not scope_id:
+            raise ValueError("scope_id is required")
+        h = get_calm_headers(ctx)
+        return client.assign_scenario_versions(
+            token=h.token, scope_id=scope_id, version_ids=version_ids, base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def update_calm_scope_assignments(assignments: list, ctx: Context) -> dict:
+        """Scope/unscope solution processes (collection-level). Requires CALM_ENABLE_WRITES=true.
+
+        Args:
+            assignments: List of dicts, each with scopeId, solutionScenarioVersionId,
+                solutionProcessVersionId, isScoped (all required) and an optional
+                statusId (EMPTY/DESIGN/REALIZATION/PRODUCTION/MAINTENANCE/OBSOLETE).
+        """
+        ensure_writes_enabled()
+        if not assignments:
+            raise ValueError("assignments must be a non-empty list")
+        h = get_calm_headers(ctx)
+        return client.update_scope_assignments(
+            token=h.token, assignments=assignments, base_url=h.base_url,
+        )

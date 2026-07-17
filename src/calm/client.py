@@ -916,3 +916,279 @@ def delete_test_case(
         return {"deleted": test_case_id, "force": True}
     _delete(base, token, if_match=etag)
     return {"deleted": test_case_id}
+
+
+# ===========================================================================
+# Sub-entity write functions
+# ===========================================================================
+
+# --- Generic escape hatch ---------------------------------------------------
+
+def api_write(
+    token: str,
+    method: str,
+    path: str,
+    body: dict | list | None = None,
+    if_match: str | None = None,
+    base_url: str | None = None,
+) -> Any:
+    """Low-level POST/PATCH to any CALM API path (escape hatch for endpoints
+    without a dedicated tool). `path` is relative to the tenant base URL, e.g.
+    "api/calm-tasks/v1/tasks/{id}/comments". Returns the parsed response or a
+    small ack. Pass `if_match` where the target service requires an ETag.
+    """
+    url = f"{_base_url(base_url)}/{path.lstrip('/')}"
+    result = _write(method.upper(), url, token, body if body is not None else {}, if_match=if_match)
+    return result if (isinstance(result, dict) and result) else {"ok": True, "method": method.upper(), "path": path}
+
+
+def api_delete(token: str, path: str, if_match: str | None = None, base_url: str | None = None) -> dict:
+    """Low-level DELETE to any CALM API path (escape hatch). `path` is relative to
+    the tenant base URL. Pass `if_match` where the target service requires an ETag.
+    """
+    url = f"{_base_url(base_url)}/{path.lstrip('/')}"
+    _delete(url, token, if_match=if_match)
+    return {"deleted": path}
+
+
+# --- Task sub-entities (plain REST, no If-Match) ---------------------------
+
+def create_task_relation(
+    token: str, task_id: str, relation_task_id: str, relation_type: str = "0", base_url: str | None = None
+) -> dict:
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}/relations"
+    result = _write("POST", url, token, {"type": relation_type, "relationTaskId": relation_task_id})
+    return result if (isinstance(result, dict) and result) else {"ok": True}
+
+
+def delete_task_relation(token: str, relation_id: str, base_url: str | None = None) -> dict:
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/relations/{relation_id}"
+    _delete(url, token)
+    return {"deleted": relation_id}
+
+
+def set_task_tags(token: str, task_id: str, tags: list, base_url: str | None = None) -> dict:
+    """Replace a task's tag assignments. Tags look like "Group: Tag"."""
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/updateTags"
+    result = _write("POST", url, token, {"taskId": task_id, "tags": tags})
+    return result if (isinstance(result, dict) and result) else {"ok": True, "taskId": task_id, "tags": tags}
+
+
+def create_task_comment(
+    token: str, task_id: str, text: str | None = None, extra_fields: dict | None = None, base_url: str | None = None
+) -> dict:
+    """Add a comment to a task. The exact body field is not documented; `text` is
+    sent as-is and `extra_fields` can override/augment it."""
+    body: dict[str, Any] = {}
+    if text is not None:
+        body["text"] = text
+    if extra_fields:
+        body.update(extra_fields)
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}/comments"
+    result = _write("POST", url, token, body)
+    return result if (isinstance(result, dict) and result) else {"ok": True, "submitted": body}
+
+
+def update_task_comment(
+    token: str, comment_id: str, text: str | None = None, extra_fields: dict | None = None, base_url: str | None = None
+) -> dict:
+    body: dict[str, Any] = {}
+    if text is not None:
+        body["text"] = text
+    if extra_fields:
+        body.update(extra_fields)
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/comments/{comment_id}"
+    result = _write("PATCH", url, token, body)
+    return result if (isinstance(result, dict) and result) else {"updated": comment_id}
+
+
+def delete_task_comment(token: str, comment_id: str, base_url: str | None = None) -> dict:
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/comments/{comment_id}"
+    _delete(url, token)
+    return {"deleted": comment_id}
+
+
+# --- Project timeboxes (plain REST, no If-Match) ---------------------------
+
+def create_timebox(
+    token: str,
+    project_id: str,
+    name: str | None = None,
+    timebox_type: int | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    closed: bool | None = None,
+    extra_fields: dict | None = None,
+    base_url: str | None = None,
+) -> dict:
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if timebox_type is not None:
+        body["type"] = timebox_type
+    if start_date is not None:
+        body["startDate"] = start_date
+    if end_date is not None:
+        body["endDate"] = end_date
+    if closed is not None:
+        body["closed"] = closed
+    if extra_fields:
+        body.update(extra_fields)
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/timeboxes"
+    result = _write("POST", url, token, body)
+    return result if (isinstance(result, dict) and result) else {"ok": True, "submitted": body}
+
+
+def update_timebox(
+    token: str,
+    timebox_id: str,
+    name: str | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    closed: bool | None = None,
+    extra_fields: dict | None = None,
+    base_url: str | None = None,
+) -> dict:
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if start_date is not None:
+        body["startDate"] = start_date
+    if end_date is not None:
+        body["endDate"] = end_date
+    if closed is not None:
+        body["closed"] = closed
+    if extra_fields:
+        body.update(extra_fields)
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/timeboxes/{timebox_id}"
+    result = _write("PATCH", url, token, body)
+    return result if (isinstance(result, dict) and result) else {"updated": timebox_id}
+
+
+def delete_timebox(token: str, timebox_id: str, base_url: str | None = None) -> dict:
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/timeboxes/{timebox_id}"
+    _delete(url, token)
+    return {"deleted": timebox_id}
+
+
+# --- Process management: scope assignments & scenario versions -------------
+
+def assign_scenario_versions(token: str, scope_id: str, version_ids: list, base_url: str | None = None) -> dict:
+    """Assign one or more solution-scenario versions to a scope."""
+    url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes/{scope_id}/solutionScenarioVersions"
+    body = {"value": [{"id": v} for v in version_ids]}
+    result = _write("POST", url, token, body)
+    return result if (isinstance(result, dict) and result) else {"ok": True, "scopeId": scope_id}
+
+
+def update_scope_assignments(token: str, assignments: list, base_url: str | None = None) -> dict:
+    """Scope/unscope solution processes. Each assignment is a dict with
+    scopeId, solutionScenarioVersionId, solutionProcessVersionId, isScoped
+    (required) and an optional statusId
+    (EMPTY/DESIGN/REALIZATION/PRODUCTION/MAINTENANCE/OBSOLETE)."""
+    url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/solutionProcesses/scopeAssignments"
+    result = _write("PATCH", url, token, {"value": assignments})
+    return result if (isinstance(result, dict) and result) else {"ok": True, "count": len(assignments)}
+
+
+# --- Test management: activities & actions (OData, If-Match = modifiedAt) ---
+
+def _tm_url(base_url: str | None, path: str) -> str:
+    return f"{_base_url(base_url)}/api/calm-testmanagement/v1/{path}"
+
+
+def create_test_action(
+    token: str,
+    activity_id: str,
+    title: str,
+    description: str | None = None,
+    expected_result: str | None = None,
+    sequence: int | None = None,
+    is_evidence_required: bool | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Create an action under an activity (POST /Activities/{id}/toActions)."""
+    body: dict[str, Any] = {"title": title}
+    if description is not None:
+        body["description"] = description
+    if expected_result is not None:
+        body["expectedResult"] = expected_result
+    if sequence is not None:
+        body["sequence"] = sequence
+    if is_evidence_required is not None:
+        body["isEvidenceRequired"] = is_evidence_required
+    url = _tm_url(base_url, f"Activities/{activity_id}/toActions")
+    result = _write("POST", url, token, body)
+    return result if (isinstance(result, dict) and result) else {"ok": True, "submitted": body}
+
+
+def update_test_action(
+    token: str,
+    action_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    expected_result: str | None = None,
+    sequence: int | None = None,
+    is_evidence_required: bool | None = None,
+    if_match: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    body: dict[str, Any] = {}
+    if title is not None:
+        body["title"] = title
+    if description is not None:
+        body["description"] = description
+    if expected_result is not None:
+        body["expectedResult"] = expected_result
+    if sequence is not None:
+        body["sequence"] = sequence
+    if is_evidence_required is not None:
+        body["isEvidenceRequired"] = is_evidence_required
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+    url = _tm_url(base_url, f"Actions/{action_id}")
+    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
+    result = _write("PATCH", url, token, body, if_match=etag)
+    return result if (isinstance(result, dict) and result) else {"updated": action_id}
+
+
+def delete_test_action(token: str, action_id: str, if_match: str | None = None, base_url: str | None = None) -> dict:
+    url = _tm_url(base_url, f"Actions/{action_id}")
+    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
+    _delete(url, token, if_match=etag)
+    return {"deleted": action_id}
+
+
+def update_test_activity(
+    token: str,
+    activity_id: str,
+    title: str | None = None,
+    sequence: int | None = None,
+    is_in_scope: bool | None = None,
+    if_match: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    body: dict[str, Any] = {}
+    if title is not None:
+        body["title"] = title
+    if sequence is not None:
+        body["sequence"] = sequence
+    if is_in_scope is not None:
+        body["isInScope"] = is_in_scope
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+    url = _tm_url(base_url, f"Activities/{activity_id}")
+    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
+    result = _write("PATCH", url, token, body, if_match=etag)
+    return result if (isinstance(result, dict) and result) else {"updated": activity_id}
+
+
+def delete_test_activity(token: str, activity_id: str, if_match: str | None = None, base_url: str | None = None) -> dict:
+    url = _tm_url(base_url, f"Activities/{activity_id}")
+    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
+    _delete(url, token, if_match=etag)
+    return {"deleted": activity_id}

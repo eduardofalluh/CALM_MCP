@@ -37,6 +37,7 @@ from starlette.middleware import Middleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.calm.tools import (
+    advanced_write,
     health,
     processes,
     processes_write,
@@ -109,6 +110,7 @@ projects_write.register(mcp)
 processes_write.register(mcp)
 scopes_write.register(mcp)
 test_cases_write.register(mcp)
+advanced_write.register(mcp)
 
 
 def main() -> None:
