@@ -56,13 +56,24 @@ class TokenManager:
         raw = f"{self._client_id}:{self._client_secret}".encode()
         basic = base64.b64encode(raw).decode()
 
+        # grant_type goes in the x-www-form-urlencoded body (OAuth2 standard;
+        # matches `curl -u id:secret -d grant_type=client_credentials`). Some
+        # XSUAA configs 401 when it's only a query param with no request body.
         resp = requests.post(
             self._auth_url,
-            params={"grant_type": "client_credentials"},
-            headers={"Authorization": f"Basic {basic}"},
+            data={"grant_type": "client_credentials"},
+            headers={
+                "Authorization": f"Basic {basic}",
+                "Accept": "application/json",
+            },
             timeout=30,
         )
-        resp.raise_for_status()
+        if resp.status_code != 200:
+            # Surface XSUAA's actual message (never the secret) to aid debugging.
+            raise RuntimeError(
+                f"XSUAA token request failed: HTTP {resp.status_code} {resp.reason} "
+                f"at {self._auth_url} — response: {resp.text[:500]}"
+            )
         data = resp.json()
 
         self._token = data["access_token"]
