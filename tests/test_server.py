@@ -53,6 +53,9 @@ def _write_shim() -> Path:
         "    if '/projects/' in url:\n"
         "        # Projects: ETag is the numeric-timestamp `etag` body field (no header).\n"
         "        return _FakeResp(json.dumps({'id': 'P-1', 'name': 'old', 'etag': '1755245808454'}))\n"
+        "    if '/tasks/' in url:\n"
+        "        # Single-task GET used to auto-detect type for status-by-label updates.\n"
+        "        return _FakeResp(json.dumps({'id': 'T1', 'type': 'CALMTASK', 'title': 'old'}))\n"
         "    return _FakeResp(_PAYLOAD)\n"
         "def _fake_request(method, url, *a, **kw):\n"
         "    # Echo the submitted body back with a generated id, mimicking a create/update.\n"
@@ -501,6 +504,14 @@ async def main() -> int:
                 "calm_api_write", {"method": "GET", "path": "api/calm-tasks/v1/tasks"},
             )
             check("bad method errors", res.isError is True)
+
+            print("\nTest 33: update_calm_task status-by-label WITHOUT task_type (auto-detect type)")
+            res = await session.call_tool(
+                "update_calm_task", {"task_id": "T1", "status": "In Progress"},
+            )
+            au = res.structuredContent or json.loads(res.content[0].text)
+            check("status-by-label update did not error", res.isError is not True, f"got {au}")
+            check("auto-detected type resolved status", au.get("Status") == "In Progress", f"got {au.get('Status')}")
 
     print("\n" + "=" * 60)
     if failures:

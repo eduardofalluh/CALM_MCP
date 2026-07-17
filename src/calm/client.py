@@ -168,6 +168,7 @@ def _write(method: str, url: str, token: str, body: dict, if_match: str | None =
     headers = {
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/json",
+        "Accept": "application/json",
     }
     if if_match:
         headers["If-Match"] = if_match
@@ -182,7 +183,7 @@ def _write(method: str, url: str, token: str, body: dict, if_match: str | None =
 
 def _delete(url: str, token: str, if_match: str | None = None) -> dict:
     """Send a DELETE and return {} (or the parsed body if the API returns one)."""
-    headers = {"Authorization": f"Bearer {token}"}
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     if if_match:
         headers["If-Match"] = if_match
     resp = requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT)
@@ -226,6 +227,17 @@ def _resolve_etag(
     if body_field and isinstance(data, dict):
         return data.get(body_field)
     return None
+
+
+def _tm_if_match(if_match: str | None) -> str:
+    """If-Match token for Test Management PATCH/DELETE.
+
+    The entity's modifiedAt timestamp is documented as the ETag but is rejected as
+    an If-Match token in practice (412 Precondition Failed). The '*' wildcard —
+    match any current version — is accepted, so it's the default here. Callers can
+    still pass an explicit ETag for strict optimistic concurrency.
+    """
+    return if_match or "*"
 
 
 def _base_url(base_url: str | None = None) -> str:
@@ -440,12 +452,22 @@ def update_task(
     if status is not None:
         # If a human label is given we need the type to pick the right code.
         type_code = body.get("type") or (resolve_task_type_code(task_type) if task_type else None)
+        if status not in _KNOWN_STATUS_CODES and not type_code:
+            # Auto-fetch the task's type so a human status label works standalone.
+            try:
+                data, _ = _get_with_meta(
+                    f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}", token
+                )
+                if isinstance(data, dict) and data.get("type"):
+                    type_code = data["type"]
+            except Exception:
+                pass
         if status in _KNOWN_STATUS_CODES or type_code:
             body["status"] = resolve_status_code(status, type_code or "")
         else:
             raise ValueError(
-                "Updating status by human label requires `task_type`; "
-                "or pass a raw CALM status code."
+                "Updating status by human label requires `task_type` (could not "
+                "auto-detect the task's type); or pass a raw CALM status code."
             )
     if start_date is not None:
         body["startDate"] = start_date
@@ -850,7 +872,7 @@ def update_test_case(
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}"
-    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
+    etag = _tm_if_match(if_match)
     result = _write("PATCH", url, token, body, if_match=etag)
     return _format_test_case(result) if isinstance(result, dict) and result else {"updated": test_case_id, "fields": body}
 
@@ -909,7 +931,7 @@ def delete_test_case(
     and results (requires the calm-api.testcases.force-delete scope).
     """
     base = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}"
-    etag = _resolve_etag(base, token, if_match, body_field="modifiedAt")
+    etag = _tm_if_match(if_match)
     if force:
         action_url = f"{base}/api.v1.ExternalServiceAPI.forceDeletionIncludingTestRunsAndResults"
         _write("POST", action_url, token, {}, if_match=etag)
@@ -1151,14 +1173,14 @@ def update_test_action(
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
     url = _tm_url(base_url, f"Actions/{action_id}")
-    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
+    etag = _tm_if_match(if_match)
     result = _write("PATCH", url, token, body, if_match=etag)
     return result if (isinstance(result, dict) and result) else {"updated": action_id}
 
 
 def delete_test_action(token: str, action_id: str, if_match: str | None = None, base_url: str | None = None) -> dict:
     url = _tm_url(base_url, f"Actions/{action_id}")
-    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
+    etag = _tm_if_match(if_match)
     _delete(url, token, if_match=etag)
     return {"deleted": action_id}
 
@@ -1182,13 +1204,13 @@ def update_test_activity(
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
     url = _tm_url(base_url, f"Activities/{activity_id}")
-    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
+    etag = _tm_if_match(if_match)
     result = _write("PATCH", url, token, body, if_match=etag)
     return result if (isinstance(result, dict) and result) else {"updated": activity_id}
 
 
 def delete_test_activity(token: str, activity_id: str, if_match: str | None = None, base_url: str | None = None) -> dict:
     url = _tm_url(base_url, f"Activities/{activity_id}")
-    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
+    etag = _tm_if_match(if_match)
     _delete(url, token, if_match=etag)
     return {"deleted": activity_id}
