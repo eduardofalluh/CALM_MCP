@@ -46,8 +46,12 @@ CALM_MCP/
 │           ├── processes.py    # get_calm_business_processes, get_calm_solution_processes
 │           ├── scopes.py       # get_calm_scopes
 │           ├── test_cases.py   # get_calm_test_cases
-│           ├── tasks_write.py   # create_calm_task, update_calm_task (guarded)
-│           └── health.py       # calm_health
+│           ├── health.py       # calm_health
+│           ├── tasks_write.py       # create/update_calm_task (guarded)
+│           ├── projects_write.py    # create/update_calm_project (guarded)
+│           ├── processes_write.py   # create/update business & solution processes (guarded)
+│           ├── scopes_write.py      # create/update_calm_scope (guarded)
+│           └── test_cases_write.py  # create/update_calm_test_case (guarded)
 ├── tests/
 │   └── test_server.py
 ├── server.py                   # Entry point
@@ -76,12 +80,30 @@ nothing can accidentally change the tenant.
 | Tool | Description | Args |
 |------|-------------|------|
 | `create_calm_task` | Create a task in a project | `project_id`, `title`, `task_type` (+ optional `status`, `start_date`, `due_date`, `assignee_id`, `description`) |
-| `update_calm_task` | Partial-update an existing task | `task_id` (+ any of `title`, `task_type`, `status`, `start_date`, `due_date`, `assignee_id`, `description`, `obsolete`) |
+| `update_calm_task` | Partial-update a task | `task_id` (+ any of `title`, `task_type`, `status`, `start_date`, `due_date`, `assignee_id`, `description`, `obsolete`) |
+| `create_calm_project` | Create a project | `name` (+ optional `status`, `purpose`, `operational_status`) |
+| `update_calm_project` | Partial-update a project | `project_id` (+ any of `name`, `status`, `purpose`, `operational_status`) |
+| `create_calm_business_process` | Create a business process | `name` (+ optional `description`) |
+| `update_calm_business_process` | Partial-update a business process | `business_process_id` (+ `name`, `description`) |
+| `create_calm_solution_process` | Create a solution process | `name` (+ optional `description`, `status`, `countries`, `state`) |
+| `update_calm_solution_process` | Partial-update a solution process | `solution_process_id` (+ any of the above) |
+| `create_calm_scope` | Create a process-management scope | `project_id`, `name` (+ optional `description`) |
+| `update_calm_scope` | Partial-update a scope | `scope_id` (+ `name`, `description`) |
+| `create_calm_test_case` | Create a manual test case | `title` (+ optional `project_id`, `scope_id`, `solution_process_id`, `priority`, `is_prepared`) |
+| `update_calm_test_case` | Partial-update a test case | `test_case_id` (+ any of `title`, `scope_id`, `solution_process_id`, `priority`, `is_prepared`) |
 
-`task_type` and `status` accept human labels ("User Story", "In Progress") or raw
-CALM codes. Because status codes are type-specific, pass `task_type` alongside a
-human `status` when updating. Write payloads are derived from the same field names
-the read tools parse; confirm the field contract against your tenant.
+`task_type`/`status` (tasks), `status` (projects: Active/Hidden), and `priority`
+(test cases: Very High/High/Medium/Low) accept human labels or raw CALM codes.
+Because task status codes are type-specific, pass `task_type` alongside a human
+`status` when updating a task.
+
+> **Payloads are derived**, not verified. SAP's API docs are JavaScript-rendered
+> and could not be read programmatically, so create/update request bodies use the
+> same camelCase field names the read tools parse (`projectId`, `title`, `type`,
+> `status`, `startDate`, `priorityCode`, …). The OData-backed services (processes,
+> scopes, test cases) may need a different id-in-URL format for updates
+> (`Entity('id')` rather than `Entity/id`). **Confirm against a live tenant before
+> merging to main.**
 
 ---
 

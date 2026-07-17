@@ -116,11 +116,18 @@ async def main() -> int:
                 expected.issubset(tool_names),
                 f"got {sorted(tool_names)}",
             )
-            write_tools = {"create_calm_task", "update_calm_task"}
+            write_tools = {
+                "create_calm_task", "update_calm_task",
+                "create_calm_project", "update_calm_project",
+                "create_calm_business_process", "update_calm_business_process",
+                "create_calm_solution_process", "update_calm_solution_process",
+                "create_calm_scope", "update_calm_scope",
+                "create_calm_test_case", "update_calm_test_case",
+            }
             check(
-                "write tools advertised",
+                "all 12 write tools advertised",
                 write_tools.issubset(tool_names),
-                f"got {sorted(tool_names)}",
+                f"missing {sorted(write_tools - tool_names)}",
             )
 
             for t in tools.tools:
@@ -234,6 +241,62 @@ async def main() -> int:
             print("\nTest 8: update with no fields surfaces a clear error")
             res = await session.call_tool("update_calm_task", {"task_id": "T123"})
             check("empty update errors", res.isError is True)
+
+            # ---- other entity writes round-trip -------------------------
+            print("\nTest 9: create_calm_project round-trips (status label mapping)")
+            res = await session.call_tool(
+                "create_calm_project",
+                {"name": "Proj X", "status": "Active", "purpose": "Build"},
+            )
+            proj = res.structuredContent or json.loads(res.content[0].text)
+            check("project create did not error", res.isError is not True, f"got {proj}")
+            check("project name echoed", proj.get("Name") == "Proj X", f"got {proj}")
+            check("project status label round-trips", proj.get("Status") == "Active", f"got {proj}")
+
+            print("\nTest 10: create_calm_business_process round-trips")
+            res = await session.call_tool(
+                "create_calm_business_process",
+                {"name": "Order to Cash", "description": "O2C"},
+            )
+            bp = res.structuredContent or json.loads(res.content[0].text)
+            check("business process create did not error", res.isError is not True, f"got {bp}")
+            check("business process name echoed", bp.get("Name") == "Order to Cash", f"got {bp}")
+
+            print("\nTest 11: create_calm_solution_process round-trips")
+            res = await session.call_tool(
+                "create_calm_solution_process",
+                {"name": "SP1", "countries": ["US", "CA"]},
+            )
+            sp = res.structuredContent or json.loads(res.content[0].text)
+            check("solution process create did not error", res.isError is not True, f"got {sp}")
+            check("solution process countries echoed", sp.get("Countries") == ["US", "CA"], f"got {sp}")
+
+            print("\nTest 12: create_calm_scope round-trips")
+            res = await session.call_tool(
+                "create_calm_scope",
+                {"project_id": "P001", "name": "Scope A", "description": "d"},
+            )
+            sc = res.structuredContent or json.loads(res.content[0].text)
+            check("scope create did not error", res.isError is not True, f"got {sc}")
+            check("scope project id echoed", sc.get("Project ID") == "P001", f"got {sc}")
+
+            print("\nTest 13: create_calm_test_case round-trips (priority label mapping)")
+            res = await session.call_tool(
+                "create_calm_test_case",
+                {"title": "TC1", "project_id": "P001", "priority": "High", "is_prepared": True},
+            )
+            tc = res.structuredContent or json.loads(res.content[0].text)
+            check("test case create did not error", res.isError is not True, f"got {tc}")
+            check("test case title echoed", tc.get("Title") == "TC1", f"got {tc}")
+            check("test case priority label round-trips", tc.get("Priority") == "High", f"got {tc}")
+            check("test case prepared echoed", tc.get("Prepared") is True, f"got {tc}")
+
+            print("\nTest 14: unknown priority label surfaces a clear error")
+            res = await session.call_tool(
+                "create_calm_test_case",
+                {"title": "TC2", "priority": "Bogus"},
+            )
+            check("bad priority errors", res.isError is True)
 
     print("\n" + "=" * 60)
     if failures:

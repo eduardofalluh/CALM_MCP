@@ -125,6 +125,37 @@ def resolve_status_code(value: str, type_code: str) -> str:
     return code
 
 
+PROJECT_STATUS_REVERSE_MAP = {label.lower(): code for code, label in PROJECT_STATUS_MAP.items()}
+TESTCASE_PRIORITY_REVERSE_MAP = {label.lower(): code for code, label in TESTCASE_PRIORITY_MAP.items()}
+
+
+def resolve_project_status(value: str) -> str:
+    """Accept "Active"/"Hidden" or a raw code ("O"/"C") and return the code."""
+    if value in PROJECT_STATUS_MAP:  # already a raw code
+        return value
+    code = PROJECT_STATUS_REVERSE_MAP.get(value.strip().lower())
+    if not code:
+        raise ValueError(
+            f"Unknown project status '{value}'. Use "
+            f"{', '.join(sorted(PROJECT_STATUS_MAP.values()))} (or raw code O/C)."
+        )
+    return code
+
+
+def resolve_testcase_priority(value: str) -> str:
+    """Accept a label ("High") or a raw code ("20") and return the code string."""
+    value = str(value)
+    if value in TESTCASE_PRIORITY_MAP:  # already a raw code
+        return value
+    code = TESTCASE_PRIORITY_REVERSE_MAP.get(value.strip().lower())
+    if not code:
+        raise ValueError(
+            f"Unknown test case priority '{value}'. Use "
+            f"{', '.join(TESTCASE_PRIORITY_MAP.values())} (or raw code 10/20/30/40)."
+        )
+    return code
+
+
 # ---------------------------------------------------------------------------
 # Internal helper
 # ---------------------------------------------------------------------------
@@ -367,3 +398,301 @@ def update_task(
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}"
     result = _write("PATCH", url, token, body)
     return _format_task(result) if isinstance(result, dict) and result else {"updated": task_id, "fields": body}
+
+
+# --- Projects ---------------------------------------------------------------
+
+def _format_project(item: dict) -> dict:
+    return {
+        "ID": item.get("id"),
+        "Name": item.get("name"),
+        "Status": PROJECT_STATUS_MAP.get(item.get("status"), item.get("status")),
+        "Purpose": item.get("purpose"),
+        "OperationalStatus": item.get("operationalStatus"),
+    }
+
+
+def create_project(
+    token: str,
+    name: str,
+    status: str | None = None,
+    purpose: str | None = None,
+    operational_status: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Create a Cloud ALM project. Returns the created project, formatted."""
+    body: dict[str, Any] = {"name": name}
+    if status is not None:
+        body["status"] = resolve_project_status(status)
+    if purpose is not None:
+        body["purpose"] = purpose
+    if operational_status is not None:
+        body["operationalStatus"] = operational_status
+
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects"
+    result = _write("POST", url, token, body)
+    return _format_project(result) if isinstance(result, dict) and result else {"submitted": body}
+
+
+def update_project(
+    token: str,
+    project_id: str,
+    name: str | None = None,
+    status: str | None = None,
+    purpose: str | None = None,
+    operational_status: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Partial-update a project. Only provided fields are sent."""
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if status is not None:
+        body["status"] = resolve_project_status(status)
+    if purpose is not None:
+        body["purpose"] = purpose
+    if operational_status is not None:
+        body["operationalStatus"] = operational_status
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}"
+    result = _write("PATCH", url, token, body)
+    return _format_project(result) if isinstance(result, dict) and result else {"updated": project_id, "fields": body}
+
+
+# --- Business processes -----------------------------------------------------
+
+def _format_business_process(item: dict) -> dict:
+    return {
+        "ID": item.get("id"),
+        "Name": item.get("name"),
+        "Description": item.get("description"),
+    }
+
+
+def create_business_process(
+    token: str,
+    name: str,
+    description: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Create a business process. Returns the created process, formatted."""
+    body: dict[str, Any] = {"name": name}
+    if description is not None:
+        body["description"] = description
+
+    url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/businessProcesses"
+    result = _write("POST", url, token, body)
+    return _format_business_process(result) if isinstance(result, dict) and result else {"submitted": body}
+
+
+def update_business_process(
+    token: str,
+    business_process_id: str,
+    name: str | None = None,
+    description: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Partial-update a business process. Only provided fields are sent."""
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if description is not None:
+        body["description"] = description
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+
+    url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/businessProcesses/{business_process_id}"
+    result = _write("PATCH", url, token, body)
+    return _format_business_process(result) if isinstance(result, dict) and result else {"updated": business_process_id, "fields": body}
+
+
+# --- Solution processes -----------------------------------------------------
+
+def _format_solution_process(item: dict) -> dict:
+    return {
+        "ID": item.get("id"),
+        "Name": item.get("name"),
+        "Description": item.get("description"),
+        "Status": item.get("status"),
+        "Countries": item.get("countries"),
+        "State": item.get("state"),
+    }
+
+
+def create_solution_process(
+    token: str,
+    name: str,
+    description: str | None = None,
+    status: str | None = None,
+    countries: list | None = None,
+    state: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Create a solution process. Returns the created process, formatted."""
+    body: dict[str, Any] = {"name": name}
+    if description is not None:
+        body["description"] = description
+    if status is not None:
+        body["status"] = status
+    if countries is not None:
+        body["countries"] = countries
+    if state is not None:
+        body["state"] = state
+
+    url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses"
+    result = _write("POST", url, token, body)
+    return _format_solution_process(result) if isinstance(result, dict) and result else {"submitted": body}
+
+
+def update_solution_process(
+    token: str,
+    solution_process_id: str,
+    name: str | None = None,
+    description: str | None = None,
+    status: str | None = None,
+    countries: list | None = None,
+    state: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Partial-update a solution process. Only provided fields are sent."""
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if description is not None:
+        body["description"] = description
+    if status is not None:
+        body["status"] = status
+    if countries is not None:
+        body["countries"] = countries
+    if state is not None:
+        body["state"] = state
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+
+    url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses/{solution_process_id}"
+    result = _write("PATCH", url, token, body)
+    return _format_solution_process(result) if isinstance(result, dict) and result else {"updated": solution_process_id, "fields": body}
+
+
+# --- Scopes -----------------------------------------------------------------
+
+def _format_scope(item: dict) -> dict:
+    return {
+        "ID": item.get("id"),
+        "Project ID": item.get("projectId"),
+        "Name": item.get("name"),
+        "Description": item.get("description"),
+    }
+
+
+def create_scope(
+    token: str,
+    project_id: str,
+    name: str,
+    description: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Create a process-management scope in a project. Returns it, formatted."""
+    body: dict[str, Any] = {"projectId": project_id, "name": name}
+    if description is not None:
+        body["description"] = description
+
+    url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes"
+    result = _write("POST", url, token, body)
+    return _format_scope(result) if isinstance(result, dict) and result else {"submitted": body}
+
+
+def update_scope(
+    token: str,
+    scope_id: str,
+    name: str | None = None,
+    description: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Partial-update a scope. Only provided fields are sent."""
+    body: dict[str, Any] = {}
+    if name is not None:
+        body["name"] = name
+    if description is not None:
+        body["description"] = description
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+
+    url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes/{scope_id}"
+    result = _write("PATCH", url, token, body)
+    return _format_scope(result) if isinstance(result, dict) and result else {"updated": scope_id, "fields": body}
+
+
+# --- Manual test cases ------------------------------------------------------
+
+def _format_test_case(item: dict) -> dict:
+    priority_code = str(item.get("priorityCode"))
+    return {
+        "ID": item.get("id"),
+        "Project ID": item.get("projectId"),
+        "Scope ID": item.get("scopeId"),
+        "Solution Process ID": item.get("solutionProcessId"),
+        "Title": item.get("title"),
+        "Prepared": item.get("isPrepared"),
+        "Priority": TESTCASE_PRIORITY_MAP.get(priority_code, priority_code),
+    }
+
+
+def create_test_case(
+    token: str,
+    title: str,
+    project_id: str | None = None,
+    scope_id: str | None = None,
+    solution_process_id: str | None = None,
+    priority: str | None = None,
+    is_prepared: bool | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Create a manual test case. Returns the created test case, formatted."""
+    body: dict[str, Any] = {"title": title}
+    if project_id is not None:
+        body["projectId"] = project_id
+    if scope_id is not None:
+        body["scopeId"] = scope_id
+    if solution_process_id is not None:
+        body["solutionProcessId"] = solution_process_id
+    if priority is not None:
+        body["priorityCode"] = resolve_testcase_priority(priority)
+    if is_prepared is not None:
+        body["isPrepared"] = is_prepared
+
+    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases"
+    result = _write("POST", url, token, body)
+    return _format_test_case(result) if isinstance(result, dict) and result else {"submitted": body}
+
+
+def update_test_case(
+    token: str,
+    test_case_id: str,
+    title: str | None = None,
+    scope_id: str | None = None,
+    solution_process_id: str | None = None,
+    priority: str | None = None,
+    is_prepared: bool | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Partial-update a manual test case. Only provided fields are sent."""
+    body: dict[str, Any] = {}
+    if title is not None:
+        body["title"] = title
+    if scope_id is not None:
+        body["scopeId"] = scope_id
+    if solution_process_id is not None:
+        body["solutionProcessId"] = solution_process_id
+    if priority is not None:
+        body["priorityCode"] = resolve_testcase_priority(priority)
+    if is_prepared is not None:
+        body["isPrepared"] = is_prepared
+    if not body:
+        raise ValueError("No fields to update — provide at least one field.")
+
+    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}"
+    result = _write("PATCH", url, token, body)
+    return _format_test_case(result) if isinstance(result, dict) and result else {"updated": test_case_id, "fields": body}

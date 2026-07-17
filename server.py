@@ -36,7 +36,18 @@ from fastmcp import FastMCP
 from starlette.middleware import Middleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from src.calm.tools import health, processes, projects, scopes, tasks_write, test_cases
+from src.calm.tools import (
+    health,
+    processes,
+    processes_write,
+    projects,
+    projects_write,
+    scopes,
+    scopes_write,
+    tasks_write,
+    test_cases,
+    test_cases_write,
+)
 
 load_dotenv()
 
@@ -90,8 +101,14 @@ projects.register(mcp)
 processes.register(mcp)
 scopes.register(mcp)
 test_cases.register(mcp)
-tasks_write.register(mcp)
 health.register(mcp)
+
+# Write tools (guarded by CALM_ENABLE_WRITES)
+tasks_write.register(mcp)
+projects_write.register(mcp)
+processes_write.register(mcp)
+scopes_write.register(mcp)
+test_cases_write.register(mcp)
 
 
 def main() -> None:
