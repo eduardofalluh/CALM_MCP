@@ -9,6 +9,7 @@ credentials are stored or fetched here.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any
 
@@ -17,6 +18,22 @@ import requests
 from .config import build_base_url
 
 REQUEST_TIMEOUT = 30  # seconds
+
+log = logging.getLogger("calm-mcp.client")
+
+
+def _raise_for_status(resp: requests.Response, url: str) -> None:
+    """Raise with the API's actual response body on any 4xx/5xx.
+
+    requests' raise_for_status() drops the response body, which hides the real
+    reason (400 field errors, 415 media type, 412/428 ETag, …). Surface it — the
+    Authorization header and request body are never included here.
+    """
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"CALM API error: HTTP {resp.status_code} {resp.reason} at {url} — "
+            f"response: {(resp.text or '')[:800]}"
+        )
 
 # ---------------------------------------------------------------------------
 # Mappings (taken verbatim from the existing agent)
@@ -154,28 +171,41 @@ def _get(url: str, token: str) -> Any:
     headers = {"Authorization": f"Bearer {token}"}
     payload = json.dumps({"session_id": str(uuid.uuid4())})
     resp = requests.get(url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
+    _raise_for_status(resp, url)
     return resp.json()
 
 
-def _write(method: str, url: str, token: str, body: dict, if_match: str | None = None) -> Any:
+def _write(
+    method: str,
+    url: str,
+    token: str,
+    body: dict,
+    if_match: str | None = None,
+    content_type: str = "application/json",
+) -> Any:
     """Send a JSON write request (POST/PATCH) and return the parsed response.
 
     Returns the parsed JSON body, or {} when the API responds with no content
     (e.g. 204 on a PATCH). `if_match` sets the If-Match header, required by the
     OData services (Process Authoring, Test Management) for PATCH/DELETE.
+    `content_type` defaults to application/json; some endpoints (e.g. the
+    processmanagement scopes PATCH) require application/merge-patch+json.
     """
     headers = {
         "Authorization": f"Bearer {token}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
+        "Content-Type": content_type,
     }
     if if_match:
         headers["If-Match"] = if_match
+    # DEBUG only; never logs Authorization or the request body.
+    log.debug(
+        "CALM write: %s %s (Content-Type=%s, If-Match=%s)",
+        method, url, content_type, headers.get("If-Match", "-"),
+    )
     resp = requests.request(
         method, url, headers=headers, data=json.dumps(body), timeout=REQUEST_TIMEOUT
     )
-    resp.raise_for_status()
+    _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
         return {}
     return resp.json()
@@ -183,11 +213,12 @@ def _write(method: str, url: str, token: str, body: dict, if_match: str | None =
 
 def _delete(url: str, token: str, if_match: str | None = None) -> dict:
     """Send a DELETE and return {} (or the parsed body if the API returns one)."""
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    headers = {"Authorization": f"Bearer {token}"}
     if if_match:
         headers["If-Match"] = if_match
+    log.debug("CALM delete: %s (If-Match=%s)", url, headers.get("If-Match", "-"))
     resp = requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
+    _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
         return {}
     return resp.json()
@@ -201,7 +232,7 @@ def _get_with_meta(url: str, token: str) -> tuple[Any, str | None]:
     """
     headers = {"Authorization": f"Bearer {token}"}
     resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
-    resp.raise_for_status()
+    _raise_for_status(resp, url)
     data = resp.json() if (resp.text or "").strip() else {}
     try:
         etag = resp.headers.get("ETag") or resp.headers.get("etag")
@@ -766,7 +797,11 @@ def update_scope(
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes/{scope_id}"
-    result = _write("PATCH", url, token, body, if_match=if_match)
+    # The processmanagement scopes PATCH rejects application/json with 415; it
+    # follows JSON Merge Patch (RFC 7386) and requires this media type.
+    result = _write(
+        "PATCH", url, token, body, if_match=if_match, content_type="application/merge-patch+json"
+    )
     return _format_scope(result) if isinstance(result, dict) and result else {"updated": scope_id, "fields": body}
 
 
