@@ -89,36 +89,51 @@ nothing can accidentally change the tenant.
 | `update_calm_solution_process` | Partial-update a solution process | `solution_process_id` (+ any of the above) |
 | `create_calm_scope` | Create a process-management scope | `project_id`, `name` (+ optional `description`) |
 | `update_calm_scope` | Partial-update a scope | `scope_id` (+ `name`, `description`) |
-| `create_calm_test_case` | Create a manual test case | `title` (+ optional `project_id`, `scope_id`, `solution_process_id`, `priority`, `is_prepared`) |
-| `update_calm_test_case` | Partial-update a test case | `test_case_id` (+ any of `title`, `scope_id`, `solution_process_id`, `priority`, `is_prepared`) |
+| `create_calm_test_case` | Create a manual test case | `title` (+ optional `project_id`, `scope_id`, `solution_process_id`, `priority`, `is_prepared`, `activities`, `references`, process-link fields) |
+| `update_calm_test_case` | Partial-update a test case | `test_case_id` (+ any of `title`, `scope_id`, `solution_process_id`, `priority`, `is_prepared`, `if_match`) |
+| `delete_calm_task` | Delete a task | `task_id` |
+| `delete_calm_business_process` | Delete a business process | `business_process_id` (+ optional `if_match`) |
+| `delete_calm_solution_process` | Delete a solution process | `solution_process_id` (+ optional `if_match`) |
+| `delete_calm_scope` | Delete a scope | `scope_id` (+ optional `if_match`) |
+| `delete_calm_test_case` | Delete a test case (`force` incl. runs/results) | `test_case_id` (+ optional `force`, `if_match`) |
 
 `task_type`/`status` (tasks), `status` (projects: Active/Hidden), and `priority`
 (test cases: Very High/High/Medium/Low) accept human labels or raw CALM codes.
 Because task status codes are type-specific, pass `task_type` alongside a human
 `status` when updating a task.
 
-### Write contract notes (reconciled against SAP docs 2026-07-17)
+### Write contract notes (reconciled against SAP Help Portal docs, v2 — 2026-07-17)
 
 - **Single-entity URL is a path segment** (`/entity/{id}`) for every API, including
-  the OData services — *not* `Entity('id')`.
-- **No CSRF token** is used (stateless OAuth Bearer).
-- **`If-Match: <etag>` is required** on PATCH for the OData services (Process
-  Authoring, Test Management). The update tools **auto-fetch the ETag** from the
-  entity first, or you can pass `if_match` explicitly. For Test Management the ETag
-  is the entity's `modifiedAt` timestamp. Tasks and Projects (plain REST) need no
-  If-Match.
-- **Tasks:** `assigneeId` is the assignee's **email**; `priorityId` is numeric
-  (10/20/30/40); sub-tasks take `parentId`.
-- **Solution process:** `countries` is sent as a **comma-string** (`"DE,FR"`);
-  the parent business process is the nested `businessProcess:{id}` object
-  (pass `business_process_id`).
-- **Test case:** id field is `uuid`.
+  OData — *not* `Entity('id')`. Confirmed verbatim from the Help Portal.
+- **No CSRF token** (stateless OAuth Bearer).
+- **`If-Match: <etag>` is required on PATCH/DELETE** for the OData services
+  (Process Authoring, Test Management — missing → 428, stale → 412). Update/delete
+  tools **auto-fetch the ETag** or accept `if_match`. For Test Management the ETag
+  is the entity's `modifiedAt` timestamp. Tasks/Projects (plain REST) need none;
+  `scopes` sends it defensively.
+- **Tasks:** `assigneeId` is the assignee's **email**; `priorityId` numeric;
+  sub-tasks take `parentId`. The full documented field set (subStatus, scopeId,
+  storyPoints, effort, workstream, involvedParties, classificationId,
+  customField1–20, …) is reachable via the `extra_fields` dict.
+- **Solution process:** `countries` is a **comma-string** (`"DE,FR"`); the parent
+  is the nested `businessProcess:{id}` object (`business_process_id`). Lifecycle
+  (publish / new draft) is driven by dedicated action endpoints, not a status PATCH.
+- **Test case:** id is `uuid`; `priorityCode` is **numeric** (10/20/30/40); the only
+  status-like field is the boolean `isPrepared`. POST supports **deep insert** of
+  `toActivities`/`toActions`/`toReferences` (deep *update* is not supported — edit
+  nested items via their own endpoints). Process-linked test cases need all four of
+  `solution_process_id`, `solution_process_flow_id`,
+  `solution_process_flow_diagram_id`, `content_package_id` together.
+- **Delete:** tasks, business/solution processes, scopes, and test cases support
+  DELETE (no project delete exists). Test cases add a `force` variant that also
+  removes runs/results (needs the `force-delete` scope).
 
 > Still unconfirmed (get from each API's OpenAPI/EDMX or a tenant `$metadata`):
-> requirement/defect status-code lists, whether Projects support write of
-> `purpose`/`operationalStatus`, If-Match requirement on `scopes`, and test-case
-> status codes. See `API_WRITE_SPEC_NEEDED.md`. **Verify against a live tenant
-> before merging to main.**
+> requirement/defect status-code lists and subStatus strings, full `operationalStatus`
+> value list (ONTRK observed) and whether it's PATCHable, If-Match on `scopes`,
+> and the `scopeAssignments` body shape. See `API_WRITE_SPEC_NEEDED.md`.
+> **Verify against a live tenant before merging to main.**
 
 ---
 

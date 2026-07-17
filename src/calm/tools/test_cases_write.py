@@ -22,6 +22,11 @@ def register(mcp: FastMCP) -> None:
         solution_process_id: str | None = None,
         priority: str | None = None,
         is_prepared: bool | None = None,
+        activities: list | None = None,
+        references: list | None = None,
+        solution_process_flow_id: str | None = None,
+        solution_process_flow_diagram_id: str | None = None,
+        content_package_id: str | None = None,
     ) -> dict:
         """Create a new manual test case.
 
@@ -34,6 +39,15 @@ def register(mcp: FastMCP) -> None:
             solution_process_id: Optional solution process ID.
             priority: Optional. "Very High"/"High"/"Medium"/"Low" (or raw 10/20/30/40).
             is_prepared: Optional boolean — whether the test case is prepared.
+            activities: Optional list of activity dicts for deep insert. Each may
+                include a `toActions` list. Activity fields: title, sequence,
+                isInScope. Action fields: title, description, expectedResult,
+                sequence, isEvidenceRequired.
+            references: Optional list of {name, url} references.
+            solution_process_flow_id, solution_process_flow_diagram_id,
+            content_package_id: For a *process-linked* test case, pass all four of
+                these plus solution_process_id together (content_package_id is
+                "CUSTOM" for custom processes).
 
         Returns the created test case (ID, Project ID, Scope ID, Solution Process ID,
         Title, Prepared, Priority) or the submitted payload.
@@ -50,6 +64,11 @@ def register(mcp: FastMCP) -> None:
             solution_process_id=solution_process_id,
             priority=priority,
             is_prepared=is_prepared,
+            activities=activities,
+            references=references,
+            solution_process_flow_id=solution_process_flow_id,
+            solution_process_flow_diagram_id=solution_process_flow_diagram_id,
+            content_package_id=content_package_id,
             base_url=h.base_url,
         )
 
@@ -94,6 +113,38 @@ def register(mcp: FastMCP) -> None:
             solution_process_id=solution_process_id,
             priority=priority,
             is_prepared=is_prepared,
+            if_match=if_match,
+            base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def delete_calm_test_case(
+        test_case_id: str,
+        ctx: Context,
+        force: bool = False,
+        if_match: str | None = None,
+    ) -> dict:
+        """Delete a manual test case.
+
+        Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        OData service: DELETE needs an If-Match ETag (= the entity's modifiedAt;
+        auto-fetched if omitted). A plain delete fails if the test case has
+        execution history — set `force=true` to also remove its test runs and
+        results (needs the calm-api.testcases.force-delete scope on the tenant).
+
+        Args:
+            test_case_id: UUID of the test case to delete.
+            force: If true, force-delete including runs/results (destructive).
+            if_match: Optional ETag/modifiedAt (auto-fetched if omitted).
+        """
+        ensure_writes_enabled()
+        if not test_case_id:
+            raise ValueError("test_case_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_test_case(
+            token=h.token,
+            test_case_id=test_case_id,
+            force=force,
             if_match=if_match,
             base_url=h.base_url,
         )

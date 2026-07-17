@@ -28,6 +28,7 @@ def register(mcp: FastMCP) -> None:
         priority_id: int | None = None,
         external_id: str | None = None,
         parent_id: str | None = None,
+        extra_fields: dict | None = None,
     ) -> dict:
         """Create a new task in a Cloud ALM project.
 
@@ -50,6 +51,9 @@ def register(mcp: FastMCP) -> None:
                 Medium/Low).
             external_id: Optional free-text external reference.
             parent_id: Optional parent task ID (required for sub-tasks).
+            extra_fields: Optional dict of any other documented task fields to send
+                verbatim (e.g. {"scopeId": "...", "storyPoints": 5, "effort": 8.5,
+                "workstream": "WS001,WS002", "classificationId": "US_GAP"}).
 
         Returns the created task (ID, Title, Type, Status, dates, AssigneeName,
         ApprovalState, Obsolete), or the submitted payload if the API returns no body.
@@ -75,6 +79,7 @@ def register(mcp: FastMCP) -> None:
             priority_id=priority_id,
             external_id=external_id,
             parent_id=parent_id,
+            extra_fields=extra_fields,
             base_url=h.base_url,
         )
 
@@ -92,6 +97,7 @@ def register(mcp: FastMCP) -> None:
         priority_id: int | None = None,
         external_id: str | None = None,
         obsolete: bool | None = None,
+        extra_fields: dict | None = None,
     ) -> dict:
         """Update fields of an existing Cloud ALM task (partial update).
 
@@ -111,6 +117,8 @@ def register(mcp: FastMCP) -> None:
             priority_id: Optional numeric priority (10/20/30/40).
             external_id: Optional free-text external reference.
             obsolete: Optional boolean to archive/unarchive the task.
+            extra_fields: Optional dict of any other documented task fields to send
+                verbatim (e.g. subStatus, scopeId, storyPoints, effort, workstream).
 
         Returns the updated task, or a confirmation of the fields sent.
         """
@@ -131,5 +139,23 @@ def register(mcp: FastMCP) -> None:
             priority_id=priority_id,
             external_id=external_id,
             obsolete=obsolete,
+            extra_fields=extra_fields,
             base_url=h.base_url,
         )
+
+    @mcp.tool()
+    def delete_calm_task(task_id: str, ctx: Context) -> dict:
+        """Delete a Cloud ALM task.
+
+        Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        Prefer `update_calm_task(obsolete=true)` to archive rather than hard-delete
+        when you only want to hide the task.
+
+        Args:
+            task_id: ID of the task to delete.
+        """
+        ensure_writes_enabled()
+        if not task_id:
+            raise ValueError("task_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_task(token=h.token, task_id=task_id, base_url=h.base_url)

@@ -77,3 +77,25 @@ def register(mcp: FastMCP) -> None:
             if_match=if_match,
             base_url=h.base_url,
         )
+
+    @mcp.tool()
+    def delete_calm_scope(
+        scope_id: str,
+        ctx: Context,
+        if_match: str | None = None,
+    ) -> dict:
+        """Delete a process-management scope.
+
+        Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        OData service; an If-Match ETag is sent defensively (auto-fetched if omitted).
+        """
+        ensure_writes_enabled()
+        if not scope_id:
+            raise ValueError("scope_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_scope(
+            token=h.token,
+            scope_id=scope_id,
+            if_match=if_match,
+            base_url=h.base_url,
+        )

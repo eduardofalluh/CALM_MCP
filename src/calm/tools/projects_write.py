@@ -21,6 +21,8 @@ def register(mcp: FastMCP) -> None:
         purpose: str | None = None,
         operational_status: str | None = None,
         phase_id: str | None = None,
+        program_id: str | None = None,
+        deployment_plan_id: str | None = None,
     ) -> dict:
         """Create a new Cloud ALM project.
 
@@ -29,9 +31,11 @@ def register(mcp: FastMCP) -> None:
         Args:
             name: Project name.
             status: Optional. "Active" or "Hidden" (or raw code O/C).
-            purpose: Optional project purpose.
-            operational_status: Optional operational status string.
+            purpose: Optional comma-separated purpose (e.g. "IMPLEMENTATION,SERVICE_DELIVERY").
+            operational_status: Optional operational status code (e.g. "ONTRK").
             phase_id: Optional current-phase ID (2025+).
+            program_id: Optional program ID this project belongs to.
+            deployment_plan_id: Optional deployment plan ID.
 
         Returns the created project (ID, Name, Status, Purpose, OperationalStatus)
         or the submitted payload if the API returns no body.
@@ -47,6 +51,8 @@ def register(mcp: FastMCP) -> None:
             purpose=purpose,
             operational_status=operational_status,
             phase_id=phase_id,
+            program_id=program_id,
+            deployment_plan_id=deployment_plan_id,
             base_url=h.base_url,
         )
 
@@ -59,6 +65,8 @@ def register(mcp: FastMCP) -> None:
         purpose: str | None = None,
         operational_status: str | None = None,
         phase_id: str | None = None,
+        program_id: str | None = None,
+        deployment_plan_id: str | None = None,
     ) -> dict:
         """Update fields of an existing Cloud ALM project (partial update).
 
@@ -69,9 +77,11 @@ def register(mcp: FastMCP) -> None:
             project_id: ID of the project to update.
             name: Optional new name.
             status: Optional "Active"/"Hidden" (or raw code O/C).
-            purpose: Optional purpose.
-            operational_status: Optional operational status.
+            purpose: Optional comma-separated purpose.
+            operational_status: Optional operational status code (e.g. "ONTRK").
             phase_id: Optional current-phase ID (2025+).
+            program_id: Optional program ID.
+            deployment_plan_id: Optional deployment plan ID.
         """
         ensure_writes_enabled()
         if not project_id:
@@ -85,5 +95,7 @@ def register(mcp: FastMCP) -> None:
             purpose=purpose,
             operational_status=operational_status,
             phase_id=phase_id,
+            program_id=program_id,
+            deployment_plan_id=deployment_plan_id,
             base_url=h.base_url,
         )

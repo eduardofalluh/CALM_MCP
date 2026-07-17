@@ -190,6 +190,18 @@ def _write(method: str, url: str, token: str, body: dict, if_match: str | None =
     return resp.json()
 
 
+def _delete(url: str, token: str, if_match: str | None = None) -> dict:
+    """Send a DELETE and return {} (or the parsed body if the API returns one)."""
+    headers = {"Authorization": f"Bearer {token}"}
+    if if_match:
+        headers["If-Match"] = if_match
+    resp = requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT)
+    resp.raise_for_status()
+    if resp.status_code == 204 or not (resp.text or "").strip():
+        return {}
+    return resp.json()
+
+
 def _get_with_meta(url: str, token: str) -> tuple[Any, str | None]:
     """GET a single entity, returning (parsed_json, etag).
 
@@ -364,13 +376,17 @@ def create_task(
     priority_id: int | None = None,
     external_id: str | None = None,
     parent_id: str | None = None,
+    extra_fields: dict | None = None,
     base_url: str | None = None,
 ) -> dict:
     """Create a task in a Cloud ALM project. Returns the created task, formatted.
 
     `assignee_id` is the assignee's email address. `priority_id` is numeric
     (10/20/30/40 = Very High/High/Medium/Low). `parent_id` links a sub-task to
-    its parent.
+    its parent. `extra_fields` merges any other documented task field verbatim
+    (e.g. subStatus, scopeId, storyPoints, effort, workstream, involvedParties,
+    classificationId, customField1..20) — used for the long tail not exposed as
+    named args.
     """
     type_code = resolve_task_type_code(task_type)
     body: dict[str, Any] = {
@@ -394,6 +410,8 @@ def create_task(
         body["externalId"] = external_id
     if parent_id is not None:
         body["parentId"] = parent_id
+    if extra_fields:
+        body.update(extra_fields)
 
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks"
     result = _write("POST", url, token, body)
@@ -413,13 +431,15 @@ def update_task(
     priority_id: int | None = None,
     external_id: str | None = None,
     obsolete: bool | None = None,
+    extra_fields: dict | None = None,
     base_url: str | None = None,
 ) -> dict:
     """Update fields of an existing task (partial PATCH). Only provided fields are sent.
 
     `status` needs the task type to resolve a human label to a code; pass
     `task_type` alongside a human status, or pass a raw CALM status code.
-    Tasks are a plain REST API — no If-Match/ETag needed.
+    Tasks are a plain REST API — no If-Match/ETag needed. `extra_fields` merges
+    any other documented task field verbatim.
     """
     body: dict[str, Any] = {}
     if title is not None:
@@ -450,6 +470,8 @@ def update_task(
         body["externalId"] = external_id
     if obsolete is not None:
         body["obsolete"] = obsolete
+    if extra_fields:
+        body.update(extra_fields)
 
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
@@ -478,13 +500,15 @@ def create_project(
     purpose: str | None = None,
     operational_status: str | None = None,
     phase_id: str | None = None,
+    program_id: str | None = None,
+    deployment_plan_id: str | None = None,
     base_url: str | None = None,
 ) -> dict:
     """Create a Cloud ALM project. Returns the created project, formatted.
 
     Plain REST API — no If-Match needed. `phase_id` is the current phase (2025+).
-    `operational_status`/`purpose` are only sent if provided (their write support
-    is not fully confirmed against the spec).
+    `purpose` is a comma-separated string (e.g. "IMPLEMENTATION,SERVICE_DELIVERY");
+    `operational_status` is a code (e.g. "ONTRK").
     """
     body: dict[str, Any] = {"name": name}
     if status is not None:
@@ -495,6 +519,10 @@ def create_project(
         body["operationalStatus"] = operational_status
     if phase_id is not None:
         body["phaseId"] = phase_id
+    if program_id is not None:
+        body["programId"] = program_id
+    if deployment_plan_id is not None:
+        body["deploymentPlanId"] = deployment_plan_id
 
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects"
     result = _write("POST", url, token, body)
@@ -509,6 +537,8 @@ def update_project(
     purpose: str | None = None,
     operational_status: str | None = None,
     phase_id: str | None = None,
+    program_id: str | None = None,
+    deployment_plan_id: str | None = None,
     base_url: str | None = None,
 ) -> dict:
     """Partial-update a project. Only provided fields are sent."""
@@ -523,6 +553,10 @@ def update_project(
         body["operationalStatus"] = operational_status
     if phase_id is not None:
         body["phaseId"] = phase_id
+    if program_id is not None:
+        body["programId"] = program_id
+    if deployment_plan_id is not None:
+        body["deploymentPlanId"] = deployment_plan_id
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
 
@@ -757,9 +791,24 @@ def create_test_case(
     solution_process_id: str | None = None,
     priority: str | None = None,
     is_prepared: bool | None = None,
+    activities: list | None = None,
+    references: list | None = None,
+    solution_process_flow_id: str | None = None,
+    solution_process_flow_diagram_id: str | None = None,
+    content_package_id: str | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """Create a manual test case. Returns the created test case, formatted."""
+    """Create a manual test case. Returns the created test case, formatted.
+
+    `priorityCode` is sent numeric (10/20/30/40). POST supports deep insert of
+    nested steps: pass `activities` as a list of activity dicts (each may contain
+    a `toActions` list) and `references` as a list of {name, url}.
+
+    To create a *process-linked* test case, all four of solution_process_id,
+    solution_process_flow_id, solution_process_flow_diagram_id, and
+    content_package_id must be provided together (content_package_id is "CUSTOM"
+    for custom processes).
+    """
     body: dict[str, Any] = {"title": title}
     if project_id is not None:
         body["projectId"] = project_id
@@ -767,10 +816,20 @@ def create_test_case(
         body["scopeId"] = scope_id
     if solution_process_id is not None:
         body["solutionProcessId"] = solution_process_id
+    if solution_process_flow_id is not None:
+        body["solutionProcessFlowId"] = solution_process_flow_id
+    if solution_process_flow_diagram_id is not None:
+        body["solutionProcessFlowDiagramId"] = solution_process_flow_diagram_id
+    if content_package_id is not None:
+        body["contentPackageId"] = content_package_id
     if priority is not None:
-        body["priorityCode"] = resolve_testcase_priority(priority)
+        body["priorityCode"] = int(resolve_testcase_priority(priority))
     if is_prepared is not None:
         body["isPrepared"] = is_prepared
+    if activities is not None:
+        body["toActivities"] = activities
+    if references is not None:
+        body["toReferences"] = references
 
     url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases"
     result = _write("POST", url, token, body)
@@ -803,7 +862,7 @@ def update_test_case(
     if solution_process_id is not None:
         body["solutionProcessId"] = solution_process_id
     if priority is not None:
-        body["priorityCode"] = resolve_testcase_priority(priority)
+        body["priorityCode"] = int(resolve_testcase_priority(priority))
     if is_prepared is not None:
         body["isPrepared"] = is_prepared
     if not body:
@@ -813,3 +872,67 @@ def update_test_case(
     etag = _resolve_etag(url, token, if_match, modified_at_fallback=True)
     result = _write("PATCH", url, token, body, if_match=etag)
     return _format_test_case(result) if isinstance(result, dict) and result else {"updated": test_case_id, "fields": body}
+
+
+# ---------------------------------------------------------------------------
+# CALM delete functions (guarded at the tool layer by CALM_ENABLE_WRITES)
+# ---------------------------------------------------------------------------
+
+def delete_task(token: str, task_id: str, base_url: str | None = None) -> dict:
+    """Delete a task. Plain REST — no If-Match. Returns {"deleted": task_id}."""
+    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}"
+    _delete(url, token)
+    return {"deleted": task_id}
+
+
+def delete_business_process(
+    token: str, business_process_id: str, if_match: str | None = None, base_url: str | None = None
+) -> dict:
+    """Delete a business process. OData — DELETE needs If-Match (auto-fetched)."""
+    url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/businessProcesses/{business_process_id}"
+    etag = _resolve_etag(url, token, if_match)
+    _delete(url, token, if_match=etag)
+    return {"deleted": business_process_id}
+
+
+def delete_solution_process(
+    token: str, solution_process_id: str, if_match: str | None = None, base_url: str | None = None
+) -> dict:
+    """Delete a solution process. OData — DELETE needs If-Match (auto-fetched)."""
+    url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses/{solution_process_id}"
+    etag = _resolve_etag(url, token, if_match)
+    _delete(url, token, if_match=etag)
+    return {"deleted": solution_process_id}
+
+
+def delete_scope(
+    token: str, scope_id: str, if_match: str | None = None, base_url: str | None = None
+) -> dict:
+    """Delete a scope. OData; If-Match requirement unconfirmed so sent defensively."""
+    url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes/{scope_id}"
+    etag = _resolve_etag(url, token, if_match)
+    _delete(url, token, if_match=etag)
+    return {"deleted": scope_id}
+
+
+def delete_test_case(
+    token: str,
+    test_case_id: str,
+    force: bool = False,
+    if_match: str | None = None,
+    base_url: str | None = None,
+) -> dict:
+    """Delete a manual test case. OData — DELETE needs If-Match (= modifiedAt).
+
+    Plain DELETE fails (412) if the test case has execution history. Set
+    `force=True` to call the force-delete action, which also removes test runs
+    and results (requires the calm-api.testcases.force-delete scope).
+    """
+    base = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}"
+    etag = _resolve_etag(base, token, if_match, modified_at_fallback=True)
+    if force:
+        action_url = f"{base}/api.v1.ExternalServiceAPI.forceDeletionIncludingTestRunsAndResults"
+        _write("POST", action_url, token, {}, if_match=etag)
+        return {"deleted": test_case_id, "force": True}
+    _delete(base, token, if_match=etag)
+    return {"deleted": test_case_id}

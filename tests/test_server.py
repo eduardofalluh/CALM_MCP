@@ -124,15 +124,17 @@ async def main() -> int:
                 f"got {sorted(tool_names)}",
             )
             write_tools = {
-                "create_calm_task", "update_calm_task",
+                "create_calm_task", "update_calm_task", "delete_calm_task",
                 "create_calm_project", "update_calm_project",
                 "create_calm_business_process", "update_calm_business_process",
+                "delete_calm_business_process",
                 "create_calm_solution_process", "update_calm_solution_process",
-                "create_calm_scope", "update_calm_scope",
-                "create_calm_test_case", "update_calm_test_case",
+                "delete_calm_solution_process",
+                "create_calm_scope", "update_calm_scope", "delete_calm_scope",
+                "create_calm_test_case", "update_calm_test_case", "delete_calm_test_case",
             }
             check(
-                "all 12 write tools advertised",
+                "all 18 write/delete tools advertised",
                 write_tools.issubset(tool_names),
                 f"missing {sorted(write_tools - tool_names)}",
             )
@@ -337,6 +339,50 @@ async def main() -> int:
             sc = res.structuredContent or json.loads(res.content[0].text)
             check("scope update with explicit if_match did not error", res.isError is not True, f"got {sc}")
             check("scope new name echoed", sc.get("Name") == "Renamed scope", f"got {sc}")
+
+            # ---- test case deep insert -----------------------------------
+            print("\nTest 18: create_calm_test_case with deep-insert activities/references")
+            res = await session.call_tool(
+                "create_calm_test_case",
+                {
+                    "title": "TC deep",
+                    "project_id": "P001",
+                    "priority": "Medium",
+                    "activities": [
+                        {"title": "Login", "sequence": 1, "isInScope": True,
+                         "toActions": [{"title": "Enter creds", "sequence": 1, "isEvidenceRequired": True}]},
+                    ],
+                    "references": [{"name": "Docs", "url": "https://example.com"}],
+                },
+            )
+            tcd = res.structuredContent or json.loads(res.content[0].text)
+            check("deep-insert create did not error", res.isError is not True, f"got {tcd}")
+            check("deep-insert title echoed", tcd.get("Title") == "TC deep", f"got {tcd}")
+
+            # ---- delete tools --------------------------------------------
+            print("\nTest 19: delete_calm_task (no If-Match)")
+            res = await session.call_tool("delete_calm_task", {"task_id": "T123"})
+            d = res.structuredContent or json.loads(res.content[0].text)
+            check("task delete did not error", res.isError is not True, f"got {d}")
+            check("task delete confirms id", d.get("deleted") == "T123", f"got {d}")
+
+            print("\nTest 20: delete_calm_business_process (auto If-Match)")
+            res = await session.call_tool("delete_calm_business_process", {"business_process_id": "BP-1"})
+            d = res.structuredContent or json.loads(res.content[0].text)
+            check("business process delete did not error", res.isError is not True, f"got {d}")
+            check("business process delete confirms id", d.get("deleted") == "BP-1", f"got {d}")
+
+            print("\nTest 21: delete_calm_test_case (ETag = modifiedAt)")
+            res = await session.call_tool("delete_calm_test_case", {"test_case_id": "TC-1"})
+            d = res.structuredContent or json.loads(res.content[0].text)
+            check("test case delete did not error", res.isError is not True, f"got {d}")
+            check("test case delete confirms id", d.get("deleted") == "TC-1", f"got {d}")
+
+            print("\nTest 22: delete_calm_test_case force=true uses the force-delete action")
+            res = await session.call_tool("delete_calm_test_case", {"test_case_id": "TC-1", "force": True})
+            d = res.structuredContent or json.loads(res.content[0].text)
+            check("force delete did not error", res.isError is not True, f"got {d}")
+            check("force delete flagged", d.get("force") is True, f"got {d}")
 
     print("\n" + "=" * 60)
     if failures:

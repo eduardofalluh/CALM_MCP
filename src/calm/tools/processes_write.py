@@ -162,3 +162,47 @@ def register(mcp: FastMCP) -> None:
             if_match=if_match,
             base_url=h.base_url,
         )
+
+    @mcp.tool()
+    def delete_calm_business_process(
+        business_process_id: str,
+        ctx: Context,
+        if_match: str | None = None,
+    ) -> dict:
+        """Delete a business process.
+
+        Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        OData service: DELETE needs an If-Match ETag (auto-fetched if omitted).
+        """
+        ensure_writes_enabled()
+        if not business_process_id:
+            raise ValueError("business_process_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_business_process(
+            token=h.token,
+            business_process_id=business_process_id,
+            if_match=if_match,
+            base_url=h.base_url,
+        )
+
+    @mcp.tool()
+    def delete_calm_solution_process(
+        solution_process_id: str,
+        ctx: Context,
+        if_match: str | None = None,
+    ) -> dict:
+        """Delete a solution process.
+
+        Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        OData service: DELETE needs an If-Match ETag (auto-fetched if omitted).
+        """
+        ensure_writes_enabled()
+        if not solution_process_id:
+            raise ValueError("solution_process_id is required")
+        h = get_calm_headers(ctx)
+        return client.delete_solution_process(
+            token=h.token,
+            solution_process_id=solution_process_id,
+            if_match=if_match,
+            base_url=h.base_url,
+        )
