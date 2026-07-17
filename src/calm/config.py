@@ -30,6 +30,18 @@ def build_auth_url(identity_zone: str | None = None, region_zone: str | None = N
     return f"https://{identity}.authentication.{region}.hana.ondemand.com/oauth/token"
 
 
+def build_cert_auth_url(identity_zone: str | None = None, region_zone: str | None = None) -> str:
+    """mTLS (x509) token host — note the '.cert.' segment. Used for certificate-based
+    service keys, which authenticate with a client certificate instead of a secret."""
+    identity = identity_zone or get_identity_zone()
+    region = region_zone or get_region_zone()
+    return f"https://{identity}.authentication.cert.{region}.hana.ondemand.com/oauth/token"
+
+
+def get_cert_auth_url() -> str:
+    return os.getenv("CALM_CERT_AUTH_URL") or build_cert_auth_url()
+
+
 def build_base_url(identity_zone: str | None = None, region_zone: str | None = None) -> str:
     identity = identity_zone or get_identity_zone()
     region = region_zone or get_region_zone()

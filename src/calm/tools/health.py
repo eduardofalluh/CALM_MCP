@@ -80,6 +80,12 @@ def register(mcp: FastMCP) -> None:
             "client_credentials_enabled": bool(
                 (client_id_hdr and client_secret_hdr) or os.getenv("CALM_CLIENT_ID")
             ),
+            "server_auth_mode": (
+                "x509/mTLS"
+                if (os.getenv("CALM_CLIENT_CERT") or os.getenv("CALM_CLIENT_CERT_PEM"))
+                else "client_secret" if os.getenv("CALM_CLIENT_SECRET")
+                else "header/token"
+            ),
             "writes_enabled": writes_enabled(),
             "auth_url": auth_url,
             "base_url": base_url,

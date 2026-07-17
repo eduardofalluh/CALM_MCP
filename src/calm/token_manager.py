@@ -37,9 +37,27 @@ _REFRESH_BUFFER_SECONDS = 60  # refresh this many seconds before expiry
 class TokenManager:
     """Thread-safe SAP XSUAA client-credentials token cache."""
 
-    def __init__(self, client_id: str, client_secret: str, auth_url: str | None = None) -> None:
+    def __init__(
+        self,
+        client_id: str,
+        client_secret: str | None = None,
+        auth_url: str | None = None,
+        client_cert: str | tuple[str, str] | None = None,
+    ) -> None:
+        """Two credential modes:
+
+        - client_secret → HTTP Basic auth to the plain XSUAA token host.
+        - client_cert   → mTLS (x509): a client certificate is presented to the
+          '.cert.' XSUAA host and no Basic header is sent. `client_cert` is either
+          a path to a combined cert+key PEM, or a (cert_path, key_path) tuple, as
+          accepted by requests' `cert=` argument. When set, pass the '.cert.'
+          `auth_url` (see config.get_cert_auth_url).
+        """
+        if not client_secret and not client_cert:
+            raise ValueError("TokenManager needs either client_secret or client_cert")
         self._client_id = client_id
         self._client_secret = client_secret
+        self._client_cert = client_cert
         self._auth_url = auth_url or build_auth_url()
         self._token: str | None = None
         self._expires_at: float = 0.0
@@ -53,26 +71,39 @@ class TokenManager:
             return self._token  # type: ignore[return-value]
 
     def _refresh(self) -> None:
-        raw = f"{self._client_id}:{self._client_secret}".encode()
-        basic = base64.b64encode(raw).decode()
-
         # grant_type goes in the x-www-form-urlencoded body (OAuth2 standard;
         # matches `curl -u id:secret -d grant_type=client_credentials`). Some
         # XSUAA configs 401 when it's only a query param with no request body.
-        resp = requests.post(
-            self._auth_url,
-            data={"grant_type": "client_credentials"},
-            headers={
-                "Authorization": f"Basic {basic}",
-                "Accept": "application/json",
-            },
-            timeout=30,
-        )
+        if self._client_cert:
+            # mTLS (x509): the client certificate authenticates the client, so
+            # there is no Basic header; client_id travels in the body.
+            resp = requests.post(
+                self._auth_url,
+                data={"grant_type": "client_credentials", "client_id": self._client_id},
+                headers={"Accept": "application/json"},
+                cert=self._client_cert,
+                timeout=30,
+            )
+            mode = "x509/mTLS"
+        else:
+            raw = f"{self._client_id}:{self._client_secret}".encode()
+            basic = base64.b64encode(raw).decode()
+            resp = requests.post(
+                self._auth_url,
+                data={"grant_type": "client_credentials"},
+                headers={
+                    "Authorization": f"Basic {basic}",
+                    "Accept": "application/json",
+                },
+                timeout=30,
+            )
+            mode = "client_secret"
+
         if resp.status_code != 200:
             # Surface XSUAA's actual message (never the secret) to aid debugging.
             raise RuntimeError(
-                f"XSUAA token request failed: HTTP {resp.status_code} {resp.reason} "
-                f"at {self._auth_url} — response: {resp.text[:500]}"
+                f"XSUAA token request failed ({mode}): HTTP {resp.status_code} "
+                f"{resp.reason} at {self._auth_url} — response: {resp.text[:500]}"
             )
         data = resp.json()
 
@@ -87,9 +118,16 @@ class TokenManager:
 _manager: TokenManager | None = None
 
 
-def init_token_manager(client_id: str, client_secret: str, auth_url: str | None = None) -> None:
+def init_token_manager(
+    client_id: str,
+    client_secret: str | None = None,
+    auth_url: str | None = None,
+    client_cert: str | tuple[str, str] | None = None,
+) -> None:
     global _manager
-    _manager = TokenManager(client_id=client_id, client_secret=client_secret, auth_url=auth_url)
+    _manager = TokenManager(
+        client_id=client_id, client_secret=client_secret, auth_url=auth_url, client_cert=client_cert
+    )
 
 
 def get_managed_token() -> str | None:

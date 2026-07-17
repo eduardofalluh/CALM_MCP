@@ -60,20 +60,70 @@ logging.basicConfig(
 log = logging.getLogger("calm-mcp")
 
 
+def _resolve_client_cert() -> str | tuple[str, str] | None:
+    """Return a requests-compatible `cert` value for x509/mTLS, or None.
+
+    Accepts either file paths (CALM_CLIENT_CERT [+ CALM_CLIENT_KEY]) or inline PEM
+    (CALM_CLIENT_CERT_PEM [+ CALM_CLIENT_KEY_PEM]), the latter written to temp files
+    for the process lifetime.
+    """
+    cert_path = os.getenv("CALM_CLIENT_CERT")
+    key_path = os.getenv("CALM_CLIENT_KEY")
+    cert_pem = os.getenv("CALM_CLIENT_CERT_PEM")
+    key_pem = os.getenv("CALM_CLIENT_KEY_PEM")
+
+    if cert_pem:
+        import tempfile
+
+        cf = tempfile.NamedTemporaryFile(prefix="calm_cert_", suffix=".pem", delete=False)
+        cf.write(cert_pem.encode())
+        cf.close()
+        cert_path = cf.name
+        if key_pem:
+            kf = tempfile.NamedTemporaryFile(prefix="calm_key_", suffix=".pem", delete=False)
+            kf.write(key_pem.encode())
+            kf.close()
+            key_path = kf.name
+
+    if cert_path and key_path:
+        return (cert_path, key_path)
+    if cert_path:
+        return cert_path  # combined cert+key PEM
+    return None
+
+
 def _maybe_init_token_manager() -> bool:
-    """Initialise the client-credentials token manager if credentials are set."""
+    """Initialise the client-credentials token manager if credentials are set.
+
+    Prefers x509/mTLS when a client certificate is configured; otherwise uses the
+    client_secret (Basic auth) flow.
+    """
     client_id = os.getenv("CALM_CLIENT_ID")
-    client_secret = os.getenv("CALM_CLIENT_SECRET")
-    if not (client_id and client_secret):
+    if not client_id:
         return False
 
-    from src.calm.config import get_auth_url
     from src.calm.token_manager import init_token_manager
 
-    auth_url = get_auth_url()
-    init_token_manager(client_id=client_id, client_secret=client_secret, auth_url=auth_url)
-    log.info("Token manager initialised (client_id=%s, auth_url=%s)", client_id, auth_url)
-    return True
+    client_cert = _resolve_client_cert()
+    if client_cert:
+        from src.calm.config import get_cert_auth_url
+
+        auth_url = get_cert_auth_url()
+        init_token_manager(client_id=client_id, auth_url=auth_url, client_cert=client_cert)
+        log.info("Token manager initialised in x509/mTLS mode (client_id=%s, auth_url=%s)", client_id, auth_url)
+        return True
+
+    client_secret = os.getenv("CALM_CLIENT_SECRET")
+    if client_secret:
+        from src.calm.config import get_auth_url
+
+        auth_url = get_auth_url()
+        init_token_manager(client_id=client_id, client_secret=client_secret, auth_url=auth_url)
+        log.info("Token manager initialised in client_secret mode (client_id=%s, auth_url=%s)", client_id, auth_url)
+        return True
+
+    log.warning("CALM_CLIENT_ID set but no CALM_CLIENT_SECRET or client certificate found.")
+    return False
 
 
 class _TrustProxyMiddleware:
