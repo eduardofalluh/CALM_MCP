@@ -33,6 +33,7 @@ TASK_STATUS_MAP = {
     "CIPDFCTDONE": "Done",
     "CIPQGOPEN": "Open", "CIPQGBLK": "Blocked", "CIPQGNR": "Not Relevant",
     "CIPQGDONE": "Done",
+    "CIPRIOPEN": "Open", "CIPRIINP": "In Progress", "CIPRIDONE": "Done",
 }
 
 TASK_TYPE_MAP = {
@@ -44,6 +45,7 @@ TASK_TYPE_MAP = {
     "CALMDEF": "Defect",
     "CALMQGATE": "Quality Gate",
     "CALMCHKLI": "Checklist Item",
+    "CALMRISK": "Risk",
 }
 
 TASK_APPROVAL_STATE_MAP = {
@@ -78,9 +80,10 @@ STATUS_CODE_BY_TYPE = {
                  "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
     "CALMTMPL": {"open": "CIPTKOPEN", "in progress": "CIPTKINP", "blocked": "CIPTKBLK",
                  "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
+    # Sub-tasks (CALMST) use the task (CIPTK*) status codes, not user-story codes.
+    "CALMST": {"open": "CIPTKOPEN", "in progress": "CIPTKINP", "blocked": "CIPTKBLK",
+               "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
     "CALMUS": {"open": "CIPUSOPEN", "in progress": "CIPUSINP", "blocked": "CIPUSBLK",
-               "done": "CIPUSCLOSE", "not relevant": "CIPUSNO"},
-    "CALMST": {"open": "CIPUSOPEN", "in progress": "CIPUSINP", "blocked": "CIPUSBLK",
                "done": "CIPUSCLOSE", "not relevant": "CIPUSNO"},
     "CALMREQU": {"open": "CIPREQUOPEN", "in progress": "CIPREQUINP", "blocked": "CIPREQUBLK",
                  "done": "CIPREQUCLOSE", "not relevant": "CIPREQUNO"},
@@ -88,6 +91,7 @@ STATUS_CODE_BY_TYPE = {
                 "done": "CIPDFCTDONE"},
     "CALMQGATE": {"open": "CIPQGOPEN", "blocked": "CIPQGBLK", "not relevant": "CIPQGNR",
                   "done": "CIPQGDONE"},
+    "CALMRISK": {"open": "CIPRIOPEN", "in progress": "CIPRIINP", "done": "CIPRIDONE"},
 }
 
 # All known status codes, so a raw code passed by the caller is recognised.
@@ -125,21 +129,7 @@ def resolve_status_code(value: str, type_code: str) -> str:
     return code
 
 
-PROJECT_STATUS_REVERSE_MAP = {label.lower(): code for code, label in PROJECT_STATUS_MAP.items()}
 TESTCASE_PRIORITY_REVERSE_MAP = {label.lower(): code for code, label in TESTCASE_PRIORITY_MAP.items()}
-
-
-def resolve_project_status(value: str) -> str:
-    """Accept "Active"/"Hidden" or a raw code ("O"/"C") and return the code."""
-    if value in PROJECT_STATUS_MAP:  # already a raw code
-        return value
-    code = PROJECT_STATUS_REVERSE_MAP.get(value.strip().lower())
-    if not code:
-        raise ValueError(
-            f"Unknown project status '{value}'. Use "
-            f"{', '.join(sorted(PROJECT_STATUS_MAP.values()))} (or raw code O/C)."
-        )
-    return code
 
 
 def resolve_testcase_priority(value: str) -> str:
@@ -220,20 +210,21 @@ def _get_with_meta(url: str, token: str) -> tuple[Any, str | None]:
 
 
 def _resolve_etag(
-    url: str, token: str, if_match: str | None, modified_at_fallback: bool = False
+    url: str, token: str, if_match: str | None, body_field: str | None = None
 ) -> str | None:
     """Return the If-Match token: the caller's value, else fetched from the entity.
 
-    When `modified_at_fallback` is set (Test Management), the entity's modifiedAt
-    timestamp is used as the ETag if no ETag header is present.
+    The ETag comes from the response ETag header when present; otherwise it is read
+    from the given response body field — `"etag"` for Projects (a numeric timestamp)
+    or `"modifiedAt"` for Test Management.
     """
     if if_match:
         return if_match
     data, etag = _get_with_meta(url, token)
     if etag:
         return etag
-    if modified_at_fallback and isinstance(data, dict):
-        return data.get("modifiedAt")
+    if body_field and isinstance(data, dict):
+        return data.get(body_field)
     return None
 
 
@@ -496,33 +487,25 @@ def _format_project(item: dict) -> dict:
 def create_project(
     token: str,
     name: str,
-    status: str | None = None,
-    purpose: str | None = None,
-    operational_status: str | None = None,
-    phase_id: str | None = None,
     program_id: str | None = None,
     deployment_plan_id: str | None = None,
+    extra_fields: dict | None = None,
     base_url: str | None = None,
 ) -> dict:
     """Create a Cloud ALM project. Returns the created project, formatted.
 
-    Plain REST API — no If-Match needed. `phase_id` is the current phase (2025+).
-    `purpose` is a comma-separated string (e.g. "IMPLEMENTATION,SERVICE_DELIVERY");
-    `operational_status` is a code (e.g. "ONTRK").
+    Plain REST POST — no If-Match. The spec confirms only `name` (and optionally
+    `programId`) on the create body; `status`/`purpose`/`operationalStatus`/`phaseId`
+    are managed elsewhere (not settable here). Anything extra can still be attempted
+    via `extra_fields`.
     """
     body: dict[str, Any] = {"name": name}
-    if status is not None:
-        body["status"] = resolve_project_status(status)
-    if purpose is not None:
-        body["purpose"] = purpose
-    if operational_status is not None:
-        body["operationalStatus"] = operational_status
-    if phase_id is not None:
-        body["phaseId"] = phase_id
     if program_id is not None:
         body["programId"] = program_id
     if deployment_plan_id is not None:
         body["deploymentPlanId"] = deployment_plan_id
+    if extra_fields:
+        body.update(extra_fields)
 
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects"
     result = _write("POST", url, token, body)
@@ -533,35 +516,34 @@ def update_project(
     token: str,
     project_id: str,
     name: str | None = None,
-    status: str | None = None,
-    purpose: str | None = None,
-    operational_status: str | None = None,
-    phase_id: str | None = None,
     program_id: str | None = None,
     deployment_plan_id: str | None = None,
+    if_match: str | None = None,
+    extra_fields: dict | None = None,
     base_url: str | None = None,
 ) -> dict:
-    """Partial-update a project. Only provided fields are sent."""
+    """Partial-update a project. Only provided fields are sent.
+
+    The spec confirms the PATCH body is exactly {name, deploymentPlanId, programId};
+    status/operationalStatus/purpose/phaseId are NOT patchable via this API.
+    PATCH requires If-Match — the project's `etag` field (a numeric timestamp). If
+    `if_match` is not supplied it is fetched from the entity first.
+    """
     body: dict[str, Any] = {}
     if name is not None:
         body["name"] = name
-    if status is not None:
-        body["status"] = resolve_project_status(status)
-    if purpose is not None:
-        body["purpose"] = purpose
-    if operational_status is not None:
-        body["operationalStatus"] = operational_status
-    if phase_id is not None:
-        body["phaseId"] = phase_id
     if program_id is not None:
         body["programId"] = program_id
     if deployment_plan_id is not None:
         body["deploymentPlanId"] = deployment_plan_id
+    if extra_fields:
+        body.update(extra_fields)
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}"
-    result = _write("PATCH", url, token, body)
+    etag = _resolve_etag(url, token, if_match, body_field="etag")
+    result = _write("PATCH", url, token, body, if_match=etag)
     return _format_project(result) if isinstance(result, dict) and result else {"updated": project_id, "fields": body}
 
 
@@ -750,8 +732,8 @@ def update_scope(
 ) -> dict:
     """Partial-update a scope. Only provided fields are sent.
 
-    OData service. If-Match requirement is unconfirmed for scopes, so the ETag
-    is fetched defensively and sent when available (a supplied `if_match` wins).
+    OData service, but the spec confirms scopes need NO If-Match, so none is
+    fetched; a caller-supplied `if_match` is still honoured if given.
     """
     body: dict[str, Any] = {}
     if name is not None:
@@ -762,8 +744,7 @@ def update_scope(
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes/{scope_id}"
-    etag = _resolve_etag(url, token, if_match)
-    result = _write("PATCH", url, token, body, if_match=etag)
+    result = _write("PATCH", url, token, body, if_match=if_match)
     return _format_scope(result) if isinstance(result, dict) and result else {"updated": scope_id, "fields": body}
 
 
@@ -869,7 +850,7 @@ def update_test_case(
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}"
-    etag = _resolve_etag(url, token, if_match, modified_at_fallback=True)
+    etag = _resolve_etag(url, token, if_match, body_field="modifiedAt")
     result = _write("PATCH", url, token, body, if_match=etag)
     return _format_test_case(result) if isinstance(result, dict) and result else {"updated": test_case_id, "fields": body}
 
@@ -908,10 +889,9 @@ def delete_solution_process(
 def delete_scope(
     token: str, scope_id: str, if_match: str | None = None, base_url: str | None = None
 ) -> dict:
-    """Delete a scope. OData; If-Match requirement unconfirmed so sent defensively."""
+    """Delete a scope. OData; spec confirms no If-Match needed (honoured if given)."""
     url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes/{scope_id}"
-    etag = _resolve_etag(url, token, if_match)
-    _delete(url, token, if_match=etag)
+    _delete(url, token, if_match=if_match)
     return {"deleted": scope_id}
 
 
@@ -929,7 +909,7 @@ def delete_test_case(
     and results (requires the calm-api.testcases.force-delete scope).
     """
     base = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}"
-    etag = _resolve_etag(base, token, if_match, modified_at_fallback=True)
+    etag = _resolve_etag(base, token, if_match, body_field="modifiedAt")
     if force:
         action_url = f"{base}/api.v1.ExternalServiceAPI.forceDeletionIncludingTestRunsAndResults"
         _write("POST", action_url, token, {}, if_match=etag)

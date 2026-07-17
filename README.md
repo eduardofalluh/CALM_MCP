@@ -108,14 +108,19 @@ Because task status codes are type-specific, pass `task_type` alongside a human
   OData — *not* `Entity('id')`. Confirmed verbatim from the Help Portal.
 - **No CSRF token** (stateless OAuth Bearer).
 - **`If-Match: <etag>` is required on PATCH/DELETE** for the OData services
-  (Process Authoring, Test Management — missing → 428, stale → 412). Update/delete
-  tools **auto-fetch the ETag** or accept `if_match`. For Test Management the ETag
-  is the entity's `modifiedAt` timestamp. Tasks/Projects (plain REST) need none;
-  `scopes` sends it defensively.
-- **Tasks:** `assigneeId` is the assignee's **email**; `priorityId` numeric;
-  sub-tasks take `parentId`. The full documented field set (subStatus, scopeId,
+  (Process Authoring, Test Management — missing → 428, stale → 412) **and for
+  Projects `PATCH`** (etag = the project's numeric `etag` field). Update/delete
+  tools **auto-fetch the ETag** or accept `if_match`. ETag source: response header
+  (Process Authoring), `modifiedAt` (Test Management), or `etag` body field
+  (Projects). Tasks and **Scopes need no If-Match** (confirmed).
+- **Tasks:** `assigneeId` is the assignee's **email**; `priorityId` numeric
+  (10/20/30/40); sub-tasks (`CALMST`) use the task `CIPTK*` status codes; `CALMRISK`
+  is a valid type. The full documented field set (subStatus, approvalState, scopeId,
   storyPoints, effort, workstream, involvedParties, classificationId,
   customField1–20, …) is reachable via the `extra_fields` dict.
+- **Projects:** PATCH body is limited to `name`/`deploymentPlanId`/`programId`;
+  `status`/`operationalStatus`/`purpose`/`phaseId` are **not** patchable via the API
+  (`operationalStatus` enum: ONTRK/NATTN/CRIT). No project DELETE exists.
 - **Solution process:** `countries` is a **comma-string** (`"DE,FR"`); the parent
   is the nested `businessProcess:{id}` object (`business_process_id`). Lifecycle
   (publish / new draft) is driven by dedicated action endpoints, not a status PATCH.
@@ -129,11 +134,9 @@ Because task status codes are type-specific, pass `task_type` alongside a human
   DELETE (no project delete exists). Test cases add a `force` variant that also
   removes runs/results (needs the `force-delete` scope).
 
-> Still unconfirmed (get from each API's OpenAPI/EDMX or a tenant `$metadata`):
-> requirement/defect status-code lists and subStatus strings, full `operationalStatus`
-> value list (ONTRK observed) and whether it's PATCHable, If-Match on `scopes`,
-> and the `scopeAssignments` body shape. See `API_WRITE_SPEC_NEEDED.md`.
-> **Verify against a live tenant before merging to main.**
+> Contract now fully reconciled against the raw OpenAPI specs (CALM_TKM v1.0.29,
+> CALM_PJM, CALM_PM) — no open documentation gaps. Payload shapes should still be
+> smoke-tested against a live tenant before merging to main.
 
 ---
 

@@ -50,6 +50,9 @@ def _write_shim() -> Path:
         "        return _FakeResp(json.dumps({'uuid': 'TC-1', 'title': 'old', 'modifiedAt': '2025-11-17T15:51:04Z'}))\n"
         "    if '/businessProcesses/' in url or '/solutionProcesses/' in url or '/scopes/' in url:\n"
         "        return _FakeResp(json.dumps({'id': 'X', 'name': 'old'}), headers={'ETag': 'W/\\\"1\\\"'})\n"
+        "    if '/projects/' in url:\n"
+        "        # Projects: ETag is the numeric-timestamp `etag` body field (no header).\n"
+        "        return _FakeResp(json.dumps({'id': 'P-1', 'name': 'old', 'etag': '1755245808454'}))\n"
         "    return _FakeResp(_PAYLOAD)\n"
         "def _fake_request(method, url, *a, **kw):\n"
         "    # Echo the submitted body back with a generated id, mimicking a create/update.\n"
@@ -252,15 +255,14 @@ async def main() -> int:
             check("empty update errors", res.isError is True)
 
             # ---- other entity writes round-trip -------------------------
-            print("\nTest 9: create_calm_project round-trips (status label mapping)")
+            print("\nTest 9: create_calm_project round-trips (name + programId)")
             res = await session.call_tool(
                 "create_calm_project",
-                {"name": "Proj X", "status": "Active", "purpose": "Build"},
+                {"name": "Proj X", "program_id": "PRG-1"},
             )
             proj = res.structuredContent or json.loads(res.content[0].text)
             check("project create did not error", res.isError is not True, f"got {proj}")
             check("project name echoed", proj.get("Name") == "Proj X", f"got {proj}")
-            check("project status label round-trips", proj.get("Status") == "Active", f"got {proj}")
 
             print("\nTest 10: create_calm_business_process round-trips")
             res = await session.call_tool(
@@ -383,6 +385,33 @@ async def main() -> int:
             d = res.structuredContent or json.loads(res.content[0].text)
             check("force delete did not error", res.isError is not True, f"got {d}")
             check("force delete flagged", d.get("force") is True, f"got {d}")
+
+            print("\nTest 23: update_calm_project auto-fetches the etag body field (If-Match)")
+            res = await session.call_tool(
+                "update_calm_project",
+                {"project_id": "P-1", "name": "Renamed project"},
+            )
+            pu = res.structuredContent or json.loads(res.content[0].text)
+            check("project update did not error", res.isError is not True, f"got {pu}")
+            check("project new name echoed", pu.get("Name") == "Renamed project", f"got {pu}")
+
+            print("\nTest 24: create_calm_task type=Risk maps CIPRI* status")
+            res = await session.call_tool(
+                "create_calm_task",
+                {"project_id": "P001", "title": "A risk", "task_type": "Risk", "status": "In Progress"},
+            )
+            rt = res.structuredContent or json.loads(res.content[0].text)
+            check("risk task create did not error", res.isError is not True, f"got {rt}")
+            check("risk status round-trips", rt.get("Status") == "In Progress", f"got {rt.get('Status')}")
+
+            print("\nTest 25: sub-task status uses task (CIPTK*) codes, not user-story codes")
+            res = await session.call_tool(
+                "create_calm_task",
+                {"project_id": "P001", "title": "A sub-task", "task_type": "Sub-task", "status": "Done"},
+            )
+            st = res.structuredContent or json.loads(res.content[0].text)
+            check("sub-task create did not error", res.isError is not True, f"got {st}")
+            check("sub-task Done round-trips", st.get("Status") == "Done", f"got {st.get('Status')}")
 
     print("\n" + "=" * 60)
     if failures:

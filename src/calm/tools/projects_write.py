@@ -17,25 +17,21 @@ def register(mcp: FastMCP) -> None:
     def create_calm_project(
         name: str,
         ctx: Context,
-        status: str | None = None,
-        purpose: str | None = None,
-        operational_status: str | None = None,
-        phase_id: str | None = None,
         program_id: str | None = None,
         deployment_plan_id: str | None = None,
+        extra_fields: dict | None = None,
     ) -> dict:
         """Create a new Cloud ALM project.
 
         Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
+        Per the API spec, create accepts `name` (and optionally `programId`);
+        status/purpose/operationalStatus/phase are managed via other flows, not here.
 
         Args:
-            name: Project name.
-            status: Optional. "Active" or "Hidden" (or raw code O/C).
-            purpose: Optional comma-separated purpose (e.g. "IMPLEMENTATION,SERVICE_DELIVERY").
-            operational_status: Optional operational status code (e.g. "ONTRK").
-            phase_id: Optional current-phase ID (2025+).
+            name: Project name (max 128 chars).
             program_id: Optional program ID this project belongs to.
             deployment_plan_id: Optional deployment plan ID.
+            extra_fields: Optional dict of any additional raw fields to attempt.
 
         Returns the created project (ID, Name, Status, Purpose, OperationalStatus)
         or the submitted payload if the API returns no body.
@@ -47,12 +43,9 @@ def register(mcp: FastMCP) -> None:
         return client.create_project(
             token=h.token,
             name=name,
-            status=status,
-            purpose=purpose,
-            operational_status=operational_status,
-            phase_id=phase_id,
             program_id=program_id,
             deployment_plan_id=deployment_plan_id,
+            extra_fields=extra_fields,
             base_url=h.base_url,
         )
 
@@ -61,27 +54,25 @@ def register(mcp: FastMCP) -> None:
         project_id: str,
         ctx: Context,
         name: str | None = None,
-        status: str | None = None,
-        purpose: str | None = None,
-        operational_status: str | None = None,
-        phase_id: str | None = None,
         program_id: str | None = None,
         deployment_plan_id: str | None = None,
+        if_match: str | None = None,
+        extra_fields: dict | None = None,
     ) -> dict:
         """Update fields of an existing Cloud ALM project (partial update).
 
         Requires CALM_ENABLE_WRITES=true on the server, otherwise returns an error.
-        Only the fields you pass are changed.
+        Per the API spec the PATCH body is limited to name, deploymentPlanId, and
+        programId (status/operationalStatus/purpose/phase are not patchable here).
+        PATCH requires If-Match — the project's `etag` (auto-fetched if omitted).
 
         Args:
             project_id: ID of the project to update.
             name: Optional new name.
-            status: Optional "Active"/"Hidden" (or raw code O/C).
-            purpose: Optional comma-separated purpose.
-            operational_status: Optional operational status code (e.g. "ONTRK").
-            phase_id: Optional current-phase ID (2025+).
             program_id: Optional program ID.
             deployment_plan_id: Optional deployment plan ID.
+            if_match: Optional ETag for optimistic locking (auto-fetched if omitted).
+            extra_fields: Optional dict of any additional raw fields to attempt.
         """
         ensure_writes_enabled()
         if not project_id:
@@ -91,11 +82,9 @@ def register(mcp: FastMCP) -> None:
             token=h.token,
             project_id=project_id,
             name=name,
-            status=status,
-            purpose=purpose,
-            operational_status=operational_status,
-            phase_id=phase_id,
             program_id=program_id,
             deployment_plan_id=deployment_plan_id,
+            if_match=if_match,
+            extra_fields=extra_fields,
             base_url=h.base_url,
         )
