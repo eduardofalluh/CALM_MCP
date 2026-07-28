@@ -29,8 +29,10 @@ def register(mcp: FastMCP) -> None:
                 Task", "User Story", "Defect", "Risk", …) or a raw CALM code. Omit
                 for all tasks. (Requirements are tasks with type "Requirement".)
 
-        Returns tasks with fields: ID, Title, Type, Status, StartDate, DueDate,
-        AssigneeName, ApprovalState, Obsolete, Effort.
+        Returns tasks with fields: ID, Display ID, Title, Type, Status, StartDate,
+        DueDate, AssigneeName, ApprovalState, Obsolete, Effort.
+        - ID: Internal CALM ID (e.g., "3-43248")
+        - Display ID: Human-readable ID shown in UI (e.g., "4000", may be null)
         - Type: Roadmap Task, Project Task, User Story, Sub-task, Requirement,
           Defect, Quality Gate, Checklist Item, or Risk
         - Status: Open, In Progress, Blocked, Done, or Not Relevant

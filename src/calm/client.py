@@ -430,6 +430,7 @@ def _format_task(item: dict) -> dict:
     """Format a single raw task the same way get_tasks() formats a list item."""
     return {
         "ID": item.get("id"),
+        "Display ID": item.get("displayId") or item.get("externalId"),
         "Title": item.get("title"),
         "Type": TASK_TYPE_MAP.get(item.get("type"), item.get("type")),
         "Status": TASK_STATUS_MAP.get(item.get("status"), item.get("status")),
