@@ -374,6 +374,49 @@ def get_test_cases(token: str, base_url: str | None = None) -> list[dict]:
     return parsed
 
 
+def get_timeboxes(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
+    """Return timeboxes (sprints, iterations) for a project.
+
+    Timeboxes are used to organize work into time-bounded periods. Common fields:
+    name, type (numeric), startDate, endDate, closed (boolean).
+    """
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/timeboxes"
+    result = _get(url, token)
+    items = result if isinstance(result, list) else result.get("value", [])
+    return [
+        {
+            "ID": item.get("id"),
+            "Project ID": item.get("projectId") or project_id,
+            "Name": item.get("name"),
+            "Type": item.get("type"),
+            "StartDate": item.get("startDate"),
+            "EndDate": item.get("endDate"),
+            "Closed": item.get("closed"),
+        }
+        for item in items
+    ]
+
+
+def get_teams(token: str, base_url: str | None = None) -> list[dict]:
+    """Return all teams visible to the configured tenant.
+
+    Teams group users for project collaboration. The exact fields depend on
+    what the CALM API exposes; common fields: id, name, description, members.
+    """
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/teams"
+    result = _get(url, token)
+    items = result if isinstance(result, list) else result.get("value", [])
+    return [
+        {
+            "ID": item.get("id"),
+            "Name": item.get("name"),
+            "Description": item.get("description"),
+            "Project ID": item.get("projectId"),
+        }
+        for item in items
+    ]
+
+
 # ---------------------------------------------------------------------------
 # CALM write functions
 #

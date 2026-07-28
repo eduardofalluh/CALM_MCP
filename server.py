@@ -46,8 +46,10 @@ from src.calm.tools import (
     scopes,
     scopes_write,
     tasks_write,
+    teams,
     test_cases,
     test_cases_write,
+    timeboxes,
 )
 
 load_dotenv()
@@ -152,6 +154,8 @@ projects.register(mcp)
 processes.register(mcp)
 scopes.register(mcp)
 test_cases.register(mcp)
+timeboxes.register(mcp)
+teams.register(mcp)
 health.register(mcp)
 
 # Write tools (guarded by CALM_ENABLE_WRITES)

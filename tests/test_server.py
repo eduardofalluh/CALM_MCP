@@ -50,6 +50,12 @@ def _write_shim() -> Path:
         "        return _FakeResp(json.dumps({'uuid': 'TC-1', 'title': 'old', 'modifiedAt': '2025-11-17T15:51:04Z'}))\n"
         "    if '/businessProcesses/' in url or '/solutionProcesses/' in url or '/scopes/' in url:\n"
         "        return _FakeResp(json.dumps({'id': 'X', 'name': 'old'}), headers={'ETag': 'W/\\\"1\\\"'})\n"
+        "    if '/projects/' in url and '/timeboxes' in url:\n"
+        "        # Timeboxes for a project (must come BEFORE general /projects/ check).\n"
+        "        return _FakeResp(json.dumps([\n"
+        "            {'id': 'TB1', 'projectId': 'P001', 'name': 'Sprint 1', 'type': 0, 'startDate': '2026-07-01', 'endDate': '2026-07-14', 'closed': False},\n"
+        "            {'id': 'TB2', 'projectId': 'P001', 'name': 'Sprint 2', 'type': 0, 'startDate': '2026-07-15', 'endDate': '2026-07-28', 'closed': True},\n"
+        "        ]))\n"
         "    if '/projects/' in url:\n"
         "        # Projects: ETag is the numeric-timestamp `etag` body field (no header).\n"
         "        return _FakeResp(json.dumps({'id': 'P-1', 'name': 'old', 'etag': '1755245808454'}))\n"
@@ -61,6 +67,12 @@ def _write_shim() -> Path:
         "        return _FakeResp(json.dumps([\n"
         "            {'id': 'R1', 'title': 'Req A', 'type': 'CALMREQU', 'status': 'CIPREQUOPEN'},\n"
         "            {'id': 'K1', 'title': 'Task B', 'type': 'CALMTASK', 'status': 'CIPTKOPEN'},\n"
+        "        ]))\n"
+        "    if 'calm-projects/v1/teams' in url:\n"
+        "        # Teams.\n"
+        "        return _FakeResp(json.dumps([\n"
+        "            {'id': 'TEAM1', 'name': 'Development Team', 'description': 'Backend developers', 'projectId': 'P001'},\n"
+        "            {'id': 'TEAM2', 'name': 'QA Team', 'description': 'Quality assurance', 'projectId': 'P002'},\n"
         "        ]))\n"
         "    return _FakeResp(_PAYLOAD)\n"
         "def _fake_request(method, url, *a, **kw):\n"
@@ -128,10 +140,12 @@ async def main() -> int:
                 "get_calm_solution_processes",
                 "get_calm_scopes",
                 "get_calm_test_cases",
+                "get_calm_timeboxes",
+                "get_calm_teams",
                 "calm_health",
             }
             check(
-                "all 7 read tools advertised",
+                "all 9 read tools advertised",
                 expected.issubset(tool_names),
                 f"got {sorted(tool_names)}",
             )
@@ -563,6 +577,30 @@ async def main() -> int:
             res = await session.call_tool("delete_calm_requirement", {"task_id": "R1"})
             rd = res.structuredContent or json.loads(res.content[0].text)
             check("requirement delete confirms id", rd.get("deleted") == "R1", f"got {rd}")
+
+            # ---- timeboxes -----------------------------------------------
+            print("\nTest 40: get_calm_timeboxes returns project timeboxes")
+            res = await session.call_tool("get_calm_timeboxes", {"project_id": "P001"})
+            timeboxes = (res.structuredContent or {}).get("result")
+            check("timeboxes returned a list", isinstance(timeboxes, list), f"got {timeboxes}")
+            check("timeboxes have expected fields", len(timeboxes) > 0 and "Name" in timeboxes[0], f"got {timeboxes}")
+            if timeboxes:
+                tb = timeboxes[0]
+                check("timebox has ID", "ID" in tb and tb["ID"], f"got {tb}")
+                check("timebox has Name", "Name" in tb and tb["Name"], f"got {tb}")
+                check("timebox has Closed field", "Closed" in tb, f"got {tb}")
+
+            # ---- teams ---------------------------------------------------
+            print("\nTest 41: get_calm_teams returns all teams")
+            res = await session.call_tool("get_calm_teams", {})
+            teams = (res.structuredContent or {}).get("result")
+            check("teams returned a list", isinstance(teams, list), f"got {teams}")
+            check("teams have expected fields", len(teams) > 0 and "Name" in teams[0], f"got {teams}")
+            if teams:
+                team = teams[0]
+                check("team has ID", "ID" in team and team["ID"], f"got {team}")
+                check("team has Name", "Name" in team and team["Name"], f"got {team}")
+                check("team has Description field", "Description" in team, f"got {team}")
 
     print("\n" + "=" * 60)
     if failures:

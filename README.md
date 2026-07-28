@@ -42,10 +42,12 @@ CALM_MCP/
 │       ├── token_manager.py    # OAuth2 client credentials + token cache
 │       ├── dependencies.py     # get_calm_headers() — resolves token
 │       └── tools/
-│           ├── projects.py     # get_calm_projects, get_calm_tasks
+│           ├── projects.py     # get_calm_projects, get_calm_tasks, get_calm_requirements
 │           ├── processes.py    # get_calm_business_processes, get_calm_solution_processes
 │           ├── scopes.py       # get_calm_scopes
 │           ├── test_cases.py   # get_calm_test_cases
+│           ├── timeboxes.py    # get_calm_timeboxes
+│           ├── teams.py        # get_calm_teams
 │           ├── health.py       # calm_health
 │           ├── tasks_write.py       # create/update_calm_task (guarded)
 │           ├── projects_write.py    # create/update_calm_project (guarded)
@@ -65,12 +67,13 @@ CALM_MCP/
 |------|-------------|------|
 | `get_calm_projects` | List all projects | — |
 | `get_calm_tasks` | List tasks for a project (includes Effort field) | `project_id` |
+| `get_calm_requirements` | Requirements of a project (type=Requirement, includes Effort) | `project_id` |
 | `get_calm_business_processes` | List business processes | — |
 | `get_calm_solution_processes` | List solution processes | — |
 | `get_calm_scopes` | List process-management scopes | — |
 | `get_calm_test_cases` | List manual test cases | — |
-| `get_calm_tasks` (filter) | Tasks of one type | `project_id`, `task_type` |
-| `get_calm_requirements` | Requirements of a project (type=Requirement, includes Effort) | `project_id` |
+| `get_calm_timeboxes` | List timeboxes (sprints/iterations) for a project | `project_id` |
+| `get_calm_teams` | List all teams visible to the tenant | — |
 | `calm_health` | Diagnostic — server up, token configured? | — |
 
 ### Write tools (guarded by CALM_ENABLE_WRITES)
