@@ -64,20 +64,28 @@ CALM_MCP/
 | Tool | Description | Args |
 |------|-------------|------|
 | `get_calm_projects` | List all projects | — |
-| `get_calm_tasks` | List tasks for a project | `project_id` |
+| `get_calm_tasks` | List tasks for a project (includes Effort field) | `project_id` |
 | `get_calm_business_processes` | List business processes | — |
 | `get_calm_solution_processes` | List solution processes | — |
 | `get_calm_scopes` | List process-management scopes | — |
 | `get_calm_test_cases` | List manual test cases | — |
 | `get_calm_tasks` (filter) | Tasks of one type | `project_id`, `task_type` |
-| `get_calm_requirements` | Requirements of a project (type=Requirement) | `project_id` |
+| `get_calm_requirements` | Requirements of a project (type=Requirement, includes Effort) | `project_id` |
 | `calm_health` | Diagnostic — server up, token configured? | — |
 
-### Write tools (guarded)
+### Write tools (guarded by CALM_ENABLE_WRITES)
 
-Disabled unless `CALM_ENABLE_WRITES=true` is set. When off, these tools are still
-advertised but return a clear error, so the server is read-only by default and
-nothing can accidentally change the tenant.
+⚠️ **Write operations are DISABLED by default** as a safety guard.
+
+To enable, set the environment variable:
+```bash
+CALM_ENABLE_WRITES=true
+```
+
+When disabled, write tools are still advertised but return a clear error, keeping the
+server read-only by default so nothing can accidentally change the tenant.
+
+📖 **See [ENABLING_WRITE_OPERATIONS.md](./ENABLING_WRITE_OPERATIONS.md) for detailed instructions.**
 
 | Tool | Description | Args |
 |------|-------------|------|

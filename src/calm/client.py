@@ -395,6 +395,7 @@ def _format_task(item: dict) -> dict:
         "AssigneeName": item.get("assigneeName"),
         "ApprovalState": TASK_APPROVAL_STATE_MAP.get(item.get("approvalState"), item.get("approvalState")),
         "Obsolete": item.get("obsolete"),
+        "Effort": item.get("effort"),
     }
 
 

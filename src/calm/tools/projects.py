@@ -30,12 +30,13 @@ def register(mcp: FastMCP) -> None:
                 for all tasks. (Requirements are tasks with type "Requirement".)
 
         Returns tasks with fields: ID, Title, Type, Status, StartDate, DueDate,
-        AssigneeName, ApprovalState, Obsolete.
+        AssigneeName, ApprovalState, Obsolete, Effort.
         - Type: Roadmap Task, Project Task, User Story, Sub-task, Requirement,
           Defect, Quality Gate, Checklist Item, or Risk
         - Status: Open, In Progress, Blocked, Done, or Not Relevant
         - ApprovalState: Approved, Rejected, Ready for Approval, or No Approval Required
         - Obsolete: Boolean indicating if task is archived
+        - Effort: Effort estimate (e.g., "8 Hours", may be null if not set)
         """
         if not project_id:
             raise ValueError("project_id is required")
