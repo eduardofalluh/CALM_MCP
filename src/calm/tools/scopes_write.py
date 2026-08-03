@@ -42,7 +42,7 @@ def register(mcp: FastMCP) -> None:
             project_id=project_id,
             name=name,
             description=description,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -75,7 +75,7 @@ def register(mcp: FastMCP) -> None:
             name=name,
             description=description,
             if_match=if_match,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -97,7 +97,7 @@ def register(mcp: FastMCP) -> None:
             token=h.token,
             scope_id=scope_id,
             if_match=if_match,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -113,7 +113,7 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("scope_id is required")
         h = get_calm_headers(ctx)
         return client.assign_scenario_versions(
-            token=h.token, scope_id=scope_id, version_ids=version_ids, base_url=h.base_url,
+            token=h.token, scope_id=scope_id, version_ids=version_ids, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -130,5 +130,5 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("assignments must be a non-empty list")
         h = get_calm_headers(ctx)
         return client.update_scope_assignments(
-            token=h.token, assignments=assignments, base_url=h.base_url,
+            token=h.token, assignments=assignments, base_url=h.base_url, user_email=h.user_email,
         )

@@ -46,7 +46,7 @@ def register(mcp: FastMCP) -> None:
             program_id=program_id,
             deployment_plan_id=deployment_plan_id,
             extra_fields=extra_fields,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -86,7 +86,7 @@ def register(mcp: FastMCP) -> None:
             deployment_plan_id=deployment_plan_id,
             if_match=if_match,
             extra_fields=extra_fields,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     # --- Timeboxes (no If-Match) -------------------------------------------
@@ -122,7 +122,7 @@ def register(mcp: FastMCP) -> None:
         return client.create_timebox(
             token=h.token, project_id=project_id, name=name, timebox_type=timebox_type,
             start_date=start_date, end_date=end_date, closed=closed,
-            extra_fields=extra_fields, base_url=h.base_url,
+            extra_fields=extra_fields, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -142,7 +142,7 @@ def register(mcp: FastMCP) -> None:
         h = get_calm_headers(ctx)
         return client.update_timebox(
             token=h.token, timebox_id=timebox_id, name=name, start_date=start_date,
-            end_date=end_date, closed=closed, extra_fields=extra_fields, base_url=h.base_url,
+            end_date=end_date, closed=closed, extra_fields=extra_fields, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -152,4 +152,4 @@ def register(mcp: FastMCP) -> None:
         if not timebox_id:
             raise ValueError("timebox_id is required")
         h = get_calm_headers(ctx)
-        return client.delete_timebox(token=h.token, timebox_id=timebox_id, base_url=h.base_url)
+        return client.delete_timebox(token=h.token, timebox_id=timebox_id, base_url=h.base_url, user_email=h.user_email)

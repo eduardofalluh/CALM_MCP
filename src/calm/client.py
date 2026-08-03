@@ -182,6 +182,7 @@ def _write(
     body: dict,
     if_match: str | None = None,
     content_type: str = "application/json",
+    user_email: str | None = None,
 ) -> Any:
     """Send a JSON write request (POST/PATCH) and return the parsed response.
 
@@ -190,6 +191,7 @@ def _write(
     OData services (Process Authoring, Test Management) for PATCH/DELETE.
     `content_type` defaults to application/json; some endpoints (e.g. the
     processmanagement scopes PATCH) require application/merge-patch+json.
+    `user_email` is included in request headers for audit logging in CALM.
     """
     headers = {
         "Authorization": f"Bearer {token}",
@@ -197,6 +199,10 @@ def _write(
     }
     if if_match:
         headers["If-Match"] = if_match
+    if user_email:
+        # SAP Cloud ALM may use these headers for audit logging
+        headers["X-User-Email"] = user_email
+        headers["X-Forwarded-User"] = user_email
     # DEBUG only; never logs Authorization or the request body.
     log.debug(
         "CALM write: %s %s (Content-Type=%s, If-Match=%s)",
@@ -211,11 +217,14 @@ def _write(
     return resp.json()
 
 
-def _delete(url: str, token: str, if_match: str | None = None) -> dict:
+def _delete(url: str, token: str, if_match: str | None = None, user_email: str | None = None) -> dict:
     """Send a DELETE and return {} (or the parsed body if the API returns one)."""
     headers = {"Authorization": f"Bearer {token}"}
     if if_match:
         headers["If-Match"] = if_match
+    if user_email:
+        headers["X-User-Email"] = user_email
+        headers["X-Forwarded-User"] = user_email
     log.debug("CALM delete: %s (If-Match=%s)", url, headers.get("If-Match", "-"))
     resp = requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT)
     _raise_for_status(resp, url)
@@ -457,7 +466,7 @@ def create_task(
     external_id: str | None = None,
     parent_id: str | None = None,
     extra_fields: dict | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Create a task in a Cloud ALM project. Returns the created task, formatted.
 
@@ -494,7 +503,7 @@ def create_task(
         body.update(extra_fields)
 
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks"
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return _format_task(result) if isinstance(result, dict) and result else {"submitted": body}
 
 
@@ -512,7 +521,7 @@ def update_task(
     external_id: str | None = None,
     obsolete: bool | None = None,
     extra_fields: dict | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Update fields of an existing task (partial PATCH). Only provided fields are sent.
 
@@ -567,7 +576,7 @@ def update_task(
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}"
-    result = _write("PATCH", url, token, body)
+    result = _write("PATCH", url, token, body, user_email=user_email)
     return _format_task(result) if isinstance(result, dict) and result else {"updated": task_id, "fields": body}
 
 
@@ -589,7 +598,7 @@ def create_project(
     program_id: str | None = None,
     deployment_plan_id: str | None = None,
     extra_fields: dict | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Create a Cloud ALM project. Returns the created project, formatted.
 
@@ -607,7 +616,7 @@ def create_project(
         body.update(extra_fields)
 
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects"
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return _format_project(result) if isinstance(result, dict) and result else {"submitted": body}
 
 
@@ -619,7 +628,7 @@ def update_project(
     deployment_plan_id: str | None = None,
     if_match: str | None = None,
     extra_fields: dict | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Partial-update a project. Only provided fields are sent.
 
@@ -642,7 +651,7 @@ def update_project(
 
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}"
     etag = _resolve_etag(url, token, if_match, body_field="etag")
-    result = _write("PATCH", url, token, body, if_match=etag)
+    result = _write("PATCH", url, token, body, if_match=etag, user_email=user_email)
     return _format_project(result) if isinstance(result, dict) and result else {"updated": project_id, "fields": body}
 
 
@@ -660,7 +669,7 @@ def create_business_process(
     token: str,
     name: str,
     description: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Create a business process. Returns the created process, formatted."""
     body: dict[str, Any] = {"name": name}
@@ -668,7 +677,7 @@ def create_business_process(
         body["description"] = description
 
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/businessProcesses"
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return _format_business_process(result) if isinstance(result, dict) and result else {"submitted": body}
 
 
@@ -678,7 +687,7 @@ def update_business_process(
     name: str | None = None,
     description: str | None = None,
     if_match: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Partial-update a business process. Only provided fields are sent.
 
@@ -695,7 +704,7 @@ def update_business_process(
 
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/businessProcesses/{business_process_id}"
     etag = _resolve_etag(url, token, if_match)
-    result = _write("PATCH", url, token, body, if_match=etag)
+    result = _write("PATCH", url, token, body, if_match=etag, user_email=user_email)
     return _format_business_process(result) if isinstance(result, dict) and result else {"updated": business_process_id, "fields": body}
 
 
@@ -728,7 +737,7 @@ def create_solution_process(
     state: str | None = None,
     business_process_id: str | None = None,
     external_id: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Create a solution process. Returns the created process, formatted.
 
@@ -751,7 +760,7 @@ def create_solution_process(
         body["businessProcess"] = {"id": business_process_id}
 
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses"
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return _format_solution_process(result) if isinstance(result, dict) and result else {"submitted": body}
 
 
@@ -765,7 +774,7 @@ def update_solution_process(
     state: str | None = None,
     external_id: str | None = None,
     if_match: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Partial-update a solution process. Only provided fields are sent.
 
@@ -789,7 +798,7 @@ def update_solution_process(
 
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses/{solution_process_id}"
     etag = _resolve_etag(url, token, if_match)
-    result = _write("PATCH", url, token, body, if_match=etag)
+    result = _write("PATCH", url, token, body, if_match=etag, user_email=user_email)
     return _format_solution_process(result) if isinstance(result, dict) and result else {"updated": solution_process_id, "fields": body}
 
 
@@ -809,7 +818,7 @@ def create_scope(
     project_id: str,
     name: str,
     description: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Create a process-management scope in a project. Returns it, formatted."""
     body: dict[str, Any] = {"projectId": project_id, "name": name}
@@ -817,7 +826,7 @@ def create_scope(
         body["description"] = description
 
     url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes"
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return _format_scope(result) if isinstance(result, dict) and result else {"submitted": body}
 
 
@@ -827,7 +836,7 @@ def update_scope(
     name: str | None = None,
     description: str | None = None,
     if_match: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Partial-update a scope. Only provided fields are sent.
 
@@ -847,7 +856,7 @@ def update_scope(
     # follows JSON Merge Patch (RFC 7386) and requires this media type.
     result = _write(
         "PATCH", url, token, body, if_match=if_match, content_type="application/merge-patch+json"
-    )
+    , user_email=user_email)
     return _format_scope(result) if isinstance(result, dict) and result else {"updated": scope_id, "fields": body}
 
 
@@ -880,7 +889,7 @@ def create_test_case(
     solution_process_flow_id: str | None = None,
     solution_process_flow_diagram_id: str | None = None,
     content_package_id: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Create a manual test case. Returns the created test case, formatted.
 
@@ -916,7 +925,7 @@ def create_test_case(
         body["toReferences"] = references
 
     url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases"
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return _format_test_case(result) if isinstance(result, dict) and result else {"submitted": body}
 
 
@@ -929,7 +938,7 @@ def update_test_case(
     priority: str | None = None,
     is_prepared: bool | None = None,
     if_match: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Partial-update a manual test case. Only provided fields are sent.
 
@@ -954,7 +963,7 @@ def update_test_case(
 
     url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}"
     etag = _tm_if_match(if_match)
-    result = _write("PATCH", url, token, body, if_match=etag)
+    result = _write("PATCH", url, token, body, if_match=etag, user_email=user_email)
     return _format_test_case(result) if isinstance(result, dict) and result else {"updated": test_case_id, "fields": body}
 
 
@@ -962,39 +971,39 @@ def update_test_case(
 # CALM delete functions (guarded at the tool layer by CALM_ENABLE_WRITES)
 # ---------------------------------------------------------------------------
 
-def delete_task(token: str, task_id: str, base_url: str | None = None) -> dict:
+def delete_task(token: str, task_id: str, base_url: str | None = None, user_email: str | None = None) -> dict:
     """Delete a task. Plain REST — no If-Match. Returns {"deleted": task_id}."""
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}"
-    _delete(url, token)
+    _delete(url, token, user_email=user_email)
     return {"deleted": task_id}
 
 
 def delete_business_process(
-    token: str, business_process_id: str, if_match: str | None = None, base_url: str | None = None
+    token: str, business_process_id: str, if_match: str | None = None, base_url: str | None = None, user_email: str | None = None
 ) -> dict:
     """Delete a business process. OData — DELETE needs If-Match (auto-fetched)."""
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/businessProcesses/{business_process_id}"
     etag = _resolve_etag(url, token, if_match)
-    _delete(url, token, if_match=etag)
+    _delete(url, token, if_match=etag, user_email=user_email)
     return {"deleted": business_process_id}
 
 
 def delete_solution_process(
-    token: str, solution_process_id: str, if_match: str | None = None, base_url: str | None = None
+    token: str, solution_process_id: str, if_match: str | None = None, base_url: str | None = None, user_email: str | None = None
 ) -> dict:
     """Delete a solution process. OData — DELETE needs If-Match (auto-fetched)."""
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses/{solution_process_id}"
     etag = _resolve_etag(url, token, if_match)
-    _delete(url, token, if_match=etag)
+    _delete(url, token, if_match=etag, user_email=user_email)
     return {"deleted": solution_process_id}
 
 
 def delete_scope(
-    token: str, scope_id: str, if_match: str | None = None, base_url: str | None = None
+    token: str, scope_id: str, if_match: str | None = None, base_url: str | None = None, user_email: str | None = None
 ) -> dict:
     """Delete a scope. OData; spec confirms no If-Match needed (honoured if given)."""
     url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes/{scope_id}"
-    _delete(url, token, if_match=if_match)
+    _delete(url, token, if_match=if_match, user_email=user_email)
     return {"deleted": scope_id}
 
 
@@ -1003,7 +1012,7 @@ def delete_test_case(
     test_case_id: str,
     force: bool = False,
     if_match: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Delete a manual test case. OData — DELETE needs If-Match (= modifiedAt).
 
@@ -1015,9 +1024,9 @@ def delete_test_case(
     etag = _tm_if_match(if_match)
     if force:
         action_url = f"{base}/api.v1.ExternalServiceAPI.forceDeletionIncludingTestRunsAndResults"
-        _write("POST", action_url, token, {}, if_match=etag)
+        _write("POST", action_url, token, {}, if_match=etag, user_email=user_email)
         return {"deleted": test_case_id, "force": True}
-    _delete(base, token, if_match=etag)
+    _delete(base, token, if_match=etag, user_email=user_email)
     return {"deleted": test_case_id}
 
 
@@ -1033,7 +1042,7 @@ def api_write(
     path: str,
     body: dict | list | None = None,
     if_match: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> Any:
     """Low-level POST/PATCH to any CALM API path (escape hatch for endpoints
     without a dedicated tool). `path` is relative to the tenant base URL, e.g.
@@ -1041,44 +1050,44 @@ def api_write(
     small ack. Pass `if_match` where the target service requires an ETag.
     """
     url = f"{_base_url(base_url)}/{path.lstrip('/')}"
-    result = _write(method.upper(), url, token, body if body is not None else {}, if_match=if_match)
+    result = _write(method.upper(), url, token, body if body is not None else {}, if_match=if_match, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "method": method.upper(), "path": path}
 
 
-def api_delete(token: str, path: str, if_match: str | None = None, base_url: str | None = None) -> dict:
+def api_delete(token: str, path: str, if_match: str | None = None, base_url: str | None = None, user_email: str | None = None) -> dict:
     """Low-level DELETE to any CALM API path (escape hatch). `path` is relative to
     the tenant base URL. Pass `if_match` where the target service requires an ETag.
     """
     url = f"{_base_url(base_url)}/{path.lstrip('/')}"
-    _delete(url, token, if_match=if_match)
+    _delete(url, token, if_match=if_match, user_email=user_email)
     return {"deleted": path}
 
 
 # --- Task sub-entities (plain REST, no If-Match) ---------------------------
 
 def create_task_relation(
-    token: str, task_id: str, relation_task_id: str, relation_type: str = "0", base_url: str | None = None
+    token: str, task_id: str, relation_task_id: str, relation_type: str = "0", base_url: str | None = None, user_email: str | None = None
 ) -> dict:
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}/relations"
-    result = _write("POST", url, token, {"type": relation_type, "relationTaskId": relation_task_id})
+    result = _write("POST", url, token, {"type": relation_type, "relationTaskId": relation_task_id}, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True}
 
 
-def delete_task_relation(token: str, relation_id: str, base_url: str | None = None) -> dict:
+def delete_task_relation(token: str, relation_id: str, base_url: str | None = None, user_email: str | None = None) -> dict:
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/relations/{relation_id}"
-    _delete(url, token)
+    _delete(url, token, user_email=user_email)
     return {"deleted": relation_id}
 
 
-def set_task_tags(token: str, task_id: str, tags: list, base_url: str | None = None) -> dict:
+def set_task_tags(token: str, task_id: str, tags: list, base_url: str | None = None, user_email: str | None = None) -> dict:
     """Replace a task's tag assignments. Tags look like "Group: Tag"."""
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/updateTags"
-    result = _write("POST", url, token, {"taskId": task_id, "tags": tags})
+    result = _write("POST", url, token, {"taskId": task_id, "tags": tags}, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "taskId": task_id, "tags": tags}
 
 
 def create_task_comment(
-    token: str, task_id: str, text: str | None = None, extra_fields: dict | None = None, base_url: str | None = None
+    token: str, task_id: str, text: str | None = None, extra_fields: dict | None = None, base_url: str | None = None, user_email: str | None = None
 ) -> dict:
     """Add a comment to a task. The exact body field is not documented; `text` is
     sent as-is and `extra_fields` can override/augment it."""
@@ -1088,12 +1097,12 @@ def create_task_comment(
     if extra_fields:
         body.update(extra_fields)
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}/comments"
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "submitted": body}
 
 
 def update_task_comment(
-    token: str, comment_id: str, text: str | None = None, extra_fields: dict | None = None, base_url: str | None = None
+    token: str, comment_id: str, text: str | None = None, extra_fields: dict | None = None, base_url: str | None = None, user_email: str | None = None
 ) -> dict:
     body: dict[str, Any] = {}
     if text is not None:
@@ -1103,13 +1112,13 @@ def update_task_comment(
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/comments/{comment_id}"
-    result = _write("PATCH", url, token, body)
+    result = _write("PATCH", url, token, body, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"updated": comment_id}
 
 
-def delete_task_comment(token: str, comment_id: str, base_url: str | None = None) -> dict:
+def delete_task_comment(token: str, comment_id: str, base_url: str | None = None, user_email: str | None = None) -> dict:
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/comments/{comment_id}"
-    _delete(url, token)
+    _delete(url, token, user_email=user_email)
     return {"deleted": comment_id}
 
 
@@ -1124,7 +1133,7 @@ def create_timebox(
     end_date: str | None = None,
     closed: bool | None = None,
     extra_fields: dict | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     body: dict[str, Any] = {}
     if name is not None:
@@ -1140,7 +1149,7 @@ def create_timebox(
     if extra_fields:
         body.update(extra_fields)
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/timeboxes"
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "submitted": body}
 
 
@@ -1152,7 +1161,7 @@ def update_timebox(
     end_date: str | None = None,
     closed: bool | None = None,
     extra_fields: dict | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     body: dict[str, Any] = {}
     if name is not None:
@@ -1168,33 +1177,33 @@ def update_timebox(
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
     url = f"{_base_url(base_url)}/api/calm-projects/v1/timeboxes/{timebox_id}"
-    result = _write("PATCH", url, token, body)
+    result = _write("PATCH", url, token, body, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"updated": timebox_id}
 
 
-def delete_timebox(token: str, timebox_id: str, base_url: str | None = None) -> dict:
+def delete_timebox(token: str, timebox_id: str, base_url: str | None = None, user_email: str | None = None) -> dict:
     url = f"{_base_url(base_url)}/api/calm-projects/v1/timeboxes/{timebox_id}"
-    _delete(url, token)
+    _delete(url, token, user_email=user_email)
     return {"deleted": timebox_id}
 
 
 # --- Process management: scope assignments & scenario versions -------------
 
-def assign_scenario_versions(token: str, scope_id: str, version_ids: list, base_url: str | None = None) -> dict:
+def assign_scenario_versions(token: str, scope_id: str, version_ids: list, base_url: str | None = None, user_email: str | None = None) -> dict:
     """Assign one or more solution-scenario versions to a scope."""
     url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes/{scope_id}/solutionScenarioVersions"
     body = {"value": [{"id": v} for v in version_ids]}
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "scopeId": scope_id}
 
 
-def update_scope_assignments(token: str, assignments: list, base_url: str | None = None) -> dict:
+def update_scope_assignments(token: str, assignments: list, base_url: str | None = None, user_email: str | None = None) -> dict:
     """Scope/unscope solution processes. Each assignment is a dict with
     scopeId, solutionScenarioVersionId, solutionProcessVersionId, isScoped
     (required) and an optional statusId
     (EMPTY/DESIGN/REALIZATION/PRODUCTION/MAINTENANCE/OBSOLETE)."""
     url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/solutionProcesses/scopeAssignments"
-    result = _write("PATCH", url, token, {"value": assignments})
+    result = _write("PATCH", url, token, {"value": assignments}, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "count": len(assignments)}
 
 
@@ -1212,7 +1221,7 @@ def create_test_action(
     expected_result: str | None = None,
     sequence: int | None = None,
     is_evidence_required: bool | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     """Create an action under an activity (POST /Activities/{id}/toActions)."""
     body: dict[str, Any] = {"title": title}
@@ -1225,7 +1234,7 @@ def create_test_action(
     if is_evidence_required is not None:
         body["isEvidenceRequired"] = is_evidence_required
     url = _tm_url(base_url, f"Activities/{activity_id}/toActions")
-    result = _write("POST", url, token, body)
+    result = _write("POST", url, token, body, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "submitted": body}
 
 
@@ -1238,7 +1247,7 @@ def update_test_action(
     sequence: int | None = None,
     is_evidence_required: bool | None = None,
     if_match: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     body: dict[str, Any] = {}
     if title is not None:
@@ -1255,14 +1264,14 @@ def update_test_action(
         raise ValueError("No fields to update — provide at least one field.")
     url = _tm_url(base_url, f"Actions/{action_id}")
     etag = _tm_if_match(if_match)
-    result = _write("PATCH", url, token, body, if_match=etag)
+    result = _write("PATCH", url, token, body, if_match=etag, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"updated": action_id}
 
 
-def delete_test_action(token: str, action_id: str, if_match: str | None = None, base_url: str | None = None) -> dict:
+def delete_test_action(token: str, action_id: str, if_match: str | None = None, base_url: str | None = None, user_email: str | None = None) -> dict:
     url = _tm_url(base_url, f"Actions/{action_id}")
     etag = _tm_if_match(if_match)
-    _delete(url, token, if_match=etag)
+    _delete(url, token, if_match=etag, user_email=user_email)
     return {"deleted": action_id}
 
 
@@ -1273,7 +1282,7 @@ def update_test_activity(
     sequence: int | None = None,
     is_in_scope: bool | None = None,
     if_match: str | None = None,
-    base_url: str | None = None,
+    base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
     body: dict[str, Any] = {}
     if title is not None:
@@ -1286,12 +1295,12 @@ def update_test_activity(
         raise ValueError("No fields to update — provide at least one field.")
     url = _tm_url(base_url, f"Activities/{activity_id}")
     etag = _tm_if_match(if_match)
-    result = _write("PATCH", url, token, body, if_match=etag)
+    result = _write("PATCH", url, token, body, if_match=etag, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"updated": activity_id}
 
 
-def delete_test_activity(token: str, activity_id: str, if_match: str | None = None, base_url: str | None = None) -> dict:
+def delete_test_activity(token: str, activity_id: str, if_match: str | None = None, base_url: str | None = None, user_email: str | None = None) -> dict:
     url = _tm_url(base_url, f"Activities/{activity_id}")
     etag = _tm_if_match(if_match)
-    _delete(url, token, if_match=etag)
+    _delete(url, token, if_match=etag, user_email=user_email)
     return {"deleted": activity_id}

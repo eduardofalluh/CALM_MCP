@@ -80,7 +80,7 @@ def register(mcp: FastMCP) -> None:
             external_id=external_id,
             parent_id=parent_id,
             extra_fields=extra_fields,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -140,7 +140,7 @@ def register(mcp: FastMCP) -> None:
             external_id=external_id,
             obsolete=obsolete,
             extra_fields=extra_fields,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -158,7 +158,7 @@ def register(mcp: FastMCP) -> None:
         if not task_id:
             raise ValueError("task_id is required")
         h = get_calm_headers(ctx)
-        return client.delete_task(token=h.token, task_id=task_id, base_url=h.base_url)
+        return client.delete_task(token=h.token, task_id=task_id, base_url=h.base_url, user_email=h.user_email)
 
     # --- Task sub-entities --------------------------------------------------
 
@@ -182,7 +182,7 @@ def register(mcp: FastMCP) -> None:
         h = get_calm_headers(ctx)
         return client.create_task_relation(
             token=h.token, task_id=task_id, relation_task_id=relation_task_id,
-            relation_type=relation_type, base_url=h.base_url,
+            relation_type=relation_type, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -192,7 +192,7 @@ def register(mcp: FastMCP) -> None:
         if not relation_id:
             raise ValueError("relation_id is required")
         h = get_calm_headers(ctx)
-        return client.delete_task_relation(token=h.token, relation_id=relation_id, base_url=h.base_url)
+        return client.delete_task_relation(token=h.token, relation_id=relation_id, base_url=h.base_url, user_email=h.user_email)
 
     @mcp.tool()
     def set_calm_task_tags(task_id: str, tags: list, ctx: Context) -> dict:
@@ -206,7 +206,7 @@ def register(mcp: FastMCP) -> None:
         if not task_id:
             raise ValueError("task_id is required")
         h = get_calm_headers(ctx)
-        return client.set_task_tags(token=h.token, task_id=task_id, tags=tags, base_url=h.base_url)
+        return client.set_task_tags(token=h.token, task_id=task_id, tags=tags, base_url=h.base_url, user_email=h.user_email)
 
     @mcp.tool()
     def create_calm_task_comment(
@@ -225,7 +225,7 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("task_id is required")
         h = get_calm_headers(ctx)
         return client.create_task_comment(
-            token=h.token, task_id=task_id, text=text, extra_fields=extra_fields, base_url=h.base_url,
+            token=h.token, task_id=task_id, text=text, extra_fields=extra_fields, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -241,7 +241,7 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("comment_id is required")
         h = get_calm_headers(ctx)
         return client.update_task_comment(
-            token=h.token, comment_id=comment_id, text=text, extra_fields=extra_fields, base_url=h.base_url,
+            token=h.token, comment_id=comment_id, text=text, extra_fields=extra_fields, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -251,7 +251,7 @@ def register(mcp: FastMCP) -> None:
         if not comment_id:
             raise ValueError("comment_id is required")
         h = get_calm_headers(ctx)
-        return client.delete_task_comment(token=h.token, comment_id=comment_id, base_url=h.base_url)
+        return client.delete_task_comment(token=h.token, comment_id=comment_id, base_url=h.base_url, user_email=h.user_email)
 
     # --- Requirements (tasks of type "Requirement") -------------------------
 
@@ -296,7 +296,7 @@ def register(mcp: FastMCP) -> None:
             token=h.token, project_id=project_id, title=title, task_type="Requirement",
             status=status, start_date=start_date, due_date=due_date, assignee_id=assignee_id,
             description=description, priority_id=priority_id, extra_fields=extra or None,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -331,7 +331,7 @@ def register(mcp: FastMCP) -> None:
             token=h.token, task_id=task_id, task_type="Requirement", title=title, status=status,
             start_date=start_date, due_date=due_date, assignee_id=assignee_id,
             description=description, priority_id=priority_id, obsolete=obsolete,
-            extra_fields=extra or None, base_url=h.base_url,
+            extra_fields=extra or None, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -341,4 +341,4 @@ def register(mcp: FastMCP) -> None:
         if not task_id:
             raise ValueError("task_id is required")
         h = get_calm_headers(ctx)
-        return client.delete_task(token=h.token, task_id=task_id, base_url=h.base_url)
+        return client.delete_task(token=h.token, task_id=task_id, base_url=h.base_url, user_email=h.user_email)

@@ -55,6 +55,7 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
     token: str | None = None
     base_url: str | None = None
     token_source: str | None = None
+    user_email: str | None = None
 
     identity_zone: str | None = None
     region_zone: str | None = None
@@ -79,6 +80,10 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
             raw_base = h.get("x-calm-base-url")
             if raw_base and raw_base.strip().startswith("https://"):
                 base_url = raw_base.strip()
+            # User email from GenAI Studio (x-user-email) or other headers
+            user_email = (h.get("x-user-email") or
+                         h.get("x-forwarded-user") or
+                         h.get("x-calm-user-email") or None)
     except Exception:
         pass
 
@@ -129,4 +134,8 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
             "  Local dev: CALM_TOKEN env var"
         )
 
-    return CALMHeaders(token=token, base_url=base_url, token_source=token_source)
+    # Fallback to env var if no header provided
+    if not user_email:
+        user_email = os.getenv("CALM_USER_EMAIL")
+
+    return CALMHeaders(token=token, base_url=base_url, token_source=token_source, user_email=user_email)

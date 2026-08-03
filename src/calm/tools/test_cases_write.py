@@ -74,7 +74,7 @@ def register(mcp: FastMCP) -> None:
             solution_process_flow_id=solution_process_flow_id,
             solution_process_flow_diagram_id=solution_process_flow_diagram_id,
             content_package_id=content_package_id,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -119,7 +119,7 @@ def register(mcp: FastMCP) -> None:
             priority=priority,
             is_prepared=is_prepared,
             if_match=if_match,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -151,7 +151,7 @@ def register(mcp: FastMCP) -> None:
             test_case_id=test_case_id,
             force=force,
             if_match=if_match,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     # --- Activities & Actions (OData; PATCH/DELETE need If-Match=modifiedAt) --
@@ -173,7 +173,7 @@ def register(mcp: FastMCP) -> None:
         h = get_calm_headers(ctx)
         return client.update_test_activity(
             token=h.token, activity_id=activity_id, title=title, sequence=sequence,
-            is_in_scope=is_in_scope, if_match=if_match, base_url=h.base_url,
+            is_in_scope=is_in_scope, if_match=if_match, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -184,7 +184,7 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("activity_id is required")
         h = get_calm_headers(ctx)
         return client.delete_test_activity(
-            token=h.token, activity_id=activity_id, if_match=if_match, base_url=h.base_url,
+            token=h.token, activity_id=activity_id, if_match=if_match, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -213,7 +213,7 @@ def register(mcp: FastMCP) -> None:
         return client.create_test_action(
             token=h.token, activity_id=activity_id, title=title, description=description,
             expected_result=expected_result, sequence=sequence,
-            is_evidence_required=is_evidence_required, base_url=h.base_url,
+            is_evidence_required=is_evidence_required, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -236,7 +236,7 @@ def register(mcp: FastMCP) -> None:
         return client.update_test_action(
             token=h.token, action_id=action_id, title=title, description=description,
             expected_result=expected_result, sequence=sequence,
-            is_evidence_required=is_evidence_required, if_match=if_match, base_url=h.base_url,
+            is_evidence_required=is_evidence_required, if_match=if_match, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -247,5 +247,5 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("action_id is required")
         h = get_calm_headers(ctx)
         return client.delete_test_action(
-            token=h.token, action_id=action_id, if_match=if_match, base_url=h.base_url,
+            token=h.token, action_id=action_id, if_match=if_match, base_url=h.base_url, user_email=h.user_email,
         )

@@ -69,7 +69,7 @@ def register(mcp: FastMCP) -> None:
             name=name,
             description=description,
             if_match=if_match,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     # --- Solution processes -------------------------------------------------
@@ -116,7 +116,7 @@ def register(mcp: FastMCP) -> None:
             state=state,
             business_process_id=business_process_id,
             external_id=external_id,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -160,7 +160,7 @@ def register(mcp: FastMCP) -> None:
             state=state,
             external_id=external_id,
             if_match=if_match,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -182,7 +182,7 @@ def register(mcp: FastMCP) -> None:
             token=h.token,
             business_process_id=business_process_id,
             if_match=if_match,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -204,5 +204,5 @@ def register(mcp: FastMCP) -> None:
             token=h.token,
             solution_process_id=solution_process_id,
             if_match=if_match,
-            base_url=h.base_url,
+            base_url=h.base_url, user_email=h.user_email,
         )

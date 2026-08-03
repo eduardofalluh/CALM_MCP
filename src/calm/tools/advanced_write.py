@@ -52,7 +52,7 @@ def register(mcp: FastMCP) -> None:
         h = get_calm_headers(ctx)
         return client.api_write(
             token=h.token, method=method_up, path=path, body=body,
-            if_match=if_match, base_url=h.base_url,
+            if_match=if_match, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
@@ -67,4 +67,4 @@ def register(mcp: FastMCP) -> None:
         if not path:
             raise ValueError("path is required")
         h = get_calm_headers(ctx)
-        return client.api_delete(token=h.token, path=path, if_match=if_match, base_url=h.base_url)
+        return client.api_delete(token=h.token, path=path, if_match=if_match, base_url=h.base_url, user_email=h.user_email)
