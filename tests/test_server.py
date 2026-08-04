@@ -48,8 +48,35 @@ def _write_shim() -> Path:
         "    if '/ManualTestCases/' in url or '/Activities/' in url or '/Actions/' in url:\n"
         "        # Test Management: ETag is the modifiedAt timestamp (no ETag header).\n"
         "        return _FakeResp(json.dumps({'uuid': 'TC-1', 'title': 'old', 'modifiedAt': '2025-11-17T15:51:04Z'}))\n"
+        "    # Check testPlans EARLY (before it matches /projects/ check)\n"
+        "    if 'testmanagement' in url and 'testPlans' in url:\n"
+        "        # Test plans for a project.\n"
+        "        return _FakeResp(json.dumps([\n"
+        "            {'id': 'TP1', 'projectId': 'P001', 'name': 'Enablement Test Plan', 'description': 'Customer enablement', 'status': 'Active'},\n"
+        "            {'id': 'TP2', 'projectId': 'P001', 'name': 'Regression Tests', 'description': 'Full regression', 'status': 'Planned'},\n"
+        "        ]))\n"
         "    if '/businessProcesses/' in url or '/solutionProcesses/' in url or '/scopes/' in url:\n"
         "        return _FakeResp(json.dumps({'id': 'X', 'name': 'old'}), headers={'ETag': 'W/\\\"1\\\"'})\n"
+        "    # Check sub-resources BEFORE general /projects/ check\n"
+        "    if '/projects/' in url and '/tags' in url:\n"
+        "        # Tags for a project.\n"
+        "        return _FakeResp(json.dumps([\n"
+        "            {'id': 'TAG1', 'projectId': 'P001', 'group': 'Scope', 'tag': 'Baseline'},\n"
+        "            {'id': 'TAG2', 'projectId': 'P001', 'group': 'Tshirt size', 'tag': 'L'},\n"
+        "        ]))\n"
+        "    if '/projects/' in url and '/features' in url:\n"
+        "        # Features for a project.\n"
+        "        return _FakeResp(json.dumps([\n"
+        "            {'id': 'F1', 'projectId': 'P001', 'name': 'User Management', 'description': 'User auth features', 'status': 'Active'},\n"
+        "            {'id': 'F2', 'projectId': 'P001', 'name': 'Reporting', 'description': 'BI reports', 'status': 'Planned'},\n"
+        "        ]))\n"
+        "    if '/projects/' in url and '/customization' in url:\n"
+        "        # Project customization values.\n"
+        "        return _FakeResp(json.dumps({\n"
+        "            'workstreams': ['Workstream A', 'Workstream B', 'Workstream C'],\n"
+        "            'deliverables': ['MVP', 'Phase 2', 'Final Release'],\n"
+        "            'customFields': [{'name': 'Priority', 'values': ['High', 'Medium', 'Low']}],\n"
+        "        }))\n"
         "    if '/projects/' in url and '/timeboxes' in url:\n"
         "        # Timeboxes for a project (must come BEFORE general /projects/ check).\n"
         "        return _FakeResp(json.dumps([\n"
@@ -142,10 +169,14 @@ async def main() -> int:
                 "get_calm_test_cases",
                 "get_calm_timeboxes",
                 "get_calm_teams",
+                "get_calm_tags",
+                "get_calm_features",
+                "get_calm_test_plans",
+                "get_calm_project_customization",
                 "calm_health",
             }
             check(
-                "all 9 read tools advertised",
+                "all 13 read tools advertised",
                 expected.issubset(tool_names),
                 f"got {sorted(tool_names)}",
             )
@@ -601,6 +632,90 @@ async def main() -> int:
                 check("team has ID", "ID" in team and team["ID"], f"got {team}")
                 check("team has Name", "Name" in team and team["Name"], f"got {team}")
                 check("team has Description field", "Description" in team, f"got {team}")
+
+            # ---- tags ----------------------------------------------------
+            print("\nTest 42: get_calm_tags returns project tags")
+            res = await session.call_tool("get_calm_tags", {"project_id": "P001"})
+            tags = (res.structuredContent or {}).get("result")
+            check("tags returned a list", isinstance(tags, list), f"got {tags}")
+            check("tags have expected fields", len(tags) > 0 and "Group" in tags[0], f"got {tags}")
+            if tags:
+                tag = tags[0]
+                check("tag has ID", "ID" in tag and tag["ID"], f"got {tag}")
+                check("tag has Group", "Group" in tag and tag["Group"], f"got {tag}")
+                check("tag has Tag field", "Tag" in tag, f"got {tag}")
+                check("tag has Full Name", "Full Name" in tag and ":" in str(tag["Full Name"]), f"got {tag}")
+
+            print("\nTest 43: create_calm_tag validates required fields")
+            res = await session.call_tool(
+                "create_calm_tag",
+                {"project_id": "P001", "group": "Priority", "tag": "Critical"},
+            )
+            ct = res.structuredContent or json.loads(res.content[0].text)
+            check("tag create did not error", res.isError is not True, f"got {ct}")
+            check("tag create echoes group", ct.get("group") == "Priority" or "Priority" in str(ct), f"got {ct}")
+
+            # ---- features ------------------------------------------------
+            print("\nTest 44: get_calm_features returns project features")
+            res = await session.call_tool("get_calm_features", {"project_id": "P001"})
+            features = (res.structuredContent or {}).get("result")
+            check("features returned a list", isinstance(features, list), f"got {features}")
+            check("features have expected fields", len(features) > 0 and "Name" in features[0], f"got {features}")
+            if features:
+                feat = features[0]
+                check("feature has ID", "ID" in feat and feat["ID"], f"got {feat}")
+                check("feature has Name", "Name" in feat and feat["Name"], f"got {feat}")
+                check("feature has Status field", "Status" in feat, f"got {feat}")
+
+            print("\nTest 45: create_calm_feature validates required fields")
+            res = await session.call_tool(
+                "create_calm_feature",
+                {"project_id": "P001", "name": "Transport Package Alpha", "description": "Baseline requirements"},
+            )
+            cf = res.structuredContent or json.loads(res.content[0].text)
+            check("feature create did not error", res.isError is not True, f"got {cf}")
+            check("feature create echoes name", cf.get("name") == "Transport Package Alpha" or "Transport" in str(cf), f"got {cf}")
+
+            # ---- test plans ----------------------------------------------
+            print("\nTest 46: get_calm_test_plans returns project test plans")
+            res = await session.call_tool("get_calm_test_plans", {"project_id": "P001"})
+            test_plans = (res.structuredContent or {}).get("result")
+            check("test plans returned a list", isinstance(test_plans, list), f"got {test_plans}")
+            check("test plans have expected fields", len(test_plans) > 0 and "Name" in test_plans[0], f"got {test_plans}")
+            if test_plans:
+                tp = test_plans[0]
+                check("test plan has ID", "ID" in tp and tp["ID"], f"got {tp}")
+                check("test plan has Name", "Name" in tp and tp["Name"], f"got {tp}")
+                check("test plan has Status field", "Status" in tp, f"got {tp}")
+
+            print("\nTest 47: create_calm_test_plan validates required fields")
+            res = await session.call_tool(
+                "create_calm_test_plan",
+                {"project_id": "P001", "name": "Enablement Test Plan", "description": "Customer enablement scripts"},
+            )
+            ctp = res.structuredContent or json.loads(res.content[0].text)
+            check("test plan create did not error", res.isError is not True, f"got {ctp}")
+            check("test plan create echoes name", ctp.get("name") == "Enablement Test Plan" or "Enablement" in str(ctp), f"got {ctp}")
+
+            print("\nTest 48: assign_calm_test_case_to_plan validates required fields")
+            res = await session.call_tool(
+                "assign_calm_test_case_to_plan",
+                {"test_plan_id": "TP1", "test_case_id": "TC-1", "tester_email": "tester@example.com"},
+            )
+            atp = res.structuredContent or json.loads(res.content[0].text)
+            check("test case assignment did not error", res.isError is not True, f"got {atp}")
+            check("test case assignment echoes plan id", atp.get("testPlanId") == "TP1" or "TP1" in str(atp), f"got {atp}")
+
+            # ---- project customization -----------------------------------
+            print("\nTest 49: get_calm_project_customization returns picklists")
+            res = await session.call_tool("get_calm_project_customization", {"project_id": "P001"})
+            cust = res.structuredContent or json.loads(res.content[0].text)
+            check("customization returned a dict", isinstance(cust, dict), f"got {cust}")
+            check("customization has Workstreams", "Workstreams" in cust and isinstance(cust["Workstreams"], list), f"got {cust}")
+            check("customization has Deliverables", "Deliverables" in cust and isinstance(cust["Deliverables"], list), f"got {cust}")
+            check("customization has Custom Fields", "Custom Fields" in cust, f"got {cust}")
+            if cust.get("Workstreams"):
+                check("workstreams populated", len(cust["Workstreams"]) > 0, f"got {cust['Workstreams']}")
 
     print("\n" + "=" * 60)
     if failures:

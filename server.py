@@ -38,6 +38,8 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.calm.tools import (
     advanced_write,
+    customization,
+    features,
     health,
     processes,
     processes_write,
@@ -45,10 +47,12 @@ from src.calm.tools import (
     projects_write,
     scopes,
     scopes_write,
+    tags,
     tasks_write,
     teams,
     test_cases,
     test_cases_write,
+    test_plans,
     timeboxes,
 )
 
@@ -156,6 +160,10 @@ scopes.register(mcp)
 test_cases.register(mcp)
 timeboxes.register(mcp)
 teams.register(mcp)
+tags.register(mcp)
+features.register(mcp)
+test_plans.register(mcp)
+customization.register(mcp)
 health.register(mcp)
 
 # Write tools (guarded by CALM_ENABLE_WRITES)
