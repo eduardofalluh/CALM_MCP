@@ -706,6 +706,15 @@ async def main() -> int:
             check("test case assignment did not error", res.isError is not True, f"got {atp}")
             check("test case assignment echoes plan id", atp.get("testPlanId") == "TP1" or "TP1" in str(atp), f"got {atp}")
 
+            print("\nTest 50: link_calm_test_case_to_requirement creates traceability link")
+            res = await session.call_tool(
+                "link_calm_test_case_to_requirement",
+                {"test_case_id": "550e8400-e29b-41d4-a716-446655440000", "requirement_id": "R001", "link_type": "covers"},
+            )
+            link = res.structuredContent or json.loads(res.content[0].text)
+            check("test case linkage did not error", res.isError is not True, f"got {link}")
+            check("linkage references requirement", "R001" in str(link) or link.get("requirement_id") == "R001", f"got {link}")
+
             # ---- project customization -----------------------------------
             print("\nTest 49: get_calm_project_customization returns picklists")
             res = await session.call_tool("get_calm_project_customization", {"project_id": "P001"})

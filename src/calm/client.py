@@ -617,6 +617,45 @@ def assign_test_case_to_plan(
     return result if isinstance(result, dict) and result else {"submitted": body}
 
 
+def link_test_case_to_requirement(
+    token: str,
+    test_case_id: str,
+    requirement_id: str,
+    link_type: str = "covers",
+    base_url: str | None = None,
+    user_email: str | None = None,
+) -> dict:
+    """Link a test case to a requirement for traceability.
+
+    Creates a reference from the test case to the requirement, establishing
+    test coverage tracking. This is the standard way to track which test cases
+    verify which requirements in CALM.
+
+    Args:
+        test_case_id: UUID of the test case (from get_calm_test_cases or create_calm_test_case)
+        requirement_id: Task ID of the requirement (from get_calm_requirements or create_calm_requirement)
+        link_type: Type of link (default "covers" for test coverage)
+
+    Common link types:
+        - "covers": Test case covers/verifies this requirement
+        - "validates": Test case validates this requirement
+        - "references": General reference link
+
+    Returns the created reference object or submission confirmation.
+    """
+    body: dict[str, Any] = {
+        "name": f"Requirement {requirement_id}",
+        "url": f"/calm/tasks/{requirement_id}",
+        "type": link_type,
+        "targetId": requirement_id,
+        "targetType": "requirement",
+    }
+
+    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}/toReferences"
+    result = _write("POST", url, token, body, user_email=user_email)
+    return result if isinstance(result, dict) and result else {"submitted": body, "test_case_id": test_case_id, "requirement_id": requirement_id}
+
+
 # --- Project Customization Values -------------------------------------------
 
 def get_project_customization(project_id: str, token: str, base_url: str | None = None) -> dict:
