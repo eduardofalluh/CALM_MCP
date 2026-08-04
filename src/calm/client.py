@@ -426,6 +426,230 @@ def get_teams(token: str, base_url: str | None = None) -> list[dict]:
     ]
 
 
+# --- Tags -------------------------------------------------------------------
+
+def get_tags(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
+    """Return all tag definitions for a project.
+
+    Tags are project-level metadata organized in groups. Each tag has a group
+    name and tag name, formatted as "Group: Tag" (e.g. "Scope:Baseline",
+    "Tshirt size:L"). Used to categorize tasks and requirements.
+    """
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/tags"
+    result = _get(url, token)
+    items = result if isinstance(result, list) else result.get("value", [])
+    return [
+        {
+            "ID": item.get("id"),
+            "Project ID": item.get("projectId") or project_id,
+            "Group": item.get("group"),
+            "Tag": item.get("tag"),
+            "Full Name": f"{item.get('group')}: {item.get('tag')}" if item.get("group") and item.get("tag") else None,
+        }
+        for item in items
+    ]
+
+
+def create_tag(
+    token: str,
+    project_id: str,
+    group: str,
+    tag: str,
+    base_url: str | None = None,
+    user_email: str | None = None,
+) -> dict:
+    """Create a new tag definition in a project.
+
+    Tags must be created before they can be assigned to tasks/requirements.
+    The group and tag names are case-sensitive.
+
+    Args:
+        project_id: Target project ID
+        group: Tag group name (e.g. "Scope", "Tshirt size")
+        tag: Tag value (e.g. "Baseline", "L")
+    """
+    body = {
+        "projectId": project_id,
+        "group": group,
+        "tag": tag,
+    }
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/tags"
+    result = _write("POST", url, token, body, user_email=user_email)
+    return result if isinstance(result, dict) and result else {"submitted": body}
+
+
+# --- Features ---------------------------------------------------------------
+
+def get_features(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
+    """Return all features for a project.
+
+    Features are higher-level groupings used for transport tracking and
+    release planning. Each feature can contain multiple requirements.
+    """
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/features"
+    result = _get(url, token)
+    items = result if isinstance(result, list) else result.get("value", [])
+    return [
+        {
+            "ID": item.get("id"),
+            "Project ID": item.get("projectId") or project_id,
+            "Name": item.get("name"),
+            "Description": item.get("description"),
+            "Status": item.get("status"),
+            "External ID": item.get("externalId"),
+        }
+        for item in items
+    ]
+
+
+def create_feature(
+    token: str,
+    project_id: str,
+    name: str,
+    description: str | None = None,
+    external_id: str | None = None,
+    extra_fields: dict | None = None,
+    base_url: str | None = None,
+    user_email: str | None = None,
+) -> dict:
+    """Create a new feature in a project.
+
+    Features group requirements for transport and release management. Used
+    for baseline requirements in BP workflows.
+
+    Args:
+        project_id: Target project ID
+        name: Feature name
+        description: Optional description
+        external_id: Optional external system reference
+        extra_fields: Additional API fields (status, etc.)
+    """
+    body: dict[str, Any] = {
+        "projectId": project_id,
+        "name": name,
+    }
+    if description is not None:
+        body["description"] = description
+    if external_id is not None:
+        body["externalId"] = external_id
+    if extra_fields:
+        body.update(extra_fields)
+
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/features"
+    result = _write("POST", url, token, body, user_email=user_email)
+    return result if isinstance(result, dict) and result else {"submitted": body}
+
+
+# --- Test Plans -------------------------------------------------------------
+
+def get_test_plans(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
+    """Return all test plans for a project.
+
+    Test plans organize test cases into execution sets. Each plan can be
+    assigned to testers and tracked separately.
+    """
+    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/projects/{project_id}/testPlans"
+    result = _get(url, token)
+    items = result if isinstance(result, list) else result.get("value", [])
+    return [
+        {
+            "ID": item.get("id"),
+            "Project ID": item.get("projectId") or project_id,
+            "Name": item.get("name"),
+            "Description": item.get("description"),
+            "Status": item.get("status"),
+        }
+        for item in items
+    ]
+
+
+def create_test_plan(
+    token: str,
+    project_id: str,
+    name: str,
+    description: str | None = None,
+    extra_fields: dict | None = None,
+    base_url: str | None = None,
+    user_email: str | None = None,
+) -> dict:
+    """Create a new test plan in a project.
+
+    Test plans group test cases for execution tracking. Used to organize
+    customer enablement scripts and other test scenarios.
+
+    Args:
+        project_id: Target project ID
+        name: Test plan name
+        description: Optional description
+        extra_fields: Additional API fields
+    """
+    body: dict[str, Any] = {
+        "projectId": project_id,
+        "name": name,
+    }
+    if description is not None:
+        body["description"] = description
+    if extra_fields:
+        body.update(extra_fields)
+
+    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/projects/{project_id}/testPlans"
+    result = _write("POST", url, token, body, user_email=user_email)
+    return result if isinstance(result, dict) and result else {"submitted": body}
+
+
+def assign_test_case_to_plan(
+    token: str,
+    test_plan_id: str,
+    test_case_id: str,
+    tester_email: str | None = None,
+    extra_fields: dict | None = None,
+    base_url: str | None = None,
+    user_email: str | None = None,
+) -> dict:
+    """Assign a test case to a test plan, optionally with a tester.
+
+    Args:
+        test_plan_id: Target test plan ID
+        test_case_id: Test case to assign
+        tester_email: Optional email of assigned tester
+        extra_fields: Additional API fields
+    """
+    body: dict[str, Any] = {
+        "testPlanId": test_plan_id,
+        "testCaseId": test_case_id,
+    }
+    if tester_email is not None:
+        body["testerEmail"] = tester_email
+    if extra_fields:
+        body.update(extra_fields)
+
+    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/testPlans/{test_plan_id}/assignments"
+    result = _write("POST", url, token, body, user_email=user_email)
+    return result if isinstance(result, dict) and result else {"submitted": body}
+
+
+# --- Project Customization Values -------------------------------------------
+
+def get_project_customization(project_id: str, token: str, base_url: str | None = None) -> dict:
+    """Return all customization values for a project.
+
+    Returns picklist values for workstreams, deliverables, and other
+    project-specific custom fields. Used to validate task field values
+    against the project's allowed options.
+
+    Returns dict with keys: workstreams, deliverables, customFields
+    """
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/customization"
+    result = _get(url, token)
+
+    return {
+        "Project ID": project_id,
+        "Workstreams": result.get("workstreams", []),
+        "Deliverables": result.get("deliverables", []),
+        "Custom Fields": result.get("customFields", []),
+    }
+
+
 # ---------------------------------------------------------------------------
 # CALM write functions
 #
