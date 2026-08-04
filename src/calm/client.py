@@ -369,18 +369,7 @@ def get_scopes(token: str, base_url: str | None = None) -> list[dict]:
 def get_test_cases(token: str, base_url: str | None = None) -> list[dict]:
     url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases"
     result = _get(url, token)
-    parsed = []
-    for item in result.get("value", []):
-        priority_code = str(item.get("priorityCode"))
-        parsed.append({
-            "Project ID": item.get("projectId"),
-            "Scope ID": item.get("scopeId"),
-            "Solution Process ID": item.get("solutionProcessId"),
-            "Title": item.get("title"),
-            "Prepared": item.get("isPrepared"),
-            "Priority": TESTCASE_PRIORITY_MAP.get(priority_code, priority_code),
-        })
-    return parsed
+    return [_format_test_case(item) for item in result.get("value", [])]
 
 
 def get_timeboxes(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
