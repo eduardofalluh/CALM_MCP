@@ -169,12 +169,43 @@ def register(mcp: FastMCP) -> None:
         ctx: Context,
         relation_type: str = "0",
     ) -> dict:
-        """Link a task to another task (relation). Requires CALM_ENABLE_WRITES=true.
+        """Link a task to another task (creates a relation/dependency). Requires CALM_ENABLE_WRITES=true.
+
+        Creates a directional relationship from task_id to relation_task_id. This is used for
+        dependencies, blockers, related work, and other task-to-task connections.
 
         Args:
-            task_id: The task the relation is created on.
-            relation_task_id: The related task's ID.
-            relation_type: Relation type code (default "0").
+            task_id: The source task (the task the relation is created on).
+            relation_task_id: The target task's ID (the related/dependent task).
+            relation_type: Relation type code. Common types in SAP Cloud ALM:
+                - "0" - Generic relation/related to (default)
+                - "1" - Depends on (task_id depends on relation_task_id)
+                - "2" - Blocks (task_id blocks relation_task_id)
+                - "3" - Predecessor/Successor
+                - "4" - Parent/Child (alternative to parent_id field)
+
+                Note: The exact codes may vary by your CALM tenant configuration.
+                Check your CALM UI's relation type dropdown for available types.
+
+        Example - Create dependency:
+            Task T-001 depends on Task T-002 being completed first:
+            create_calm_task_relation(
+                task_id="T-001",
+                relation_task_id="T-002",
+                relation_type="1"  # "depends on"
+            )
+            Result: T-001 cannot start until T-002 is done
+
+        Example - Create blocker:
+            Task T-003 blocks Task T-004:
+            create_calm_task_relation(
+                task_id="T-003",
+                relation_task_id="T-004",
+                relation_type="2"  # "blocks"
+            )
+            Result: T-004 is blocked by T-003
+
+        Returns the created relation object with relation ID (for later deletion).
         """
         ensure_writes_enabled()
         if not task_id or not relation_task_id:
