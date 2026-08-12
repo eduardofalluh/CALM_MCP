@@ -193,6 +193,61 @@ OData services / Projects PATCH, or use the dedicated typed tool which does.
 
 ---
 
+## Optional: BTP Test Management OData repository (`tm_*` tools)
+
+The server can additionally read (and, guarded, write) the **BTP Test
+Management repository** — a CAP OData V4 service over PostgreSQL on Cloud
+Foundry that mirrors CALM test-management entities (`Requirements`,
+`TestCases` → `activities` → `actions` → `fields`, `applications`,
+`references`, `taskLinks`, `Statistics`), keyed to CALM via
+`project_id`/`scope_id`/`solution_process_id`/`external_id`.
+
+⚠️ This is **not** SAP Cloud ALM's API: different host, different XSUAA tenant,
+its own service key (`cf service-key test-management-uaa sync-integration`).
+It is **entirely optional** — with no TM configuration the server behaves
+exactly as before and the `tm_*` tools return a clear "not configured" hint.
+
+| Tool | Description |
+|------|-------------|
+| `tm_health` | Connection diagnostic + live `/health` probe (also reports DB reachability) |
+| `get_tm_statistics` | Aggregated counts — the quick check that the CALM→repo feed has data |
+| `get_tm_test_cases` | OData query over test cases; `updated_since` implements the delta-sync watermark |
+| `get_tm_test_case_full` | One test case with the complete tree (3-level `$expand`) |
+| `get_tm_requirements` | Testing requirements (`tr_id`, `wricef`, `short_desc`), optional `$expand=testCases` |
+| `tm_odata_read` | Generic GET escape hatch — any entity set + raw OData query string |
+
+Write tools (guarded by **`TM_ENABLE_WRITES`**, deliberately independent from
+`CALM_ENABLE_WRITES`): `create_tm_requirement`, `create_tm_test_case` (deep
+insert), `update_tm_test_case`, `delete_tm_requirement` (cascades!),
+`delete_tm_test_case`, plus generic `tm_odata_write` / `tm_odata_delete`.
+PATCH/DELETE need `If-Match` (428 when missing, 412 when stale); the typed
+tools auto-fetch the current ETag.
+
+### Configuration (all optional)
+
+**Server env vars** (single-project):
+
+```bash
+TM_BASE_URL=https://<cf-app-host>/odata/v4/test-management
+TM_TOKEN_URL=https://<tm-tenant>.authentication.<region>.hana.ondemand.com/oauth/token
+TM_CLIENT_ID=<clientid>
+TM_CLIENT_SECRET=<clientsecret>
+# TM_ENABLE_WRITES=true       # only if repo writes are wanted
+```
+
+**Client headers** (multi-project / GenAI Studio — same pattern as `x-calm-*`):
+`x-tm-base-url`, `x-tm-token-url`, `x-tm-client-id`, `x-tm-client-secret`.
+Each request is resolved independently and tokens are cached per credential
+pair, so one server instance can serve projects with and without the TM
+connection at the same time.
+
+**Local dev:** `TM_BASE_URL` + static `TM_TOKEN`.
+
+Delta-sync usage: call `get_tm_test_cases(updated_since=<last watermark>)`,
+process the results, keep the highest `updated_at` as the next watermark.
+
+---
+
 ## 1. Install
 
 ```bash

@@ -6,6 +6,7 @@ from fastmcp import Context, FastMCP
 
 from src.calm.config import build_auth_url, build_base_url, get_auth_url, get_base_url
 from src.calm.dependencies import writes_enabled
+from src.calm.tm_dependencies import tm_configured, tm_writes_enabled
 from src.calm.token_manager import get_managed_token
 
 
@@ -89,6 +90,12 @@ def register(mcp: FastMCP) -> None:
             "writes_enabled": writes_enabled(),
             "auth_url": auth_url,
             "base_url": base_url,
+            # Optional BTP Test Management OData connection (tm_* tools).
+            "tm_odata": {
+                "configured": tm_configured(ctx),
+                "tm_writes_enabled": tm_writes_enabled(),
+                "base_url": os.getenv("TM_BASE_URL") or "(not set — env or x-tm-base-url header)",
+            },
             "headers_received": {
                 "x-calm-identity-zone": identity_zone or "(not set)",
                 "x-calm-region-zone": region_zone or "(not set)",

@@ -53,6 +53,8 @@ from src.calm.tools import (
     test_cases,
     test_cases_write,
     test_plans,
+    test_repo,
+    test_repo_write,
     timeboxes,
 )
 
@@ -173,6 +175,11 @@ processes_write.register(mcp)
 scopes_write.register(mcp)
 test_cases_write.register(mcp)
 advanced_write.register(mcp)
+
+# Optional: BTP Test Management OData repository (reads need TM_* config /
+# x-tm-* headers; writes additionally guarded by TM_ENABLE_WRITES)
+test_repo.register(mcp)
+test_repo_write.register(mcp)
 
 
 def main() -> None:
