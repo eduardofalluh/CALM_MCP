@@ -44,6 +44,32 @@ def _write_shim() -> Path:
         "    def json(self): return json.loads(self.text)\n"
         f"_PAYLOAD = {FAKE_PROJECTS_PAYLOAD!r}\n"
         "def _fake_get(url, *a, **kw):\n"
+        "    # --- BTP Test Management OData (tm_* tools) — check FIRST -----\n"
+        "    if url.rstrip('/').endswith('/health') and 'test-management' not in url:\n"
+        "        return _FakeResp(json.dumps({'status': 'UP', 'db': 'ok'}))\n"
+        "    if '/odata/v4/test-management' in url:\n"
+        "        if \"TestCases('\" in url:\n"
+        "            return _FakeResp(json.dumps({'id': 'TC-1', 'title': 'TM case', 'is_prepared': False,\n"
+        "                                         'updated_at': '2026-08-01T00:00:00Z'}),\n"
+        "                             headers={'ETag': 'W/\\\"tm-1\\\"'})\n"
+        "        if \"Requirements('\" in url:\n"
+        "            return _FakeResp(json.dumps({'id': 'RQ-1', 'tr_id': 'TR-1', 'short_desc': 'Req'}),\n"
+        "                             headers={'ETag': 'W/\\\"tm-2\\\"'})\n"
+        "        if 'Statistics' in url:\n"
+        "            return _FakeResp(json.dumps({'value': [\n"
+        "                {'scope': 'TestCases', 'metric': 'total', 'count': 42},\n"
+        "                {'scope': 'Requirements', 'metric': 'total', 'count': 7},\n"
+        "            ]}))\n"
+        "        if 'TestCases' in url:\n"
+        "            return _FakeResp(json.dumps({'value': [\n"
+        "                {'id': 'TC-1', 'external_id': 'TC-0001', 'title': 'TM case',\n"
+        "                 'scenario_type': 'positive', 'updated_at': '2026-08-05T00:00:00Z'},\n"
+        "            ], '@odata.count': 1}))\n"
+        "        if 'Requirements' in url:\n"
+        "            return _FakeResp(json.dumps({'value': [\n"
+        "                {'id': 'RQ-1', 'tr_id': 'TR-1', 'wricef': 'R', 'short_desc': 'Req'},\n"
+        "            ]}))\n"
+        "        return _FakeResp(json.dumps({'value': []}))\n"
         "    # Single-entity GETs used by OData ETag auto-fetch.\n"
         "    if '/ManualTestCases/' in url or '/Activities/' in url or '/Actions/' in url:\n"
         "        # Test Management: ETag is the modifiedAt timestamp (no ETag header).\n"
@@ -126,6 +152,13 @@ def _make_params(shim_dir: Path, extra_env: dict | None = None) -> StdioServerPa
         "CALM_CLIENT_SECRET": "",
         # Writes off by default; individual tests opt in via extra_env.
         "CALM_ENABLE_WRITES": "",
+        # TM OData off by default; individual tests opt in via extra_env.
+        "TM_BASE_URL": "",
+        "TM_TOKEN_URL": "",
+        "TM_CLIENT_ID": "",
+        "TM_CLIENT_SECRET": "",
+        "TM_TOKEN": "",
+        "TM_ENABLE_WRITES": "",
         "PYTHONPATH": f"{ROOT}{os.pathsep}{shim_dir}{os.pathsep}{os.environ.get('PYTHONPATH', '')}",
     }
     if extra_env:
@@ -211,6 +244,18 @@ async def main() -> int:
                 sub_entity_tools.issubset(tool_names),
                 f"missing {sorted(sub_entity_tools - tool_names)}",
             )
+            tm_tools = {
+                "tm_health", "get_tm_statistics", "get_tm_test_cases",
+                "get_tm_test_case_full", "get_tm_requirements", "tm_odata_read",
+                "create_tm_requirement", "create_tm_test_case", "update_tm_test_case",
+                "delete_tm_requirement", "delete_tm_test_case",
+                "tm_odata_write", "tm_odata_delete",
+            }
+            check(
+                "all TM OData tools advertised",
+                tm_tools.issubset(tool_names),
+                f"missing {sorted(tm_tools - tool_names)}",
+            )
 
             for t in tools.tools:
                 check(
@@ -282,9 +327,42 @@ async def main() -> int:
                 f"got {err_text!r}",
             )
 
+            # ---- TM OData: optional feature degrades gracefully ----------
+            print("\nTest 5b: TM tools are optional — clear errors when unconfigured")
+            res = await session.call_tool("tm_health", {})
+            tmh = res.structuredContent or json.loads(res.content[0].text)
+            check("tm_health never errors when unconfigured", res.isError is not True, f"got {tmh}")
+            check("tm_health reports not configured", tmh.get("configured") is False, f"got {tmh}")
+
+            res = await session.call_tool("get_tm_statistics", {})
+            check("TM read blocked when unconfigured (error flag set)", res.isError is True)
+            err_text = res.content[0].text if res.content else ""
+            check(
+                "TM read error mentions TM_BASE_URL and optionality",
+                "TM_BASE_URL" in err_text and "optional" in err_text.lower(),
+                f"got {err_text!r}",
+            )
+
+            res = await session.call_tool(
+                "create_tm_requirement", {"tr_id": "TR-X", "short_desc": "blocked"},
+            )
+            check("TM write blocked by guard (error flag set)", res.isError is True)
+            err_text = res.content[0].text if res.content else ""
+            check(
+                "TM write error mentions TM_ENABLE_WRITES",
+                "TM_ENABLE_WRITES" in err_text,
+                f"got {err_text!r}",
+            )
+
     # ---- writes enabled (separate server process) -------------------
     print("\nTest 6: with CALM_ENABLE_WRITES=true, create/update round-trip")
-    write_params = _make_params(shim_dir, {"CALM_ENABLE_WRITES": "true"})
+    write_params = _make_params(shim_dir, {
+        "CALM_ENABLE_WRITES": "true",
+        # TM OData configured via static token for this spawn.
+        "TM_BASE_URL": "https://tm.example.com/odata/v4/test-management",
+        "TM_TOKEN": "fake-tm-token-for-tests",
+        "TM_ENABLE_WRITES": "true",
+    })
     async with stdio_client(write_params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -714,6 +792,77 @@ async def main() -> int:
             link = res.structuredContent or json.loads(res.content[0].text)
             check("test case linkage did not error", res.isError is not True, f"got {link}")
             check("linkage references requirement", "R001" in str(link) or link.get("requirement_id") == "R001", f"got {link}")
+
+            # ---- TM OData (configured in this spawn) ----------------------
+            print("\nTest 51: tm_health reports configured + reachable")
+            res = await session.call_tool("tm_health", {})
+            tmh = res.structuredContent or json.loads(res.content[0].text)
+            check("tm_health did not error", res.isError is not True, f"got {tmh}")
+            check("tm_health configured", tmh.get("configured") is True, f"got {tmh}")
+            check("tm_health token source is TM_TOKEN", tmh.get("token_source") == "TM_TOKEN env var", f"got {tmh}")
+            check("tm_health service reachable", tmh.get("reachable") is True, f"got {tmh}")
+            check("tm writes enabled in this spawn", tmh.get("tm_writes_enabled") is True, f"got {tmh}")
+
+            print("\nTest 52: get_tm_statistics returns repository counts")
+            res = await session.call_tool("get_tm_statistics", {})
+            stats = res.structuredContent or json.loads(res.content[0].text)
+            check("statistics did not error", res.isError is not True, f"got {stats}")
+            items = stats.get("items")
+            check("statistics normalized to items list", isinstance(items, list) and len(items) == 2, f"got {stats}")
+            check("statistics counts present", items and items[0].get("count") == 42, f"got {items}")
+
+            print("\nTest 53: get_tm_test_cases with delta watermark (updated_since)")
+            res = await session.call_tool(
+                "get_tm_test_cases",
+                {"updated_since": "2026-08-01T00:00:00Z", "select": "external_id,updated_at", "top": 500},
+            )
+            tcs = res.structuredContent or json.loads(res.content[0].text)
+            check("delta read did not error", res.isError is not True, f"got {tcs}")
+            check(
+                "delta read returns items with updated_at",
+                isinstance(tcs.get("items"), list) and tcs["items"][0].get("updated_at"),
+                f"got {tcs}",
+            )
+            check("odata count surfaced", tcs.get("count") == 1, f"got {tcs}")
+
+            print("\nTest 54: get_tm_test_case_full returns a single entity")
+            res = await session.call_tool("get_tm_test_case_full", {"test_case_id": "TC-1"})
+            tc1 = res.structuredContent or json.loads(res.content[0].text)
+            check("full-tree read did not error", res.isError is not True, f"got {tc1}")
+            check("full-tree read returns the entity", tc1.get("id") == "TC-1", f"got {tc1}")
+
+            print("\nTest 55: tm_odata_read generic escape hatch + entity-set validation")
+            res = await session.call_tool(
+                "tm_odata_read",
+                {"entity_set": "Requirements", "query": "$filter=tr_id eq 'TR-1'&$top=5"},
+            )
+            rqs = res.structuredContent or json.loads(res.content[0].text)
+            check("generic TM read did not error", res.isError is not True, f"got {rqs}")
+            check("generic TM read returns items", isinstance(rqs.get("items"), list) and rqs["items"], f"got {rqs}")
+            res = await session.call_tool("tm_odata_read", {"entity_set": "Bogus"})
+            check("unknown entity set errors", res.isError is True)
+
+            print("\nTest 56: create_tm_requirement round-trips")
+            res = await session.call_tool(
+                "create_tm_requirement", {"tr_id": "TR-0042", "short_desc": "Created from test"},
+            )
+            crq = res.structuredContent or json.loads(res.content[0].text)
+            check("TM requirement create did not error", res.isError is not True, f"got {crq}")
+            check("TM requirement echoes tr_id", crq.get("tr_id") == "TR-0042", f"got {crq}")
+
+            print("\nTest 57: update_tm_test_case auto-fetches the ETag (If-Match)")
+            res = await session.call_tool(
+                "update_tm_test_case", {"test_case_id": "TC-1", "fields": {"is_prepared": True}},
+            )
+            utc = res.structuredContent or json.loads(res.content[0].text)
+            check("TM test case update did not error", res.isError is not True, f"got {utc}")
+            check("TM update echoes field", utc.get("is_prepared") is True, f"got {utc}")
+
+            print("\nTest 58: delete_tm_requirement confirms id (cascade warning)")
+            res = await session.call_tool("delete_tm_requirement", {"requirement_id": "RQ-1"})
+            drq = res.structuredContent or json.loads(res.content[0].text)
+            check("TM requirement delete did not error", res.isError is not True, f"got {drq}")
+            check("TM requirement delete confirms id", drq.get("deleted") == "RQ-1", f"got {drq}")
 
             # ---- project customization -----------------------------------
             print("\nTest 49: get_calm_project_customization returns picklists")
