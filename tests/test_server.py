@@ -96,6 +96,13 @@ def _write_shim() -> Path:
         "            {'id': 'F1', 'projectId': 'P001', 'name': 'User Management', 'description': 'User auth features', 'status': 'Active'},\n"
         "            {'id': 'F2', 'projectId': 'P001', 'name': 'Reporting', 'description': 'BI reports', 'status': 'Planned'},\n"
         "        ]))\n"
+        "    if '/projects/' in url and '/users' in url:\n"
+        "        # Project users/team members.\n"
+        "        return _FakeResp(json.dumps([\n"
+        "            {'id': 'U1', 'email': 'eduardo.falluh@syntax.com', 'name': 'Eduardo Falluh', 'role': 'Project Manager', 'active': True},\n"
+        "            {'id': 'U2', 'email': 'jane.doe@syntax.com', 'name': 'Jane Doe', 'role': 'Developer', 'active': True},\n"
+        "            {'id': 'U3', 'email': 'former@syntax.com', 'name': 'Former Member', 'role': 'Consultant', 'active': False},\n"
+        "        ]))\n"
         "    if '/projects/' in url and '/customization' in url:\n"
         "        # Project customization values.\n"
         "        return _FakeResp(json.dumps({\n"
@@ -784,7 +791,21 @@ async def main() -> int:
             check("test case assignment did not error", res.isError is not True, f"got {atp}")
             check("test case assignment echoes plan id", atp.get("testPlanId") == "TP1" or "TP1" in str(atp), f"got {atp}")
 
-            print("\nTest 50: link_calm_test_case_to_requirement creates traceability link")
+            print("\nTest 50: get_calm_project_users returns assignable IDs")
+            res = await session.call_tool("get_calm_project_users", {"project_id": "P001"})
+            result = res.structuredContent or json.loads(res.content[0].text)
+            check("users did not error", res.isError is not True, f"got {result}")
+            users = result.get("result") if isinstance(result, dict) else result
+            check("users returned list", isinstance(users, list), f"got {type(users)}")
+            check("users returned data", isinstance(users, list) and len(users) >= 2, f"got {len(users) if isinstance(users, list) else 'not a list'} users")
+            if isinstance(users, list) and users:
+                u1 = users[0]
+                check("user has ID field", "ID" in u1, f"fields: {list(u1.keys())}")
+                check("user has Email field", "Email" in u1, f"fields: {list(u1.keys())}")
+                check("user has Name field", "Name" in u1, f"fields: {list(u1.keys())}")
+                check("eduardo user found", any(u.get("Email") == "eduardo.falluh@syntax.com" for u in users), f"got {users}")
+
+            print("\nTest 54: link_calm_test_case_to_requirement creates traceability link")
             res = await session.call_tool(
                 "link_calm_test_case_to_requirement",
                 {"test_case_id": "550e8400-e29b-41d4-a716-446655440000", "requirement_id": "R001", "link_type": "covers"},
@@ -794,7 +815,7 @@ async def main() -> int:
             check("linkage references requirement", "R001" in str(link) or link.get("requirement_id") == "R001", f"got {link}")
 
             # ---- TM OData (configured in this spawn) ----------------------
-            print("\nTest 51: tm_health reports configured + reachable")
+            print("\nTest 54: tm_health reports configured + reachable")
             res = await session.call_tool("tm_health", {})
             tmh = res.structuredContent or json.loads(res.content[0].text)
             check("tm_health did not error", res.isError is not True, f"got {tmh}")
@@ -803,7 +824,7 @@ async def main() -> int:
             check("tm_health service reachable", tmh.get("reachable") is True, f"got {tmh}")
             check("tm writes enabled in this spawn", tmh.get("tm_writes_enabled") is True, f"got {tmh}")
 
-            print("\nTest 52: get_tm_statistics returns repository counts")
+            print("\nTest 54: get_tm_statistics returns repository counts")
             res = await session.call_tool("get_tm_statistics", {})
             stats = res.structuredContent or json.loads(res.content[0].text)
             check("statistics did not error", res.isError is not True, f"got {stats}")
@@ -811,7 +832,7 @@ async def main() -> int:
             check("statistics normalized to items list", isinstance(items, list) and len(items) == 2, f"got {stats}")
             check("statistics counts present", items and items[0].get("count") == 42, f"got {items}")
 
-            print("\nTest 53: get_tm_test_cases with delta watermark (updated_since)")
+            print("\nTest 54: get_tm_test_cases with delta watermark (updated_since)")
             res = await session.call_tool(
                 "get_tm_test_cases",
                 {"updated_since": "2026-08-01T00:00:00Z", "select": "external_id,updated_at", "top": 500},

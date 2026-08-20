@@ -48,6 +48,7 @@ CALM_MCP/
 │           ├── test_cases.py   # get_calm_test_cases
 │           ├── timeboxes.py    # get_calm_timeboxes
 │           ├── teams.py        # get_calm_teams
+│           ├── users.py        # get_calm_project_users
 │           ├── health.py       # calm_health
 │           ├── tasks_write.py       # create/update_calm_task (guarded)
 │           ├── projects_write.py    # create/update_calm_project (guarded)
@@ -74,6 +75,7 @@ CALM_MCP/
 | `get_calm_test_cases` | List manual test cases | — |
 | `get_calm_timeboxes` | List timeboxes (sprints/iterations) for a project | `project_id` |
 | `get_calm_teams` | List all teams visible to the tenant | — |
+| `get_calm_project_users` | List project team members with assignable IDs (fixes "Former Member" issue) | `project_id` |
 | `calm_health` | Diagnostic — server up, token configured? | — |
 
 ### Write tools (guarded by CALM_ENABLE_WRITES)
