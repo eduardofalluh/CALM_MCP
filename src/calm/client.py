@@ -467,6 +467,30 @@ def create_tag(
     return result if isinstance(result, dict) and result else {"submitted": body}
 
 
+# --- Users / Team Members ---------------------------------------------------
+
+def get_project_users(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
+    """Return all users/team members for a project with their assignable IDs.
+
+    Use this to get the correct assignee IDs before creating/updating tasks.
+    The returned 'ID' field is what should be passed as assignee_id to avoid
+    'Former Member' issues.
+    """
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/users"
+    result = _get(url, token)
+    items = result if isinstance(result, list) else result.get("value", [])
+    return [
+        {
+            "ID": item.get("id") or item.get("userId"),
+            "Email": item.get("email") or item.get("userEmail"),
+            "Name": item.get("name") or item.get("displayName") or item.get("fullName"),
+            "Role": item.get("role") or item.get("projectRole"),
+            "Active": item.get("active", True),
+        }
+        for item in items
+    ]
+
+
 # --- Features ---------------------------------------------------------------
 
 def get_features(project_id: str, token: str, base_url: str | None = None) -> list[dict]:

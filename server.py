@@ -56,6 +56,7 @@ from src.calm.tools import (
     test_repo,
     test_repo_write,
     timeboxes,
+    users,
 )
 
 load_dotenv()
@@ -162,6 +163,7 @@ scopes.register(mcp)
 test_cases.register(mcp)
 timeboxes.register(mcp)
 teams.register(mcp)
+users.register(mcp)
 tags.register(mcp)
 features.register(mcp)
 test_plans.register(mcp)
