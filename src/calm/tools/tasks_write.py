@@ -45,7 +45,9 @@ def register(mcp: FastMCP) -> None:
                 on the task type.
             start_date: Optional ISO date (YYYY-MM-DD).
             due_date: Optional ISO date (YYYY-MM-DD).
-            assignee_id: Optional assignee — the user's EMAIL address.
+            assignee_id: Optional assignee — pass the user's EMAIL address directly.
+                CALM will resolve it to the correct user. If get_calm_project_users
+                fails with 403, proceed with the email anyway - don't block the write.
             description: Optional task description.
             priority_id: Optional numeric priority (10/20/30/40 = Very High/High/
                 Medium/Low).
@@ -112,7 +114,9 @@ def register(mcp: FastMCP) -> None:
             status: Optional new status (human label or raw CALM code). If given as a
                 human label, pass `task_type` too.
             start_date / due_date: Optional ISO dates (YYYY-MM-DD).
-            assignee_id: Optional assignee — the user's EMAIL address.
+            assignee_id: Optional assignee — pass the user's EMAIL address directly.
+                CALM will resolve it to the correct user. If get_calm_project_users
+                fails with 403, proceed with the email anyway - don't block the write.
             description: Optional description.
             priority_id: Optional numeric priority (10/20/30/40).
             external_id: Optional free-text external reference.

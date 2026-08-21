@@ -475,20 +475,44 @@ def get_project_users(project_id: str, token: str, base_url: str | None = None) 
     Use this to get the correct assignee IDs before creating/updating tasks.
     The returned 'ID' field is what should be passed as assignee_id to avoid
     'Former Member' issues.
+
+    Tries multiple endpoints in order:
+    1. /projects/{id}/users (most specific)
+    2. /projects/{id}/team (alternative)
+    3. /teams endpoint filtering by project (fallback)
     """
-    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/users"
-    result = _get(url, token)
-    items = result if isinstance(result, list) else result.get("value", [])
-    return [
-        {
-            "ID": item.get("id") or item.get("userId"),
-            "Email": item.get("email") or item.get("userEmail"),
-            "Name": item.get("name") or item.get("displayName") or item.get("fullName"),
-            "Role": item.get("role") or item.get("projectRole"),
-            "Active": item.get("active", True),
-        }
-        for item in items
+    # Try primary endpoint first
+    urls_to_try = [
+        f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/users",
+        f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/team",
+        f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/members",
     ]
+
+    last_error = None
+    for url in urls_to_try:
+        try:
+            result = _get(url, token)
+            items = result if isinstance(result, list) else result.get("value", [])
+            return [
+                {
+                    "ID": item.get("id") or item.get("userId") or item.get("memberId"),
+                    "Email": item.get("email") or item.get("userEmail") or item.get("emailAddress"),
+                    "Name": item.get("name") or item.get("displayName") or item.get("fullName"),
+                    "Role": item.get("role") or item.get("projectRole"),
+                    "Active": item.get("active", True),
+                }
+                for item in items
+            ]
+        except Exception as e:
+            last_error = e
+            continue
+
+    # All endpoints failed
+    raise RuntimeError(
+        f"Could not fetch project users from any endpoint. "
+        f"Last error: {last_error}. "
+        f"Your OAuth2 client may need additional scopes (calm.users.read or similar)."
+    )
 
 
 # --- Features ---------------------------------------------------------------
