@@ -42,4 +42,21 @@ def register(mcp: FastMCP) -> None:
         if not project_id:
             raise ValueError("project_id is required")
         h = get_calm_headers(ctx)
-        return client.get_project_users(project_id, h.token, h.base_url)
+
+        try:
+            return client.get_project_users(project_id, h.token, h.base_url)
+        except Exception as e:
+            error_msg = str(e)
+
+            # If 403, return helpful guidance instead of erroring
+            if "403" in error_msg or "Forbidden" in error_msg:
+                return [{
+                    "Error": "403 Forbidden - OAuth2 client lacks user-read permissions",
+                    "Note": "Assignment will still work! Just pass the user's email or name directly to assignee_id.",
+                    "How it works": "The tools automatically resolve emails/names to IDs using fallback strategies.",
+                    "Example": 'create_calm_task(assignee_id="eduardo.falluh@syntax.com") works without calling this tool.',
+                    "To fix 403": "Grant 'calm.users.read' scope to your OAuth2 client in BTP Cockpit, or use manual mapping in CALM_USER_IDS.md",
+                }]
+
+            # Other errors, re-raise
+            raise
