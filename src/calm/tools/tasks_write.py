@@ -10,6 +10,7 @@ from fastmcp import Context, FastMCP
 
 from src.calm import client
 from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
+from src.calm.tools.user_resolver import resolve_assignee
 
 
 def register(mcp: FastMCP) -> None:
@@ -46,9 +47,10 @@ def register(mcp: FastMCP) -> None:
                 on the task type.
             start_date: Optional ISO date (YYYY-MM-DD).
             due_date: Optional ISO date (YYYY-MM-DD).
-            assignee_id: Optional assignee — pass the user's EMAIL address directly.
-                CALM will resolve it to the correct user. If get_calm_project_users
-                fails with 403, proceed with the email anyway - don't block the write.
+            assignee_id: Optional assignee — pass email, name, or UUID. The tool
+                automatically resolves it (tries API lookup, manual mapping, then
+                email pass-through). Just pass "eduardo.falluh@syntax.com" or
+                "Eduardo Falluh" and it works.
             description: Optional task description.
             priority_id: Optional numeric priority (10/20/30/40 = Very High/High/
                 Medium/Low).
@@ -72,6 +74,17 @@ def register(mcp: FastMCP) -> None:
         if not task_type:
             raise ValueError("task_type is required")
         h = get_calm_headers(ctx)
+
+        # Smart assignee resolution - handles emails, names, UUIDs automatically
+        resolved_assignee = None
+        if assignee_id:
+            resolved_assignee = resolve_assignee(
+                user_identifier=assignee_id,
+                project_id=project_id,
+                token=h.token,
+                base_url=h.base_url,
+            )
+
         return client.create_task(
             token=h.token,
             project_id=project_id,
@@ -80,7 +93,7 @@ def register(mcp: FastMCP) -> None:
             status=status,
             start_date=start_date,
             due_date=due_date,
-            assignee_id=assignee_id,
+            assignee_id=resolved_assignee,
             description=description,
             priority_id=priority_id,
             external_id=external_id,
@@ -119,9 +132,10 @@ def register(mcp: FastMCP) -> None:
             status: Optional new status (human label or raw CALM code). If given as a
                 human label, pass `task_type` too.
             start_date / due_date: Optional ISO dates (YYYY-MM-DD).
-            assignee_id: Optional assignee — pass the user's EMAIL address directly.
-                CALM will resolve it to the correct user. If get_calm_project_users
-                fails with 403, proceed with the email anyway - don't block the write.
+            assignee_id: Optional assignee — pass email, name, or UUID. The tool
+                automatically resolves it (tries API lookup, manual mapping, then
+                email pass-through). Just pass "eduardo.falluh@syntax.com" or
+                "Eduardo Falluh" and it works.
             description: Optional description.
             priority_id: Optional numeric priority (10/20/30/40).
             external_id: Optional free-text external reference.
@@ -137,6 +151,31 @@ def register(mcp: FastMCP) -> None:
         if not task_id:
             raise ValueError("task_id is required")
         h = get_calm_headers(ctx)
+
+        # Smart assignee resolution - handles emails, names, UUIDs automatically
+        resolved_assignee = assignee_id
+        if assignee_id:
+            # Need project_id for user lookup - extract from task if not in extra_fields
+            proj_id = (extra_fields or {}).get("projectId")
+            if not proj_id:
+                # Fetch task to get project_id
+                try:
+                    task_data = client._get(
+                        f"{client._base_url(h.base_url)}/api/calm-tasks/v1/tasks/{task_id}",
+                        h.token
+                    )
+                    proj_id = task_data.get("projectId")
+                except Exception:
+                    pass  # Can't resolve, use email as-is
+
+            if proj_id:
+                resolved_assignee = resolve_assignee(
+                    user_identifier=assignee_id,
+                    project_id=proj_id,
+                    token=h.token,
+                    base_url=h.base_url,
+                )
+
         return client.update_task(
             token=h.token,
             task_id=task_id,
@@ -145,7 +184,7 @@ def register(mcp: FastMCP) -> None:
             status=status,
             start_date=start_date,
             due_date=due_date,
-            assignee_id=assignee_id,
+            assignee_id=resolved_assignee,
             description=description,
             priority_id=priority_id,
             external_id=external_id,
