@@ -29,6 +29,7 @@ def register(mcp: FastMCP) -> None:
         external_id: str | None = None,
         parent_id: str | None = None,
         extra_fields: dict | None = None,
+        acting_user_email: str | None = None,
     ) -> dict:
         """Create a new task in a Cloud ALM project.
 
@@ -56,6 +57,9 @@ def register(mcp: FastMCP) -> None:
             extra_fields: Optional dict of any other documented task fields to send
                 verbatim (e.g. {"scopeId": "...", "storyPoints": 5, "effort": 8.5,
                 "workstream": "WS001,WS002", "classificationId": "US_GAP"}).
+            acting_user_email: Optional email of the user performing this action
+                (for CALM audit logs). The agent should pass the current user's email
+                from the chat session context. Example: "eduardo.falluh@syntax.com"
 
         Returns the created task (ID, Title, Type, Status, dates, AssigneeName,
         ApprovalState, Obsolete), or the submitted payload if the API returns no body.
@@ -82,7 +86,7 @@ def register(mcp: FastMCP) -> None:
             external_id=external_id,
             parent_id=parent_id,
             extra_fields=extra_fields,
-            base_url=h.base_url, user_email=h.user_email,
+            base_url=h.base_url, user_email=acting_user_email or h.user_email,
         )
 
     @mcp.tool()
@@ -100,6 +104,7 @@ def register(mcp: FastMCP) -> None:
         external_id: str | None = None,
         obsolete: bool | None = None,
         extra_fields: dict | None = None,
+        acting_user_email: str | None = None,
     ) -> dict:
         """Update fields of an existing Cloud ALM task (partial update).
 
@@ -123,6 +128,8 @@ def register(mcp: FastMCP) -> None:
             obsolete: Optional boolean to archive/unarchive the task.
             extra_fields: Optional dict of any other documented task fields to send
                 verbatim (e.g. subStatus, scopeId, storyPoints, effort, workstream).
+            acting_user_email: Optional email of the user performing this action
+                (for CALM audit logs). The agent should pass the current user's email.
 
         Returns the updated task, or a confirmation of the fields sent.
         """
@@ -144,7 +151,7 @@ def register(mcp: FastMCP) -> None:
             external_id=external_id,
             obsolete=obsolete,
             extra_fields=extra_fields,
-            base_url=h.base_url, user_email=h.user_email,
+            base_url=h.base_url, user_email=acting_user_email or h.user_email,
         )
 
     @mcp.tool()

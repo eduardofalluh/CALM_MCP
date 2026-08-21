@@ -1,5 +1,26 @@
 # CALM MCP Agent Instructions
 
+## Critical: User Email Tracking
+
+**ALWAYS pass the acting_user_email parameter on write operations.**
+
+When creating or updating tasks, requirements, test cases, or any CALM entity:
+1. Extract the current user's email from the GenAI Studio session context
+2. Pass it as `acting_user_email` parameter to the write tool
+3. This ensures CALM audit logs show the actual user, not "API"
+
+Example:
+```python
+create_calm_task(
+    project_id="...",
+    title="...",
+    task_type="...",
+    acting_user_email="eduardo.falluh@syntax.com"  # ← Always include this
+)
+```
+
+The agent knows the user's email from the chat session. Extract it and pass it through.
+
 ## Critical: Assignee/Responsible Assignment
 
 **DO NOT BLOCK writes when get_calm_project_users fails with 403.**
