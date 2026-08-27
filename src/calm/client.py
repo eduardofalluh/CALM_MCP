@@ -746,6 +746,7 @@ def _format_task(item: dict) -> dict:
         "StartDate": item.get("startDate"),
         "DueDate": item.get("dueDate"),
         "AssigneeName": item.get("assigneeName"),
+        "AssigneeID": item.get("assigneeId"),  # UUID needed for auto-resolution
         "ApprovalState": TASK_APPROVAL_STATE_MAP.get(item.get("approvalState"), item.get("approvalState")),
         "Obsolete": item.get("obsolete"),
         "Effort": item.get("effort"),

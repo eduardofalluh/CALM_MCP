@@ -1,25 +1,46 @@
 # CALM MCP Agent Instructions
 
-## Critical: User Email Tracking
+## Critical: User Email Tracking (MANDATORY)
 
-**ALWAYS pass the acting_user_email parameter on write operations.**
+**YOU MUST ALWAYS pass the acting_user_email parameter on EVERY write operation.**
 
-When creating or updating tasks, requirements, test cases, or any CALM entity:
-1. Extract the current user's email from the GenAI Studio session context
-2. Pass it as `acting_user_email` parameter to the write tool
-3. This ensures CALM audit logs show the actual user, not "API"
+This is NOT optional. Every create/update tool call MUST include it.
 
-Example:
+### How to Get the User's Email
+
+The user's email is in the GenAI Studio session context. You can:
+1. Ask the user: "What is your email address?"
+2. Extract from their profile if available
+3. Use the email they mention when they say "assign to me" (means them)
+
+### Apply to ALL Write Tools
+
 ```python
-create_calm_task(
-    project_id="...",
-    title="...",
-    task_type="...",
-    acting_user_email="eduardo.falluh@syntax.com"  # ← Always include this
-)
+# Tasks
+create_calm_task(..., acting_user_email="eduardo.falluh@syntax.com")
+update_calm_task(..., acting_user_email="eduardo.falluh@syntax.com")
+
+# Requirements  
+create_calm_requirement(..., acting_user_email="eduardo.falluh@syntax.com")
+update_calm_requirement(..., acting_user_email="eduardo.falluh@syntax.com")
+
+# Test Cases
+create_calm_test_case(..., acting_user_email="eduardo.falluh@syntax.com")
+
+# Projects
+create_calm_project(..., acting_user_email="eduardo.falluh@syntax.com")
+
+# ALL write operations - ALWAYS include acting_user_email!
 ```
 
-The agent knows the user's email from the chat session. Extract it and pass it through.
+### Why This Matters
+
+Without it, CALM audit logs show "API" instead of the actual user's name.
+With it, CALM logs show "Eduardo Falluh" or "eduardo.falluh@syntax.com".
+
+This is critical for compliance, audit trails, and user tracking.
+
+**If you don't know the user's email, ASK THEM before creating anything.**
 
 ## Critical: Assignee/Responsible Assignment
 
