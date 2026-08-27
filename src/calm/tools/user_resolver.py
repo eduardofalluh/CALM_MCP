@@ -1,9 +1,13 @@
 """Smart user resolution for CALM assignments.
 
 Tries multiple strategies to resolve a user email/name to a valid CALM user ID:
+0. Search existing tasks where the user is already assigned (FULLY AUTOMATIC!)
 1. API lookup via get_project_users (if permissions allow)
-2. Direct email pass-through (CALM resolves it)
-3. Manual mapping file fallback (CALM_USER_IDS.md)
+2. Manual mapping file (CALM_USER_IDS.md)
+3. Direct email pass-through (CALM may reject this)
+
+Strategy 0 is the key: if the user has ANY task assigned to them in the project,
+we can extract their UUID from that task. This works even with 403 permissions!
 """
 
 from __future__ import annotations
@@ -41,6 +45,32 @@ def resolve_assignee(
         return user_identifier
 
     user_lower = user_identifier.lower()
+
+    # Strategy 0: Search existing tasks where this user is assigned
+    # This is FULLY AUTOMATIC and works even with 403 on user API
+    try:
+        from src.calm.client import get_tasks
+
+        tasks = get_tasks(project_id=project_id, token=token, base_url=base_url)
+
+        # Look for tasks where AssigneeName matches the user identifier
+        for task in tasks[:100]:  # Check first 100 tasks (performance limit)
+            assignee_name = (task.get("AssigneeName") or "").lower()
+            assignee_id = task.get("AssigneeID")
+
+            if not assignee_id:
+                continue
+
+            # Match by name or email in the identifier
+            if user_lower in assignee_name or assignee_name in user_lower:
+                log.info(
+                    f"Resolved '{user_identifier}' to UUID {assignee_id} "
+                    f"by finding existing task where user is assigned (AssigneeName: {task.get('AssigneeName')})"
+                )
+                return assignee_id
+
+    except Exception as e:
+        log.warning(f"Could not search existing tasks for user UUID: {e}")
 
     # Strategy 1: Try API lookup
     try:
