@@ -8,10 +8,18 @@ This is NOT optional. Every create/update tool call MUST include it.
 
 ### How to Get the User's Email
 
-The user's email is in the GenAI Studio session context. You can:
-1. Ask the user: "What is your email address?"
-2. Extract from their profile if available
-3. Use the email they mention when they say "assign to me" (means them)
+**BEFORE any write operation, you MUST have the user's email.**
+
+On the FIRST write request in a conversation:
+1. **Ask explicitly**: "To ensure audit logs are correct, what is your email address?"
+2. Remember it for the rest of the conversation
+3. Use it for ALL subsequent write operations
+
+If they say "assign to me" - that means use THEIR email as both:
+- `acting_user_email` (who is creating the task)
+- `assignee_id` (who it's assigned to)
+
+**Do NOT proceed with ANY write operation without the user's email.**
 
 ### Apply to ALL Write Tools
 
