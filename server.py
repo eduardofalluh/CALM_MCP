@@ -56,6 +56,7 @@ from src.calm.tools import (
     test_repo,
     test_repo_write,
     timeboxes,
+    user_uuid_helper,
     users,
 )
 
@@ -164,6 +165,7 @@ test_cases.register(mcp)
 timeboxes.register(mcp)
 teams.register(mcp)
 users.register(mcp)
+user_uuid_helper.register(mcp)
 tags.register(mcp)
 features.register(mcp)
 test_plans.register(mcp)
