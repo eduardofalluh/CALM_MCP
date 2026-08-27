@@ -68,18 +68,28 @@ def resolve_assignee(
     except Exception as e:
         log.warning(f"Manual mapping lookup failed: {e}")
 
-    # Strategy 3: Return email directly (CALM will try to resolve it)
-    # Extract email if it looks like "Name <email@domain.com>"
+    # Strategy 3: Return email directly (CALM might try to resolve it)
+    # But log a warning since CALM strictly prefers UUIDs
     if "<" in user_identifier and ">" in user_identifier:
         email = user_identifier.split("<")[1].split(">")[0].strip()
-        log.info(f"Extracted email '{email}' from '{user_identifier}'")
+        log.warning(
+            f"Could not resolve '{user_identifier}' to UUID - using email '{email}' directly. "
+            f"CALM may show 'Former Member' unless you add UUIDs to CALM_USER_IDS.md"
+        )
         return email
 
-    # If it's already an email, return as-is
+    # If it's already an email, return as-is but warn
     if "@" in user_identifier:
-        log.info(f"Using email directly: {user_identifier}")
+        log.warning(
+            f"Could not resolve '{user_identifier}' to UUID - using email directly. "
+            f"CALM strictly requires UUIDs for assignee_id. To fix: add user UUIDs to CALM_USER_IDS.md "
+            f"(instructions in file). Without UUID mapping, assignee may show as 'Former Member'."
+        )
         return user_identifier
 
     # Last resort: return whatever was given
-    log.warning(f"Could not resolve '{user_identifier}', passing through as-is")
+    log.warning(
+        f"Could not resolve '{user_identifier}' to UUID, passing through as-is. "
+        f"Add user UUID mappings to CALM_USER_IDS.md to fix 'Former Member' issue."
+    )
     return user_identifier
