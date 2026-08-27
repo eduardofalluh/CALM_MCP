@@ -59,9 +59,10 @@ def register(mcp: FastMCP) -> None:
             extra_fields: Optional dict of any other documented task fields to send
                 verbatim (e.g. {"scopeId": "...", "storyPoints": 5, "effort": 8.5,
                 "workstream": "WS001,WS002", "classificationId": "US_GAP"}).
-            acting_user_email: Optional email of the user performing this action
-                (for CALM audit logs). The agent should pass the current user's email
-                from the chat session context. Example: "eduardo.falluh@syntax.com"
+            acting_user_email: Email of the user performing this action (for CALM audit
+                logs). STRONGLY RECOMMENDED - without it, logs show "API" instead of
+                the user's name. Extract from the user's message when they mention their
+                email, or ask "What is your email?" Example: "eduardo.falluh@syntax.com"
 
         Returns the created task (ID, Title, Type, Status, dates, AssigneeName,
         ApprovalState, Obsolete), or the submitted payload if the API returns no body.
@@ -73,6 +74,16 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("title is required")
         if not task_type:
             raise ValueError("task_type is required")
+
+        # Warn if acting_user_email not provided (but don't block)
+        if not acting_user_email:
+            import logging
+            logging.getLogger("calm-mcp").warning(
+                "create_calm_task called without acting_user_email - "
+                "CALM audit logs will show 'API' instead of user name. "
+                "Agent should extract email from user's message or ask for it."
+            )
+
         h = get_calm_headers(ctx)
 
         # Smart assignee resolution - handles emails, names, UUIDs automatically
