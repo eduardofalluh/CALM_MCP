@@ -54,3 +54,37 @@ def get_auth_url() -> str:
 
 def get_base_url() -> str:
     return os.getenv("CALM_BASE_URL") or build_base_url()
+
+
+def parse_calm_url(url: str) -> tuple[str, str]:
+    """Extract tenant and region from a CALM URL.
+
+    Args:
+        url: CALM URL (e.g. https://illumiti-corp-cloudalm.eu10.alm.cloud.sap
+             or https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com)
+
+    Returns:
+        Tuple of (tenant, region)
+
+    Example:
+        >>> parse_calm_url("https://illumiti-corp-cloudalm.eu10.alm.cloud.sap")
+        ('illumiti-corp-cloudalm', 'eu10')
+    """
+    # Remove protocol
+    url = url.replace("https://", "").replace("http://", "")
+
+    # Handle both API and auth URLs
+    # API: tenant.region.alm.cloud.sap
+    # Auth: tenant.authentication.region.hana.ondemand.com
+    parts = url.split(".")
+
+    if "authentication" in parts:
+        # Auth URL format: tenant.authentication.region.hana.ondemand.com
+        tenant = parts[0]
+        region = parts[2]  # Skip 'authentication'
+    else:
+        # API URL format: tenant.region.alm.cloud.sap
+        tenant = parts[0]
+        region = parts[1]
+
+    return tenant, region

@@ -41,6 +41,7 @@ from src.calm.tools import (
     customization,
     features,
     health,
+    oauth_info,
     processes,
     processes_write,
     projects,
@@ -166,6 +167,7 @@ timeboxes.register(mcp)
 teams.register(mcp)
 users.register(mcp)
 user_uuid_helper.register(mcp)
+oauth_info.register(mcp)
 tags.register(mcp)
 features.register(mcp)
 test_plans.register(mcp)
@@ -184,6 +186,60 @@ advanced_write.register(mcp)
 # x-tm-* headers; writes additionally guarded by TM_ENABLE_WRITES)
 test_repo.register(mcp)
 test_repo_write.register(mcp)
+
+
+# ============================================================================
+# OAuth 2.0 Protected Resource Metadata (RFC 9728)
+# ============================================================================
+# These endpoints allow MCP clients to discover CALM's OAuth endpoints
+# per the MCP OAuth specification.
+# See: https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
+
+try:
+    from starlette.responses import JSONResponse
+    from starlette.routing import Route
+
+    from src.calm import oauth
+    from src.calm.config import get_auth_url, get_base_url
+
+    async def protected_resource_metadata(request):
+        """RFC 9728 Protected Resource Metadata endpoint.
+
+        MCP clients fetch this to discover CALM's authorization server.
+        """
+        base_url = get_base_url()
+        metadata = oauth.get_protected_resource_metadata(base_url)
+        return JSONResponse(metadata)
+
+    async def authorization_server_metadata(request):
+        """RFC 8414 Authorization Server Metadata endpoint.
+
+        MCP clients fetch this to discover OAuth endpoints and capabilities.
+        """
+        auth_url = get_auth_url()
+        metadata = oauth.get_authorization_server_metadata(auth_url)
+        return JSONResponse(metadata)
+
+    # Add well-known routes to FastMCP's underlying Starlette app
+    # These are standard OAuth discovery endpoints that clients expect
+    if hasattr(mcp, "_app") and hasattr(mcp._app, "routes"):
+        mcp._app.routes.extend(
+            [
+                Route(
+                    "/.well-known/oauth-protected-resource",
+                    protected_resource_metadata,
+                    methods=["GET"],
+                ),
+                Route(
+                    "/.well-known/oauth-authorization-server",
+                    authorization_server_metadata,
+                    methods=["GET"],
+                ),
+            ]
+        )
+except ImportError:
+    # Starlette not available (stdio mode)
+    pass
 
 
 def main() -> None:
