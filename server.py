@@ -200,7 +200,7 @@ try:
     from starlette.routing import Route
 
     from src.calm import oauth
-    from src.calm.config import get_auth_url, get_base_url
+    from src.calm.config import get_auth_base_url, get_base_url
 
     async def protected_resource_metadata(request):
         """RFC 9728 Protected Resource Metadata endpoint.
@@ -216,8 +216,8 @@ try:
 
         MCP clients fetch this to discover OAuth endpoints and capabilities.
         """
-        auth_url = get_auth_url()
-        metadata = oauth.get_authorization_server_metadata(auth_url)
+        auth_base_url = get_auth_base_url()
+        metadata = oauth.get_authorization_server_metadata(auth_base_url)
         return JSONResponse(metadata)
 
     # Add well-known routes to FastMCP's underlying Starlette app

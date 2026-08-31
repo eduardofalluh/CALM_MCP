@@ -30,6 +30,17 @@ def build_auth_url(identity_zone: str | None = None, region_zone: str | None = N
     return f"https://{identity}.authentication.{region}.hana.ondemand.com/oauth/token"
 
 
+def build_auth_base_url(identity_zone: str | None = None, region_zone: str | None = None) -> str:
+    """Build OAuth authorization server base URL (without /oauth/token path).
+
+    Used for OAuth endpoint discovery - returns just the base issuer URL.
+    build_auth_url() includes /oauth/token for backwards compatibility with token requests.
+    """
+    identity = identity_zone or get_identity_zone()
+    region = region_zone or get_region_zone()
+    return f"https://{identity}.authentication.{region}.hana.ondemand.com"
+
+
 def build_cert_auth_url(identity_zone: str | None = None, region_zone: str | None = None) -> str:
     """mTLS (x509) token host — note the '.cert.' segment. Used for certificate-based
     service keys, which authenticate with a client certificate instead of a secret."""
@@ -50,6 +61,18 @@ def build_base_url(identity_zone: str | None = None, region_zone: str | None = N
 
 def get_auth_url() -> str:
     return os.getenv("CALM_AUTH_URL") or build_auth_url()
+
+
+def get_auth_base_url() -> str:
+    """Get OAuth authorization server base URL (without /oauth/token path).
+
+    Falls back to extracting base from CALM_AUTH_URL if it contains /oauth/token.
+    """
+    url = os.getenv("CALM_AUTH_URL")
+    if url:
+        # Strip /oauth/token if present
+        return url.replace("/oauth/token", "")
+    return build_auth_base_url()
 
 
 def get_base_url() -> str:

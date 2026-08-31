@@ -190,21 +190,21 @@ def get_oauth_endpoints() -> dict:
     Returns:
         Dict with authorization_endpoint, token_endpoint, and tenant info
     """
-    from src.calm.config import get_auth_url, get_base_url, parse_calm_url
+    from src.calm.config import get_auth_base_url, get_base_url, parse_calm_url
 
     base_url = get_base_url()
-    auth_url = get_auth_url()
+    auth_base_url = get_auth_base_url()
     tenant, region = parse_calm_url(base_url)
 
     return {
         "tenant": tenant,
         "region": region,
-        "authorization_endpoint": f"{auth_url}/oauth/authorize",
-        "token_endpoint": f"{auth_url}/oauth/token",
-        "revocation_endpoint": f"{auth_url}/oauth/revoke",
-        "introspection_endpoint": f"{auth_url}/oauth/introspect",
-        "jwks_uri": f"{auth_url}/oauth/token_keys",
-        "issuer": auth_url,
+        "authorization_endpoint": f"{auth_base_url}/oauth/authorize",
+        "token_endpoint": f"{auth_base_url}/oauth/token",
+        "revocation_endpoint": f"{auth_base_url}/oauth/revoke",
+        "introspection_endpoint": f"{auth_base_url}/oauth/introspect",
+        "jwks_uri": f"{auth_base_url}/oauth/token_keys",
+        "issuer": auth_base_url,
         "resource": base_url.rstrip("/"),
         "metadata_url": f"{base_url.rstrip('/')}/.well-known/oauth-protected-resource",
         "scopes_supported": ["openid"],

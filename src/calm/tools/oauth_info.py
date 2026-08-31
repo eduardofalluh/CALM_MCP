@@ -154,13 +154,13 @@ def register(mcp: FastMCP) -> None:
         from the Protected Resource Metadata.
 
         The metadata is also available at:
-        GET {auth_url}/.well-known/oauth-authorization-server
+        GET {auth_base_url}/.well-known/oauth-authorization-server
 
         Returns:
             RFC 8414 Authorization Server Metadata document
         """
         h = get_calm_headers(ctx)
-        from src.calm.config import get_auth_url
+        from src.calm.config import get_auth_base_url
 
-        auth_url = get_auth_url()
-        return oauth.get_authorization_server_metadata(auth_url)
+        auth_base_url = get_auth_base_url()
+        return oauth.get_authorization_server_metadata(auth_base_url)
