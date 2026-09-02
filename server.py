@@ -195,6 +195,9 @@ test_repo_write.register(mcp)
 # per the MCP OAuth specification.
 # See: https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization
 
+# Store route handlers globally so they can be registered in main()
+_oauth_routes = None
+
 try:
     from starlette.responses import JSONResponse
     from starlette.routing import Route
@@ -220,23 +223,19 @@ try:
         metadata = oauth.get_authorization_server_metadata(auth_base_url)
         return JSONResponse(metadata)
 
-    # Add well-known routes to FastMCP's underlying Starlette app
-    # These are standard OAuth discovery endpoints that clients expect
-    if hasattr(mcp, "_app") and hasattr(mcp._app, "routes"):
-        mcp._app.routes.extend(
-            [
-                Route(
-                    "/.well-known/oauth-protected-resource",
-                    protected_resource_metadata,
-                    methods=["GET"],
-                ),
-                Route(
-                    "/.well-known/oauth-authorization-server",
-                    authorization_server_metadata,
-                    methods=["GET"],
-                ),
-            ]
-        )
+    # Define routes to be registered when the app starts
+    _oauth_routes = [
+        Route(
+            "/.well-known/oauth-protected-resource",
+            protected_resource_metadata,
+            methods=["GET"],
+        ),
+        Route(
+            "/.well-known/oauth-authorization-server",
+            authorization_server_metadata,
+            methods=["GET"],
+        ),
+    ]
 except ImportError:
     # Starlette not available (stdio mode)
     pass
@@ -262,6 +261,57 @@ def main() -> None:
         middleware: list[Any] = [Middleware(_TrustProxyMiddleware)] if trust_proxy else []
         if trust_proxy:
             log.info("MCP_TRUST_PROXY enabled — Host header normalised for proxy deployments")
+
+        # Register OAuth metadata endpoints before starting the server
+        if _oauth_routes:
+            log.info("Registering OAuth 2.0 metadata endpoints")
+            # FastMCP creates the app during run(), so we need to pass routes via middleware
+            # Instead, we'll monkey-patch the app creation
+            original_run = mcp.run
+
+            def run_with_oauth(*args, **kwargs):
+                # Let FastMCP create the app first
+                from starlette.applications import Starlette
+                from starlette.routing import Mount
+
+                # Create a custom ASGI app that adds our routes
+                def create_app_with_oauth(scope, receive, send):
+                    # This is called after FastMCP creates its app
+                    # We need a different approach - use FastMCP's app hook
+                    pass
+
+                # Call original run but inject our routes
+                return original_run(*args, **kwargs)
+
+            # Actually, let's use a simpler approach: pass extra_routes if FastMCP supports it
+            # Or create a middleware that handles these specific routes
+
+            from starlette.types import ASGIApp, Receive, Scope, Send
+
+            class OAuthMetadataMiddleware:
+                """Middleware to serve OAuth metadata endpoints."""
+
+                def __init__(self, app: ASGIApp) -> None:
+                    self.app = app
+                    self.routes = {route.path: route for route in _oauth_routes}
+
+                async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+                    if scope["type"] == "http":
+                        path = scope.get("path", "")
+                        if path in self.routes:
+                            route = self.routes[path]
+                            if scope.get("method") in route.methods:
+                                # Handle the OAuth metadata request
+                                from starlette.requests import Request
+                                request = Request(scope, receive, send)
+                                response = await route.endpoint(request)
+                                await response(scope, receive, send)
+                                return
+                    await self.app(scope, receive, send)
+
+            middleware.insert(0, Middleware(OAuthMetadataMiddleware))
+            log.info("OAuth metadata endpoints: /.well-known/oauth-protected-resource, /.well-known/oauth-authorization-server")
+
         mcp.run(transport="streamable-http", host=args.host, port=args.port, middleware=middleware)
     else:
         log.info("Starting CALM MCP on stdio")
