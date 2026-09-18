@@ -415,6 +415,65 @@ def get_teams(token: str, base_url: str | None = None) -> list[dict]:
     ]
 
 
+def get_project_teams(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
+    """Return all teams for a specific project.
+
+    Teams group users for project collaboration and assignment. This returns
+    teams associated with a specific project, which may include both project-specific
+    teams and global teams assigned to the project.
+
+    Tries multiple endpoints in order:
+    1. /projects/{id}/teams (project-specific)
+    2. /teams with projectId filter (fallback)
+    3. Falls back to all teams if project-specific endpoints fail
+    """
+    # Try project-specific endpoint first
+    urls_to_try = [
+        f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/teams",
+        f"{_base_url(base_url)}/api/calm-projects/v1/teams?projectId={project_id}",
+    ]
+
+    last_error = None
+    for url in urls_to_try:
+        try:
+            result = _get(url, token)
+            items = result if isinstance(result, list) else result.get("value", [])
+            return [
+                {
+                    "ID": item.get("id"),
+                    "Name": item.get("name"),
+                    "Description": item.get("description"),
+                    "Project ID": item.get("projectId") or project_id,
+                    "Members": item.get("members", []),
+                }
+                for item in items
+            ]
+        except Exception as e:
+            last_error = e
+            continue
+
+    # If project-specific endpoints fail, try getting all teams and filter
+    try:
+        log.warning(
+            f"Project-specific team endpoints failed for project {project_id}. "
+            f"Falling back to all teams with client-side filtering. Last error: {last_error}"
+        )
+        all_teams = get_teams(token, base_url)
+        # Filter to teams that match this project ID
+        project_teams = [t for t in all_teams if t.get("Project ID") == project_id]
+        if project_teams:
+            return project_teams
+    except Exception as e:
+        log.error(f"Fallback to all teams also failed: {e}")
+
+    # All endpoints failed
+    raise RuntimeError(
+        f"Could not fetch teams for project {project_id} from any endpoint. "
+        f"Last error: {last_error}. "
+        f"Your OAuth2 client may need additional scopes (calm.teams.read or similar)."
+    )
+
+
 # --- Tags -------------------------------------------------------------------
 
 def get_tags(project_id: str, token: str, base_url: str | None = None) -> list[dict]:

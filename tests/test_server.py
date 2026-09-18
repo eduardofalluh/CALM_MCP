@@ -128,8 +128,38 @@ def _write_shim() -> Path:
         "            {'id': 'R1', 'title': 'Req A', 'type': 'CALMREQU', 'status': 'CIPREQUOPEN'},\n"
         "            {'id': 'K1', 'title': 'Task B', 'type': 'CALMTASK', 'status': 'CIPTKOPEN'},\n"
         "        ]))\n"
+        "    if '/projects/' in url and '/teams' in url:\n"
+        "        # Project-specific teams endpoint (must come BEFORE general teams check).\n"
+        "        # Extract project ID from URL like /projects/P001/teams\n"
+        "        import re\n"
+        "        match = re.search(r'/projects/([^/]+)/teams', url)\n"
+        "        if match:\n"
+        "            project_id = match.group(1)\n"
+        "            if project_id == 'P001':\n"
+        "                return _FakeResp(json.dumps([\n"
+        "                    {'id': 'TEAM1', 'name': 'Development Team', 'description': 'Backend developers', 'projectId': 'P001', 'members': ['U1', 'U2']},\n"
+        "                ]))\n"
+        "            elif project_id == 'P002':\n"
+        "                return _FakeResp(json.dumps([\n"
+        "                    {'id': 'TEAM2', 'name': 'QA Team', 'description': 'Quality assurance', 'projectId': 'P002', 'members': ['U3']},\n"
+        "                ]))\n"
         "    if 'calm-projects/v1/teams' in url:\n"
-        "        # Teams.\n"
+        "        # All teams endpoint.\n"
+        "        # Check for projectId query parameter\n"
+        "        if 'projectId=' in url:\n"
+        "            import re\n"
+        "            match = re.search(r'projectId=([^&]+)', url)\n"
+        "            if match:\n"
+        "                project_id = match.group(1)\n"
+        "                if project_id == 'P001':\n"
+        "                    return _FakeResp(json.dumps([\n"
+        "                        {'id': 'TEAM1', 'name': 'Development Team', 'description': 'Backend developers', 'projectId': 'P001', 'members': ['U1', 'U2']},\n"
+        "                    ]))\n"
+        "                elif project_id == 'P002':\n"
+        "                    return _FakeResp(json.dumps([\n"
+        "                        {'id': 'TEAM2', 'name': 'QA Team', 'description': 'Quality assurance', 'projectId': 'P002', 'members': ['U3']},\n"
+        "                    ]))\n"
+        "        # Return all teams if no filter\n"
         "        return _FakeResp(json.dumps([\n"
         "            {'id': 'TEAM1', 'name': 'Development Team', 'description': 'Backend developers', 'projectId': 'P001'},\n"
         "            {'id': 'TEAM2', 'name': 'QA Team', 'description': 'Quality assurance', 'projectId': 'P002'},\n"
@@ -209,6 +239,7 @@ async def main() -> int:
                 "get_calm_test_cases",
                 "get_calm_timeboxes",
                 "get_calm_teams",
+                "get_calm_project_teams",
                 "get_calm_tags",
                 "get_calm_features",
                 "get_calm_test_plans",
@@ -271,7 +302,7 @@ async def main() -> int:
                 )
 
             tasks_tool = next(t for t in tools.tools if t.name == "get_calm_tasks")
-            schema = tasks_tool.inputSchema or {}
+            schema = tasks_tool.input_schema or {}
             required = schema.get("required") or []
             check(
                 "get_calm_tasks requires project_id",
@@ -717,6 +748,26 @@ async def main() -> int:
                 check("team has ID", "ID" in team and team["ID"], f"got {team}")
                 check("team has Name", "Name" in team and team["Name"], f"got {team}")
                 check("team has Description field", "Description" in team, f"got {team}")
+
+            print("\nTest 41a: get_calm_project_teams returns project-specific teams")
+            res = await session.call_tool("get_calm_project_teams", {"project_id": "P001"})
+            project_teams = (res.structuredContent or {}).get("result")
+            check("project teams returned a list", isinstance(project_teams, list), f"got {project_teams}")
+            check("project teams filtered correctly", len(project_teams) == 1, f"got {len(project_teams)} teams")
+            if project_teams:
+                team = project_teams[0]
+                check("project team has ID", "ID" in team and team["ID"] == "TEAM1", f"got {team}")
+                check("project team has Name", "Name" in team and team["Name"], f"got {team}")
+                check("project team has Description", "Description" in team, f"got {team}")
+                check("project team has correct Project ID", team.get("Project ID") == "P001", f"got {team}")
+                check("project team has Members field", "Members" in team, f"got {team}")
+
+            print("\nTest 41b: get_calm_project_teams for different project")
+            res = await session.call_tool("get_calm_project_teams", {"project_id": "P002"})
+            p002_teams = (res.structuredContent or {}).get("result")
+            check("P002 teams returned", isinstance(p002_teams, list) and len(p002_teams) == 1, f"got {p002_teams}")
+            if p002_teams:
+                check("P002 team is correct", p002_teams[0].get("ID") == "TEAM2", f"got {p002_teams[0]}")
 
             # ---- tags ----------------------------------------------------
             print("\nTest 42: get_calm_tags returns project tags")
