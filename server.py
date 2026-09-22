@@ -57,6 +57,7 @@ from src.calm.tools import (
     test_repo,
     test_repo_write,
     timeboxes,
+    unified,
     user_uuid_helper,
     users,
 )
@@ -159,6 +160,12 @@ class _TrustProxyMiddleware:
 
 mcp = FastMCP("sap-cloud-alm")
 
+# NEW: Unified context-optimized tool (Phase 1: read-only)
+# This reduces tool overhead from ~20,000 to ~7,500 tokens (12,500 token savings)
+# All legacy tools below remain functional for backwards compatibility
+unified.register(mcp)
+
+# Legacy individual tools (maintained for backwards compatibility)
 projects.register(mcp)
 processes.register(mcp)
 scopes.register(mcp)
