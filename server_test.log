@@ -1,0 +1,46 @@
+2026-09-22 11:17:36,507 [INFO] calm-mcp: CALM_CLIENT_ID/CALM_CLIENT_SECRET not set — falling back to Authorization header or CALM_TOKEN env var.
+2026-09-22 11:17:36,507 [INFO] calm-mcp: Starting CALM MCP on http://127.0.0.1:8888
+2026-09-22 11:17:36,507 [INFO] calm-mcp: MCP_TRUST_PROXY enabled — Host header normalised for proxy deployments
+2026-09-22 11:17:36,507 [INFO] calm-mcp: Registering OAuth 2.0 metadata endpoints
+2026-09-22 11:17:36,507 [INFO] calm-mcp: OAuth metadata endpoints: /.well-known/oauth-protected-resource, /.well-known/oauth-authorization-server
+
+
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                                                                              │
+│                                                                              │
+│                         ▄▀▀ ▄▀█ █▀▀ ▀█▀ █▀▄▀█ █▀▀ █▀█                        │
+│                         █▀  █▀█ ▄▄█  █  █ ▀ █ █▄▄ █▀▀                        │
+│                                                                              │
+│                                                                              │
+│                                                                              │
+│                                FastMCP 3.2.4                                 │
+│                            https://gofastmcp.com                             │
+│                                                                              │
+│                  🖥  Server:      sap-cloud-alm, 3.2.4                        │
+│                  🚀 Deploy free: https://horizon.prefect.io                  │
+│                                                                              │
+╰──────────────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────────╮
+│                          🎉 Update available: 4.0.5                          │
+│                      Run: pip install --upgrade fastmcp                      │
+╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+[09/22/26 11:17:36] INFO     Starting MCP server                transport.py:301
+                             'sap-cloud-alm' with transport                     
+                             'streamable-http' on                               
+                             http://127.0.0.1:8888/mcp                          
+INFO:     Started server process [85402]
+INFO:     Waiting for application startup.
+2026-09-22 11:17:36,575 [INFO] mcp.server.streamable_http_manager: StreamableHTTP session manager started
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8888 (Press CTRL+C to quit)
+2026-09-22 11:18:01,083 [INFO] mcp.server.streamable_http_manager: Created new transport with session ID: 4e03c812362d49a293f55c6eecbac1b4
+INFO:     127.0.0.1:61951 - "POST /mcp HTTP/1.1" 406 Not Acceptable
+2026-09-22 11:18:11,369 [INFO] mcp.server.streamable_http_manager: Created new transport with session ID: d0846e8dcbe448abb153047c79f990a6
+INFO:     127.0.0.1:61963 - "POST /mcp HTTP/1.1" 400 Bad Request
+INFO:     Shutting down
+INFO:     Waiting for application shutdown.
+2026-09-22 11:19:50,080 [INFO] mcp.server.streamable_http_manager: StreamableHTTP session manager shutting down
+INFO:     Application shutdown complete.
+INFO:     Finished server process [85402]
