@@ -25,27 +25,54 @@ docs/
 │   ├── DEPLOYMENT_CONFIRMED.md              # Full deployment (tested & ready)
 │   ├── READ_ONLY_DEPLOYMENT.md              # Read-only mode deployment
 │   ├── READ_ONLY_QUICK_START.txt            # Quick start (2 pages)
+│   ├── READ_ONLY_TOOLS.txt                  # Read-only tool list
+│   ├── READ_WRITE_TOOLS.txt                 # Full tool list
 │   ├── SPLIT_DEPLOYMENT_GUIDE.md            # Two separate servers
 │   └── TOOLS_LIST.md                        # Module/tool lists
 │
-├── guides/                                   # Complete guides
+├── guides/                                   # Implementation guides
 │   ├── TOOL_CONSOLIDATION_COMPLETE.md       # Complete project overview
-│   └── TOOL_CONSOLIDATION_BREAKDOWN.md      # Detailed tool mapping
+│   ├── TOOL_CONSOLIDATION_BREAKDOWN.md      # Detailed tool mapping
+│   ├── OAUTH_IMPLEMENTATION_GUIDE.md        # OAuth setup guide
+│   ├── OAUTH_SUMMARY_FOR_BOSS.md            # OAuth summary
+│   ├── TASK_RELATIONS_GUIDE.md              # Task relations
+│   ├── ENABLING_WRITE_OPERATIONS.md         # Write ops guide
+│   └── QUICK_START_WRITE_OPS.md             # Write ops quick start
 │
-└── phases/                                   # Phase-by-phase documentation
-    ├── phase1/                              # Read operations
-    │   ├── PHASE1_COMPLETION_SUMMARY.md
-    │   ├── PHASE1_TEST_RESULTS.md
-    │   └── README_PHASE1_COMPLETE.md
-    │
-    ├── phase2/                              # Write operations
-    │   └── PHASE2_COMPLETION_SUMMARY.md
-    │
-    └── phase3/                              # Tool removal
-        ├── PHASE3_DEPRECATION_PLAN.md
-        ├── PHASE3_COMPLETION_SUMMARY.md
-        ├── PHASE3C_FINAL_SUMMARY.md
-        └── PHASE3_REMOVAL_STRATEGY.md
+├── phases/                                   # Phase-by-phase documentation
+│   ├── phase1/                              # Read operations
+│   │   ├── PHASE1_COMPLETION_SUMMARY.md
+│   │   ├── PHASE1_TEST_RESULTS.md
+│   │   └── README_PHASE1_COMPLETE.md
+│   │
+│   ├── phase2/                              # Write operations
+│   │   └── PHASE2_COMPLETION_SUMMARY.md
+│   │
+│   └── phase3/                              # Tool removal
+│       ├── PHASE3_DEPRECATION_PLAN.md
+│       ├── PHASE3_COMPLETION_SUMMARY.md
+│       ├── PHASE3C_FINAL_SUMMARY.md
+│       └── PHASE3_REMOVAL_STRATEGY.md
+│
+├── changelogs/                              # Change logs
+│   ├── CHANGELOG_EFFORT_FIELD.md
+│   └── CHANGELOG_TIMEBOXES_TEAMS.md
+│
+├── testing/                                 # Testing documentation
+│   ├── LIVE_TEST_RUNBOOK.md
+│   ├── VALIDATION_REPORT.md
+│   └── CHROME_TEST_INSTRUCTIONS.md
+│
+├── instructions/                            # Instructions
+│   └── AGENT_INSTRUCTIONS.md
+│
+└── specs/                                   # Specifications & features
+    ├── API_WRITE_SPEC_NEEDED.md
+    ├── BP_WORKFLOW_TOOLS_ADDED.md
+    ├── CALM_USER_IDS.md
+    ├── USER_ASSIGNMENT_FIX.md
+    ├── USER_EMAIL_TRACKING.md
+    └── DEEP_ANALYSIS_TASKS_PROJECTS.md
 ```
 
 ---
@@ -83,12 +110,16 @@ docs/
 
 ## File Count by Category
 
-- **Deployment**: 5 files
-- **Guides**: 2 files
+- **Deployment**: 7 files
+- **Guides**: 7 files
 - **Phase 1**: 3 files
 - **Phase 2**: 1 file
 - **Phase 3**: 4 files
-- **Total**: 16 documentation files
+- **Changelogs**: 2 files
+- **Testing**: 3 files
+- **Instructions**: 1 file
+- **Specs**: 6 files
+- **Total**: 35 documentation files
 
 ---
 
