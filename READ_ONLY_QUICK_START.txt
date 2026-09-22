@@ -1,0 +1,130 @@
+╔═══════════════════════════════════════════════════════════════════════════╗
+║                                                                           ║
+║               🔒 READ-ONLY DEPLOYMENT - QUICK START 🔒                    ║
+║                                                                           ║
+╚═══════════════════════════════════════════════════════════════════════════╝
+
+📋 FOR YOUR BOSS - SAFE READ-ONLY DEPLOYMENT
+
+═══════════════════════════════════════════════════════════════════════════
+
+STEP 1: SET ENVIRONMENT VARIABLES (Auth Only)
+═══════════════════════════════════════════════════════════════════════════
+
+  export CALM_CLIENT_ID="your-client-id"
+  export CALM_CLIENT_SECRET="your-client-secret"
+  export CALM_BASE_URL="https://your-tenant.region.alm.cloud.sap"
+
+  ❌ DO NOT SET: CALM_ENABLE_WRITES=true
+  ❌ DO NOT SET: TM_ENABLE_WRITES=true
+  
+  ✅ Leaving these unset = READ-ONLY MODE (safe!)
+
+═══════════════════════════════════════════════════════════════════════════
+
+STEP 2: START SERVER
+═══════════════════════════════════════════════════════════════════════════
+
+  cd CALM_MCP
+  python3 server.py --http --port 8000
+
+═══════════════════════════════════════════════════════════════════════════
+
+WHAT YOU GET - 14 FUNCTIONAL READ-ONLY TOOLS
+═══════════════════════════════════════════════════════════════════════════
+
+  ✅ 1 Unified Tool (calm_resource)
+     - Read operations for 15 resource types
+     - List projects, tasks, requirements, scopes, etc.
+     - Get project customization
+     - Write operations BLOCKED (safe!)
+  
+  ✅ 2 Health Checks
+     - calm_health (CALM API status)
+     - tm_health (Test Management status)
+  
+  ✅ 3 OAuth Discovery Tools
+     - OAuth endpoints, metadata, server info
+  
+  ✅ 1 User Helper
+     - User UUID instructions
+  
+  ✅ 6 Test Management Read Tools
+     - Statistics, test cases, requirements
+     - All read-only (safe!)
+
+  Total: 14 fully functional tools ✅
+
+═══════════════════════════════════════════════════════════════════════════
+
+WHAT'S BLOCKED - 7 WRITE TOOLS
+═══════════════════════════════════════════════════════════════════════════
+
+  ❌ calm_resource write operations (create/update/delete)
+  ❌ calm_api_write, calm_api_delete
+  ❌ Test Management write tools (5 tools)
+  
+  These will error if called: "Write operations disabled"
+  
+  Total: 7 tools blocked (safe!) ❌
+
+═══════════════════════════════════════════════════════════════════════════
+
+SAFETY GUARANTEES
+═══════════════════════════════════════════════════════════════════════════
+
+  ✅ ZERO risk - no data modifications possible
+  ✅ All writes blocked at code level
+  ✅ Clear error messages if write attempted
+  ✅ Users can safely explore and query data
+  ✅ Perfect for testing Gen AI Studio integration
+
+═══════════════════════════════════════════════════════════════════════════
+
+EXAMPLE USAGE (Read-Only)
+═══════════════════════════════════════════════════════════════════════════
+
+  ✅ WORKS:
+     calm_resource(resource="projects", operation="list")
+     calm_resource(resource="tasks", operation="list", project_id="P001")
+     calm_health()
+  
+  ❌ BLOCKED:
+     calm_resource(resource="projects", operation="create", data={...})
+     → Error: "Write operations disabled (CALM_ENABLE_WRITES not set)"
+
+═══════════════════════════════════════════════════════════════════════════
+
+WHEN READY TO ENABLE WRITES (Later - Phase 2)
+═══════════════════════════════════════════════════════════════════════════
+
+  1. Add: export CALM_ENABLE_WRITES=true
+  2. Restart server
+  3. All 21 tools become fully functional
+  
+  No code changes needed! Just environment variable.
+
+═══════════════════════════════════════════════════════════════════════════
+
+RECOMMENDATION
+═══════════════════════════════════════════════════════════════════════════
+
+  ✅ Start with READ-ONLY deployment (this guide)
+  ✅ Test for 1-2 weeks
+  ✅ Then enable writes when comfortable
+  
+  Risk: ZERO in read-only mode
+  Time: 5 minutes to deploy
+
+═══════════════════════════════════════════════════════════════════════════
+
+📄 FULL DOCUMENTATION
+═══════════════════════════════════════════════════════════════════════════
+
+  See: READ_ONLY_DEPLOYMENT.md (detailed guide)
+  See: DEPLOYMENT_CONFIRMED.md (full deployment)
+
+═══════════════════════════════════════════════════════════════════════════
+
+STATUS: ✅ READY FOR SAFE READ-ONLY DEPLOYMENT
+
