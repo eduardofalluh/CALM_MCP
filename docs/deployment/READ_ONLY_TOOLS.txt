@@ -1,0 +1,14 @@
+# READ-ONLY TOOLS (12 tools)
+
+1. calm_resource
+2. calm_health
+3. get_calm_oauth_endpoints
+4. get_calm_oauth_metadata
+5. get_calm_authorization_server_metadata
+6. get_my_calm_user_uuid_instructions
+7. tm_health
+8. get_tm_statistics
+9. get_tm_test_cases
+10. get_tm_test_case_full
+11. get_tm_requirements
+12. tm_odata_read

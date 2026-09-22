@@ -1,0 +1,26 @@
+# READ-WRITE TOOLS (21 tools - ALL)
+
+## All Read-Only Tools (12):
+1. calm_resource
+2. calm_health
+3. get_calm_oauth_endpoints
+4. get_calm_oauth_metadata
+5. get_calm_authorization_server_metadata
+6. get_my_calm_user_uuid_instructions
+7. tm_health
+8. get_tm_statistics
+9. get_tm_test_cases
+10. get_tm_test_case_full
+11. get_tm_requirements
+12. tm_odata_read
+
+## Plus Write Tools (9):
+13. calm_api_write
+14. calm_api_delete
+15. create_tm_test_case
+16. update_tm_test_case
+17. delete_tm_test_case
+18. create_tm_requirement
+19. delete_tm_requirement
+20. tm_odata_write
+21. tm_odata_delete
