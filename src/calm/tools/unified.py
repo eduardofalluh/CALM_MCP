@@ -43,6 +43,15 @@ def register(mcp: FastMCP) -> None:
             "test_plans",
             "project_users",
             "customization",
+            "task_relations",
+            "task_comments",
+            "task_tags",
+            "test_actions",
+            "test_activities",
+            "scope_assignments",
+            "scenario_versions",
+            "test_case_links",
+            "test_plan_assignments",
         ],
         operation: Literal["list", "get", "create", "update", "delete"] = "list",
         project_id: Optional[str] = None,
@@ -80,6 +89,32 @@ def register(mcp: FastMCP) -> None:
                 - tags: group, tag (both required; project_id from the param)
                 - features: name (required), description, external_id, extra_fields
                 - test_plans: name (required), description, extra_fields
+                # --- sub-entity / relationship resources (create/update/delete) ---
+                - task_relations: create → resource_id=parent task_id,
+                    data={relation_task_id (required), relation_type (default "0")};
+                    delete → resource_id=relation_id
+                - task_comments: create → resource_id=task_id, data={text, extra_fields};
+                    update → resource_id=comment_id, data={text, extra_fields};
+                    delete → resource_id=comment_id
+                - task_tags: update (set/replace a task's tags) → resource_id=task_id,
+                    data={tags: ["Group: Tag", ...]}
+                - test_actions: create → resource_id=activity_id,
+                    data={title (required), description, expected_result, sequence,
+                    is_evidence_required}; update → resource_id=action_id,
+                    data={..., if_match}; delete → resource_id=action_id, data={if_match}
+                - test_activities: update → resource_id=activity_id,
+                    data={title, sequence, is_in_scope, if_match};
+                    delete → resource_id=activity_id, data={if_match}
+                - scope_assignments: update → data={assignments: [{scopeId,
+                    solutionScenarioVersionId, solutionProcessVersionId, isScoped,
+                    statusId?}, ...]} (scope/unscope solution processes)
+                - scenario_versions: create (assign versions to a scope) →
+                    resource_id=scope_id, data={version_ids: [...]}
+                - test_case_links: create (link test case → requirement) →
+                    resource_id=test_case_id, data={requirement_id (required), link_type}
+                - test_plan_assignments: create (assign test case → plan) →
+                    resource_id=test_plan_id, data={test_case_id (required),
+                    tester_email, extra_fields}
             user_email: Optional for write operations - acting user's email for audit logs.
 
         Returns:
@@ -770,6 +805,242 @@ def register(mcp: FastMCP) -> None:
                 raise ValueError("Use operation='get' for customization (returns single project config)")
             else:
                 raise ValueError(f"Operation '{operation}' not supported for customization in Phase 1")
+
+        # ------------------------------------------------------------------ #
+        # Sub-entity / relationship resources (folded back in for full parity
+        # with the original 75-tool surface — each maps to a client function).
+        # ------------------------------------------------------------------ #
+        elif resource == "task_relations":
+            if operation == "create":
+                ensure_writes_enabled()
+                task_id = resource_id or d.get("task_id")
+                if not task_id:
+                    raise ValueError("resource_id (parent task_id) is required to create a task relation")
+                relation_task_id = d.get("relation_task_id")
+                if not relation_task_id:
+                    raise ValueError("data must include 'relation_task_id'")
+                return client.create_task_relation(
+                    token=h.token,
+                    task_id=task_id,
+                    relation_task_id=relation_task_id,
+                    relation_type=str(d.get("relation_type", "0")),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            elif operation == "delete":
+                ensure_writes_enabled()
+                if not resource_id:
+                    raise ValueError("resource_id (relation_id) is required to delete a task relation")
+                return client.delete_task_relation(
+                    token=h.token, relation_id=resource_id, base_url=h.base_url, user_email=acting_email
+                )
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for task_relations (use create/delete)")
+
+        elif resource == "task_comments":
+            if operation == "create":
+                ensure_writes_enabled()
+                task_id = resource_id or d.get("task_id")
+                if not task_id:
+                    raise ValueError("resource_id (task_id) is required to create a task comment")
+                return client.create_task_comment(
+                    token=h.token,
+                    task_id=task_id,
+                    text=d.get("text"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            elif operation == "update":
+                ensure_writes_enabled()
+                if not resource_id:
+                    raise ValueError("resource_id (comment_id) is required to update a task comment")
+                return client.update_task_comment(
+                    token=h.token,
+                    comment_id=resource_id,
+                    text=d.get("text"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            elif operation == "delete":
+                ensure_writes_enabled()
+                if not resource_id:
+                    raise ValueError("resource_id (comment_id) is required to delete a task comment")
+                return client.delete_task_comment(
+                    token=h.token, comment_id=resource_id, base_url=h.base_url, user_email=acting_email
+                )
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for task_comments (use create/update/delete)")
+
+        elif resource == "task_tags":
+            # Setting a task's tags is a replace operation; accept create or update.
+            if operation in ("update", "create"):
+                ensure_writes_enabled()
+                task_id = resource_id or d.get("task_id")
+                if not task_id:
+                    raise ValueError("resource_id (task_id) is required to set task tags")
+                tags = d.get("tags")
+                if tags is None:
+                    raise ValueError("data must include 'tags' (a list like ['Group: Tag', ...])")
+                return client.set_task_tags(
+                    token=h.token, task_id=task_id, tags=tags, base_url=h.base_url, user_email=acting_email
+                )
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for task_tags (use update to set tags)")
+
+        elif resource == "test_actions":
+            if operation == "create":
+                ensure_writes_enabled()
+                activity_id = resource_id or d.get("activity_id")
+                if not activity_id:
+                    raise ValueError("resource_id (activity_id) is required to create a test action")
+                if not d.get("title"):
+                    raise ValueError("data must include 'title' for create operation")
+                return client.create_test_action(
+                    token=h.token,
+                    activity_id=activity_id,
+                    title=d.get("title"),
+                    description=d.get("description"),
+                    expected_result=d.get("expected_result"),
+                    sequence=d.get("sequence"),
+                    is_evidence_required=d.get("is_evidence_required"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            elif operation == "update":
+                ensure_writes_enabled()
+                if not resource_id:
+                    raise ValueError("resource_id (action_id) is required to update a test action")
+                return client.update_test_action(
+                    token=h.token,
+                    action_id=resource_id,
+                    title=d.get("title"),
+                    description=d.get("description"),
+                    expected_result=d.get("expected_result"),
+                    sequence=d.get("sequence"),
+                    is_evidence_required=d.get("is_evidence_required"),
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            elif operation == "delete":
+                ensure_writes_enabled()
+                if not resource_id:
+                    raise ValueError("resource_id (action_id) is required to delete a test action")
+                return client.delete_test_action(
+                    token=h.token,
+                    action_id=resource_id,
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for test_actions (use create/update/delete)")
+
+        elif resource == "test_activities":
+            if operation == "update":
+                ensure_writes_enabled()
+                if not resource_id:
+                    raise ValueError("resource_id (activity_id) is required to update a test activity")
+                return client.update_test_activity(
+                    token=h.token,
+                    activity_id=resource_id,
+                    title=d.get("title"),
+                    sequence=d.get("sequence"),
+                    is_in_scope=d.get("is_in_scope"),
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            elif operation == "delete":
+                ensure_writes_enabled()
+                if not resource_id:
+                    raise ValueError("resource_id (activity_id) is required to delete a test activity")
+                return client.delete_test_activity(
+                    token=h.token,
+                    activity_id=resource_id,
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for test_activities (use update/delete)")
+
+        elif resource == "scope_assignments":
+            if operation == "update":
+                ensure_writes_enabled()
+                assignments = d.get("assignments")
+                if not assignments:
+                    raise ValueError("data must include 'assignments' (a non-empty list)")
+                return client.update_scope_assignments(
+                    token=h.token, assignments=assignments, base_url=h.base_url, user_email=acting_email
+                )
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for scope_assignments (use update)")
+
+        elif resource == "scenario_versions":
+            # Assigning solution-scenario versions to a scope.
+            if operation in ("create", "update"):
+                ensure_writes_enabled()
+                scope_id = resource_id or d.get("scope_id")
+                if not scope_id:
+                    raise ValueError("resource_id (scope_id) is required to assign scenario versions")
+                version_ids = d.get("version_ids")
+                if not version_ids:
+                    raise ValueError("data must include 'version_ids' (a non-empty list)")
+                return client.assign_scenario_versions(
+                    token=h.token,
+                    scope_id=scope_id,
+                    version_ids=version_ids,
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for scenario_versions (use create)")
+
+        elif resource == "test_case_links":
+            # Linking a test case to a requirement for traceability.
+            if operation == "create":
+                ensure_writes_enabled()
+                test_case_id = resource_id or d.get("test_case_id")
+                if not test_case_id:
+                    raise ValueError("resource_id (test_case_id) is required to link a test case")
+                requirement_id = d.get("requirement_id")
+                if not requirement_id:
+                    raise ValueError("data must include 'requirement_id'")
+                return client.link_test_case_to_requirement(
+                    token=h.token,
+                    test_case_id=test_case_id,
+                    requirement_id=requirement_id,
+                    link_type=d.get("link_type", "covers"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for test_case_links (use create)")
+
+        elif resource == "test_plan_assignments":
+            # Assigning a test case to a test plan.
+            if operation == "create":
+                ensure_writes_enabled()
+                test_plan_id = resource_id or d.get("test_plan_id")
+                if not test_plan_id:
+                    raise ValueError("resource_id (test_plan_id) is required to assign a test case to a plan")
+                test_case_id = d.get("test_case_id")
+                if not test_case_id:
+                    raise ValueError("data must include 'test_case_id'")
+                return client.assign_test_case_to_plan(
+                    token=h.token,
+                    test_plan_id=test_plan_id,
+                    test_case_id=test_case_id,
+                    tester_email=d.get("tester_email"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for test_plan_assignments (use create)")
 
         else:
             raise ValueError(f"Unknown resource type: {resource}")

@@ -402,5 +402,205 @@ def test_write_guard_blocks_when_disabled(monkeypatch):
         m.assert_not_called()
 
 
+# --------------------------------------------------------------------------- #
+# sub-entity / relationship resources (parity with the old 75-tool surface)
+# --------------------------------------------------------------------------- #
+
+def test_task_relation_create():
+    fn = _fn()
+    with patch("src.calm.client.create_task_relation") as m:
+        m.return_value = {"ok": True}
+        fn(Ctx(), resource="task_relations", operation="create", resource_id="T1",
+           data={"relation_task_id": "T2", "relation_type": "1"})
+        m.assert_called_once_with(
+            token=TOKEN, task_id="T1", relation_task_id="T2",
+            relation_type="1", base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_task_relation_delete():
+    fn = _fn()
+    with patch("src.calm.client.delete_task_relation") as m:
+        m.return_value = {"deleted": "R1"}
+        fn(Ctx(), resource="task_relations", operation="delete", resource_id="R1")
+        m.assert_called_once_with(
+            token=TOKEN, relation_id="R1", base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_task_comment_create():
+    fn = _fn()
+    with patch("src.calm.client.create_task_comment") as m:
+        m.return_value = {"ok": True}
+        fn(Ctx(), resource="task_comments", operation="create", resource_id="T1",
+           data={"text": "hello"})
+        m.assert_called_once_with(
+            token=TOKEN, task_id="T1", text="hello", extra_fields=None,
+            base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_task_comment_update():
+    fn = _fn()
+    with patch("src.calm.client.update_task_comment") as m:
+        m.return_value = {"updated": "C1"}
+        fn(Ctx(), resource="task_comments", operation="update", resource_id="C1",
+           data={"text": "edited"})
+        m.assert_called_once_with(
+            token=TOKEN, comment_id="C1", text="edited", extra_fields=None,
+            base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_task_comment_delete():
+    fn = _fn()
+    with patch("src.calm.client.delete_task_comment") as m:
+        m.return_value = {"deleted": "C1"}
+        fn(Ctx(), resource="task_comments", operation="delete", resource_id="C1")
+        m.assert_called_once_with(
+            token=TOKEN, comment_id="C1", base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_task_tags_set_via_update():
+    fn = _fn()
+    with patch("src.calm.client.set_task_tags") as m:
+        m.return_value = {"ok": True}
+        fn(Ctx(), resource="task_tags", operation="update", resource_id="T1",
+           data={"tags": ["Phase: Build", "Area: UI"]})
+        m.assert_called_once_with(
+            token=TOKEN, task_id="T1", tags=["Phase: Build", "Area: UI"],
+            base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_task_tags_missing_tags_raises():
+    fn = _fn()
+    with pytest.raises(ValueError, match="must include 'tags'"):
+        fn(Ctx(), resource="task_tags", operation="update", resource_id="T1", data={})
+
+
+def test_test_action_create():
+    fn = _fn()
+    with patch("src.calm.client.create_test_action") as m:
+        m.return_value = {"ok": True}
+        fn(Ctx(), resource="test_actions", operation="create", resource_id="A1",
+           data={"title": "Step 1", "expected_result": "pass", "sequence": 1})
+        m.assert_called_once_with(
+            token=TOKEN, activity_id="A1", title="Step 1", description=None,
+            expected_result="pass", sequence=1, is_evidence_required=None,
+            base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_test_action_update_passes_if_match():
+    fn = _fn()
+    with patch("src.calm.client.update_test_action") as m:
+        m.return_value = {"updated": "AC1"}
+        fn(Ctx(), resource="test_actions", operation="update", resource_id="AC1",
+           data={"title": "New", "if_match": "etag-1"})
+        m.assert_called_once_with(
+            token=TOKEN, action_id="AC1", title="New", description=None,
+            expected_result=None, sequence=None, is_evidence_required=None,
+            if_match="etag-1", base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_test_action_delete_passes_if_match():
+    fn = _fn()
+    with patch("src.calm.client.delete_test_action") as m:
+        m.return_value = {"deleted": "AC1"}
+        fn(Ctx(), resource="test_actions", operation="delete", resource_id="AC1",
+           data={"if_match": "etag-9"})
+        m.assert_called_once_with(
+            token=TOKEN, action_id="AC1", if_match="etag-9",
+            base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_test_activity_update():
+    fn = _fn()
+    with patch("src.calm.client.update_test_activity") as m:
+        m.return_value = {"updated": "ACT1"}
+        fn(Ctx(), resource="test_activities", operation="update", resource_id="ACT1",
+           data={"title": "T", "is_in_scope": True, "if_match": "e"})
+        m.assert_called_once_with(
+            token=TOKEN, activity_id="ACT1", title="T", sequence=None,
+            is_in_scope=True, if_match="e", base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_test_activity_delete():
+    fn = _fn()
+    with patch("src.calm.client.delete_test_activity") as m:
+        m.return_value = {"deleted": "ACT1"}
+        fn(Ctx(), resource="test_activities", operation="delete", resource_id="ACT1",
+           data={"if_match": "e"})
+        m.assert_called_once_with(
+            token=TOKEN, activity_id="ACT1", if_match="e",
+            base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_scope_assignments_update():
+    fn = _fn()
+    assignments = [{"scopeId": "S1", "isScoped": True}]
+    with patch("src.calm.client.update_scope_assignments") as m:
+        m.return_value = {"ok": True}
+        fn(Ctx(), resource="scope_assignments", operation="update",
+           data={"assignments": assignments})
+        m.assert_called_once_with(
+            token=TOKEN, assignments=assignments, base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_scenario_versions_assign():
+    fn = _fn()
+    with patch("src.calm.client.assign_scenario_versions") as m:
+        m.return_value = {"ok": True}
+        fn(Ctx(), resource="scenario_versions", operation="create", resource_id="S1",
+           data={"version_ids": ["v1", "v2"]})
+        m.assert_called_once_with(
+            token=TOKEN, scope_id="S1", version_ids=["v1", "v2"],
+            base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_test_case_link_create():
+    fn = _fn()
+    with patch("src.calm.client.link_test_case_to_requirement") as m:
+        m.return_value = {"ok": True}
+        fn(Ctx(), resource="test_case_links", operation="create", resource_id="TC1",
+           data={"requirement_id": "3-999", "link_type": "validates"})
+        m.assert_called_once_with(
+            token=TOKEN, test_case_id="TC1", requirement_id="3-999",
+            link_type="validates", base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_test_plan_assignment_create():
+    fn = _fn()
+    with patch("src.calm.client.assign_test_case_to_plan") as m:
+        m.return_value = {"ok": True}
+        fn(Ctx(), resource="test_plan_assignments", operation="create", resource_id="TP1",
+           data={"test_case_id": "TC1", "tester_email": "qa@x.com"})
+        m.assert_called_once_with(
+            token=TOKEN, test_plan_id="TP1", test_case_id="TC1",
+            tester_email="qa@x.com", extra_fields=None,
+            base_url=BASE_URL, user_email=None,
+        )
+
+
+def test_subentity_write_guard_blocks_when_disabled(monkeypatch):
+    """The write guard must also cover the new sub-entity branches."""
+    monkeypatch.setenv("CALM_ENABLE_WRITES", "")
+    fn = _fn()
+    with patch("src.calm.client.set_task_tags") as m:
+        with pytest.raises(ValueError, match="Write operations are disabled"):
+            fn(Ctx(), resource="task_tags", operation="update", resource_id="T1",
+               data={"tags": ["a"]})
+        m.assert_not_called()
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
