@@ -156,7 +156,9 @@ def test_unified_tool_details():
     print("\n📋 calm_resource Tool Schema:")
     print("-" * 80)
 
-    schema = calm_resource_tool.inputSchema
+    # FastMCP 4.x FunctionTool exposes the JSON schema via `.parameters`
+    # (the deprecated MCP `.inputSchema`/`.input_schema` lives on to_mcp_tool()).
+    schema = getattr(calm_resource_tool, "parameters", None) or calm_resource_tool.to_mcp_tool().input_schema
 
     if "properties" in schema:
         props = schema["properties"]

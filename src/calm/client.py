@@ -427,11 +427,11 @@ def get_project_teams(project_id: str, token: str, base_url: str | None = None) 
     2. /teams with projectId filter (fallback)
     3. Falls back to all teams if project-specific endpoints fail
     """
-    # Try project-specific endpoint first
-    urls_to_try = [
+    # Try project-specific endpoints first (deduped, in order).
+    urls_to_try = list(dict.fromkeys([
         f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/teams",
         f"{_base_url(base_url)}/api/calm-projects/v1/teams?projectId={project_id}",
-    ]
+    ]))
 
     last_error = None
     for url in urls_to_try:
@@ -452,26 +452,17 @@ def get_project_teams(project_id: str, token: str, base_url: str | None = None) 
             last_error = e
             continue
 
-    # If project-specific endpoints fail, try getting all teams and filter
-    try:
-        log.warning(
-            f"Project-specific team endpoints failed for project {project_id}. "
-            f"Falling back to all teams with client-side filtering. Last error: {last_error}"
-        )
-        all_teams = get_teams(token, base_url)
-        # Filter to teams that match this project ID
-        project_teams = [t for t in all_teams if t.get("Project ID") == project_id]
-        if project_teams:
-            return project_teams
-    except Exception as e:
-        log.error(f"Fallback to all teams also failed: {e}")
-
-    # All endpoints failed
-    raise RuntimeError(
-        f"Could not fetch teams for project {project_id} from any endpoint. "
-        f"Last error: {last_error}. "
-        f"Your OAuth2 client may need additional scopes (calm.teams.read or similar)."
+    # Project-specific endpoints errored (not merely empty) — fall back to
+    # listing all teams and filtering client-side by project.
+    log.warning(
+        "Project-specific team endpoints failed for project %s. "
+        "Falling back to all teams with client-side filtering. Last error: %s",
+        project_id, last_error,
     )
+    all_teams = get_teams(token, base_url)
+    # Return the filtered list even when empty — a project with no teams is a
+    # valid result, not an error worth blocking the caller (and retrying) over.
+    return [t for t in all_teams if t.get("Project ID") == project_id]
 
 
 # --- Tags -------------------------------------------------------------------

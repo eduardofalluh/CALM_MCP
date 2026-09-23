@@ -1,5 +1,10 @@
 """Count tools registered in the MCP server after Phase 3 removal."""
 
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 from fastmcp import FastMCP
 from src.calm.tools import (
     unified,

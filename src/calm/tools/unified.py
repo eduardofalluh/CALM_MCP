@@ -18,6 +18,7 @@ from fastmcp import Context, FastMCP
 
 from src.calm import client
 from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
+from src.calm.tools.user_resolver import resolve_assignee
 
 
 def register(mcp: FastMCP) -> None:
@@ -62,6 +63,23 @@ def register(mcp: FastMCP) -> None:
             resource_id: Required for "get", "update", "delete" operations - the specific resource ID.
             task_type: Optional filter for tasks operation (e.g., "Requirement", "User Story").
             data: Required for "create" and "update" operations - the resource data.
+                Keys are snake_case and match the original per-resource tools:
+                - projects: name, program_id, deployment_plan_id, extra_fields, if_match
+                - tasks: title, task_type, status, start_date, due_date, assignee_id
+                    (email/name/UUID — auto-resolved), description, priority_id,
+                    external_id, parent_id, obsolete, extra_fields
+                - requirements: title, status, description, assignee_id, start_date,
+                    due_date, priority_id, sub_status, obsolete, extra_fields
+                - business_processes: name, description, if_match
+                - solution_processes: name, description, status, countries, state,
+                    business_process_id, external_id, if_match
+                - timeboxes: name, timebox_type, start_date, end_date, closed, extra_fields
+                - scopes: name, description, if_match
+                - test_cases: title, scope_id (required), project_id, solution_process_id,
+                    priority, is_prepared, activities, references, force, if_match
+                - tags: group, tag (both required; project_id from the param)
+                - features: name (required), description, external_id, extra_fields
+                - test_plans: name (required), description, extra_fields
             user_email: Optional for write operations - acting user's email for audit logs.
 
         Returns:
@@ -111,7 +129,7 @@ def register(mcp: FastMCP) -> None:
                 resource="tasks",
                 operation="create",
                 project_id="P001",
-                data={"title": "New task", "type": "User Story", "description": "..."},
+                data={"title": "New task", "task_type": "User Story", "description": "..."},
                 user_email="user@example.com"
             )
 
@@ -163,6 +181,9 @@ def register(mcp: FastMCP) -> None:
         This unified tool is provided for improved context efficiency.
         """
         h = get_calm_headers(ctx)
+        d = data or {}
+        # Prefer an explicitly-passed acting user, else the header-derived email.
+        acting_email = user_email or h.user_email
 
         # Route to appropriate client function based on resource type
         if resource == "projects":
@@ -170,16 +191,34 @@ def register(mcp: FastMCP) -> None:
                 return client.get_projects(h.token, h.base_url)
             elif operation == "create":
                 ensure_writes_enabled()
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_project(data, h.token, h.base_url, h.user_email or user_email)
+                if not d.get("name"):
+                    raise ValueError("data must include 'name' for create operation")
+                return client.create_project(
+                    token=h.token,
+                    name=d.get("name"),
+                    program_id=d.get("program_id"),
+                    deployment_plan_id=d.get("deployment_plan_id"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "update":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
                 if not data:
                     raise ValueError("data is required for update operation")
-                return client.update_project(resource_id, data, h.token, h.base_url, h.user_email or user_email)
+                return client.update_project(
+                    token=h.token,
+                    project_id=resource_id,
+                    name=d.get("name"),
+                    program_id=d.get("program_id"),
+                    deployment_plan_id=d.get("deployment_plan_id"),
+                    if_match=d.get("if_match"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "delete":
                 raise ValueError("Delete operation not supported for projects")
             elif operation == "get":
@@ -196,23 +235,86 @@ def register(mcp: FastMCP) -> None:
                 ensure_writes_enabled()
                 if not project_id:
                     raise ValueError("project_id is required for tasks")
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_task(project_id, data, h.token, h.base_url, h.user_email or user_email)
+                if not d.get("title"):
+                    raise ValueError("data must include 'title' for create operation")
+                if not d.get("task_type"):
+                    raise ValueError("data must include 'task_type' for create operation")
+                # Smart assignee resolution (email/name/UUID -> assignable ID).
+                assignee = d.get("assignee_id")
+                if assignee:
+                    assignee = resolve_assignee(
+                        user_identifier=assignee,
+                        project_id=project_id,
+                        token=h.token,
+                        base_url=h.base_url,
+                    )
+                return client.create_task(
+                    token=h.token,
+                    project_id=project_id,
+                    title=d.get("title"),
+                    task_type=d.get("task_type"),
+                    status=d.get("status"),
+                    start_date=d.get("start_date"),
+                    due_date=d.get("due_date"),
+                    assignee_id=assignee,
+                    description=d.get("description"),
+                    priority_id=d.get("priority_id"),
+                    external_id=d.get("external_id"),
+                    parent_id=d.get("parent_id"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "update":
                 ensure_writes_enabled()
-                if not project_id:
-                    raise ValueError("project_id is required for tasks")
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
                 if not data:
                     raise ValueError("data is required for update operation")
-                return client.update_task(project_id, resource_id, data, h.token, h.base_url, h.user_email or user_email)
+                # Smart assignee resolution — needs the task's project to look up users.
+                assignee = d.get("assignee_id")
+                if assignee:
+                    proj_id = project_id or (d.get("extra_fields") or {}).get("projectId")
+                    if not proj_id:
+                        try:
+                            task_data = client._get(
+                                f"{client._base_url(h.base_url)}/api/calm-tasks/v1/tasks/{resource_id}",
+                                h.token,
+                            )
+                            proj_id = task_data.get("projectId")
+                        except Exception:
+                            pass  # fall back to the raw identifier
+                    if proj_id:
+                        assignee = resolve_assignee(
+                            user_identifier=assignee,
+                            project_id=proj_id,
+                            token=h.token,
+                            base_url=h.base_url,
+                        )
+                return client.update_task(
+                    token=h.token,
+                    task_id=resource_id,
+                    title=d.get("title"),
+                    task_type=d.get("task_type"),
+                    status=d.get("status"),
+                    start_date=d.get("start_date"),
+                    due_date=d.get("due_date"),
+                    assignee_id=assignee,
+                    description=d.get("description"),
+                    priority_id=d.get("priority_id"),
+                    external_id=d.get("external_id"),
+                    obsolete=d.get("obsolete"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "delete":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for delete operation")
-                return client.delete_task(h.token, resource_id, h.base_url, h.user_email or user_email)
+                return client.delete_task(
+                    token=h.token, task_id=resource_id, base_url=h.base_url, user_email=acting_email
+                )
             elif operation == "get":
                 raise ValueError("Use operation='list' with project_id and optionally filter by task_type")
             else:
@@ -228,25 +330,59 @@ def register(mcp: FastMCP) -> None:
                 ensure_writes_enabled()
                 if not project_id:
                     raise ValueError("project_id is required for requirements")
-                if not data:
-                    raise ValueError("data is required for create operation")
-                # Ensure type is set to Requirement
-                data_with_type = {**data, "type": "Requirement"}
-                return client.create_task(project_id, data_with_type, h.token, h.base_url, h.user_email or user_email)
+                if not d.get("title"):
+                    raise ValueError("data must include 'title' for create operation")
+                # sub_status is folded into extra_fields as subStatus (as the old tool did).
+                extra = dict(d.get("extra_fields") or {})
+                if d.get("sub_status") is not None:
+                    extra["subStatus"] = d.get("sub_status")
+                return client.create_task(
+                    token=h.token,
+                    project_id=project_id,
+                    title=d.get("title"),
+                    task_type="Requirement",
+                    status=d.get("status"),
+                    start_date=d.get("start_date"),
+                    due_date=d.get("due_date"),
+                    assignee_id=d.get("assignee_id"),
+                    description=d.get("description"),
+                    priority_id=d.get("priority_id"),
+                    extra_fields=extra or None,
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "update":
                 ensure_writes_enabled()
-                if not project_id:
-                    raise ValueError("project_id is required for requirements")
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
                 if not data:
                     raise ValueError("data is required for update operation")
-                return client.update_task(project_id, resource_id, data, h.token, h.base_url, h.user_email or user_email)
+                extra = dict(d.get("extra_fields") or {})
+                if d.get("sub_status") is not None:
+                    extra["subStatus"] = d.get("sub_status")
+                return client.update_task(
+                    token=h.token,
+                    task_id=resource_id,
+                    task_type="Requirement",
+                    title=d.get("title"),
+                    status=d.get("status"),
+                    start_date=d.get("start_date"),
+                    due_date=d.get("due_date"),
+                    assignee_id=d.get("assignee_id"),
+                    description=d.get("description"),
+                    priority_id=d.get("priority_id"),
+                    obsolete=d.get("obsolete"),
+                    extra_fields=extra or None,
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "delete":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for delete operation")
-                return client.delete_task(h.token, resource_id, h.base_url, h.user_email or user_email)
+                return client.delete_task(
+                    token=h.token, task_id=resource_id, base_url=h.base_url, user_email=acting_email
+                )
             elif operation == "get":
                 raise ValueError("Use operation='list' with project_id to get requirements, then filter by ID")
             else:
@@ -277,21 +413,41 @@ def register(mcp: FastMCP) -> None:
                 return client.get_business_processes(h.token, h.base_url)
             elif operation == "create":
                 ensure_writes_enabled()
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_business_process(data, h.token, h.base_url, h.user_email or user_email)
+                if not d.get("name"):
+                    raise ValueError("data must include 'name' for create operation")
+                return client.create_business_process(
+                    token=h.token,
+                    name=d.get("name"),
+                    description=d.get("description"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "update":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
                 if not data:
                     raise ValueError("data is required for update operation")
-                return client.update_business_process(resource_id, data, h.token, h.base_url, h.user_email or user_email)
+                return client.update_business_process(
+                    token=h.token,
+                    business_process_id=resource_id,
+                    name=d.get("name"),
+                    description=d.get("description"),
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "delete":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for delete operation")
-                return client.delete_business_process(h.token, resource_id, h.base_url, h.user_email or user_email)
+                return client.delete_business_process(
+                    token=h.token,
+                    business_process_id=resource_id,
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "get":
                 raise ValueError("Use operation='list' to get all business_processes, then filter by ID")
             else:
@@ -302,21 +458,50 @@ def register(mcp: FastMCP) -> None:
                 return client.get_solution_processes(h.token, h.base_url)
             elif operation == "create":
                 ensure_writes_enabled()
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_solution_process(data, h.token, h.base_url, h.user_email or user_email)
+                if not d.get("name"):
+                    raise ValueError("data must include 'name' for create operation")
+                return client.create_solution_process(
+                    token=h.token,
+                    name=d.get("name"),
+                    description=d.get("description"),
+                    status=d.get("status"),
+                    countries=d.get("countries"),
+                    state=d.get("state"),
+                    business_process_id=d.get("business_process_id"),
+                    external_id=d.get("external_id"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "update":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
                 if not data:
                     raise ValueError("data is required for update operation")
-                return client.update_solution_process(resource_id, data, h.token, h.base_url, h.user_email or user_email)
+                return client.update_solution_process(
+                    token=h.token,
+                    solution_process_id=resource_id,
+                    name=d.get("name"),
+                    description=d.get("description"),
+                    status=d.get("status"),
+                    countries=d.get("countries"),
+                    state=d.get("state"),
+                    external_id=d.get("external_id"),
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "delete":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for delete operation")
-                return client.delete_solution_process(h.token, resource_id, h.base_url, h.user_email or user_email)
+                return client.delete_solution_process(
+                    token=h.token,
+                    solution_process_id=resource_id,
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "get":
                 raise ValueError("Use operation='list' to get all solution_processes, then filter by ID")
             else:
@@ -329,21 +514,44 @@ def register(mcp: FastMCP) -> None:
                 return client.get_timeboxes(project_id, h.token, h.base_url)
             elif operation == "create":
                 ensure_writes_enabled()
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_timebox(data, h.token, h.base_url, h.user_email or user_email)
+                if not project_id:
+                    raise ValueError("project_id is required for timeboxes")
+                return client.create_timebox(
+                    token=h.token,
+                    project_id=project_id,
+                    name=d.get("name"),
+                    timebox_type=d.get("timebox_type"),
+                    start_date=d.get("start_date"),
+                    end_date=d.get("end_date"),
+                    closed=d.get("closed"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "update":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
                 if not data:
                     raise ValueError("data is required for update operation")
-                return client.update_timebox(resource_id, data, h.token, h.base_url, h.user_email or user_email)
+                return client.update_timebox(
+                    token=h.token,
+                    timebox_id=resource_id,
+                    name=d.get("name"),
+                    start_date=d.get("start_date"),
+                    end_date=d.get("end_date"),
+                    closed=d.get("closed"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "delete":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for delete operation")
-                return client.delete_timebox(h.token, resource_id, h.base_url, h.user_email or user_email)
+                return client.delete_timebox(
+                    token=h.token, timebox_id=resource_id, base_url=h.base_url, user_email=acting_email
+                )
             elif operation == "get":
                 raise ValueError("Use operation='list' with project_id to get timeboxes, then filter by ID")
             else:
@@ -354,21 +562,44 @@ def register(mcp: FastMCP) -> None:
                 return client.get_scopes(h.token, h.base_url)
             elif operation == "create":
                 ensure_writes_enabled()
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_scope(data, h.token, h.base_url, h.user_email or user_email)
+                if not project_id:
+                    raise ValueError("project_id is required for scopes")
+                if not d.get("name"):
+                    raise ValueError("data must include 'name' for create operation")
+                return client.create_scope(
+                    token=h.token,
+                    project_id=project_id,
+                    name=d.get("name"),
+                    description=d.get("description"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "update":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
                 if not data:
                     raise ValueError("data is required for update operation")
-                return client.update_scope(resource_id, data, h.token, h.base_url, h.user_email or user_email)
+                return client.update_scope(
+                    token=h.token,
+                    scope_id=resource_id,
+                    name=d.get("name"),
+                    description=d.get("description"),
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "delete":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for delete operation")
-                return client.delete_scope(h.token, resource_id, h.base_url, h.user_email or user_email)
+                return client.delete_scope(
+                    token=h.token,
+                    scope_id=resource_id,
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "get":
                 raise ValueError("Use operation='list' to get all scopes, then filter by ID")
             else:
@@ -379,21 +610,60 @@ def register(mcp: FastMCP) -> None:
                 return client.get_test_cases(h.token, h.base_url)
             elif operation == "create":
                 ensure_writes_enabled()
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_test_case(data, h.token, h.base_url, h.user_email or user_email)
+                tc_project_id = project_id or d.get("project_id")
+                tc_scope_id = d.get("scope_id")
+                if not d.get("title"):
+                    raise ValueError("data must include 'title' for create operation")
+                if not tc_project_id:
+                    raise ValueError("project_id is required for test_cases (pass project_id or data['project_id'])")
+                if not tc_scope_id:
+                    raise ValueError("data must include 'scope_id' (the API rejects a test case without one)")
+                return client.create_test_case(
+                    token=h.token,
+                    title=d.get("title"),
+                    project_id=tc_project_id,
+                    scope_id=tc_scope_id,
+                    solution_process_id=d.get("solution_process_id"),
+                    priority=d.get("priority"),
+                    is_prepared=d.get("is_prepared"),
+                    activities=d.get("activities"),
+                    references=d.get("references"),
+                    solution_process_flow_id=d.get("solution_process_flow_id"),
+                    solution_process_flow_diagram_id=d.get("solution_process_flow_diagram_id"),
+                    content_package_id=d.get("content_package_id"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "update":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
                 if not data:
                     raise ValueError("data is required for update operation")
-                return client.update_test_case(resource_id, data, h.token, h.base_url, h.user_email or user_email)
+                return client.update_test_case(
+                    token=h.token,
+                    test_case_id=resource_id,
+                    title=d.get("title"),
+                    scope_id=d.get("scope_id"),
+                    solution_process_id=d.get("solution_process_id"),
+                    priority=d.get("priority"),
+                    is_prepared=d.get("is_prepared"),
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "delete":
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for delete operation")
-                return client.delete_test_case(h.token, resource_id, h.base_url, h.user_email or user_email)
+                return client.delete_test_case(
+                    token=h.token,
+                    test_case_id=resource_id,
+                    force=bool(d.get("force", False)),
+                    if_match=d.get("if_match"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation == "get":
                 raise ValueError("Use operation='list' to get all test_cases, then filter by ID")
             else:
@@ -406,9 +676,19 @@ def register(mcp: FastMCP) -> None:
                 return client.get_tags(project_id, h.token, h.base_url)
             elif operation == "create":
                 ensure_writes_enabled()
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_tag(data, h.token, h.base_url, h.user_email or user_email)
+                if not project_id:
+                    raise ValueError("project_id is required for tags")
+                group, tag = d.get("group"), d.get("tag")
+                if not group or not tag:
+                    raise ValueError("data must include 'group' and 'tag'")
+                return client.create_tag(
+                    token=h.token,
+                    project_id=project_id,
+                    group=group,
+                    tag=tag,
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation in ["update", "delete"]:
                 raise ValueError(f"Operation '{operation}' not supported for tags (read-only after creation)")
             elif operation == "get":
@@ -423,9 +703,21 @@ def register(mcp: FastMCP) -> None:
                 return client.get_features(project_id, h.token, h.base_url)
             elif operation == "create":
                 ensure_writes_enabled()
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_feature(data, h.token, h.base_url, h.user_email or user_email)
+                f_project_id = project_id or d.get("project_id")
+                if not f_project_id:
+                    raise ValueError("project_id is required for features (pass project_id or data['project_id'])")
+                if not d.get("name"):
+                    raise ValueError("data must include 'name' for create operation")
+                return client.create_feature(
+                    token=h.token,
+                    project_id=f_project_id,
+                    name=d.get("name"),
+                    description=d.get("description"),
+                    external_id=d.get("external_id"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation in ["update", "delete"]:
                 raise ValueError(f"Operation '{operation}' not supported for features (read-only after creation)")
             elif operation == "get":
@@ -440,9 +732,20 @@ def register(mcp: FastMCP) -> None:
                 return client.get_test_plans(project_id, h.token, h.base_url)
             elif operation == "create":
                 ensure_writes_enabled()
-                if not data:
-                    raise ValueError("data is required for create operation")
-                return client.create_test_plan(data, h.token, h.base_url, h.user_email or user_email)
+                tp_project_id = project_id or d.get("project_id")
+                if not tp_project_id:
+                    raise ValueError("project_id is required for test_plans (pass project_id or data['project_id'])")
+                if not d.get("name"):
+                    raise ValueError("data must include 'name' for create operation")
+                return client.create_test_plan(
+                    token=h.token,
+                    project_id=tp_project_id,
+                    name=d.get("name"),
+                    description=d.get("description"),
+                    extra_fields=d.get("extra_fields"),
+                    base_url=h.base_url,
+                    user_email=acting_email,
+                )
             elif operation in ["update", "delete"]:
                 raise ValueError(f"Operation '{operation}' not supported for test_plans (read-only after creation)")
             elif operation == "get":

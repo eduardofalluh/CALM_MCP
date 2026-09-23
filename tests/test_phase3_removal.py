@@ -12,6 +12,13 @@ Tests that:
 import sys
 import subprocess
 import time
+from pathlib import Path
+
+# Ensure the repo root is importable when run as `python tests/test_phase3_removal.py`
+# (Python puts the script's own dir on sys.path, not the repo root).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def test_server_startup():
@@ -20,12 +27,17 @@ def test_server_startup():
     print("TEST 1: Server Startup After Phase 3 Removal")
     print("="*80)
 
-    # Start server in background
+    # Start server in background using the SAME interpreter that runs the tests
+    # (so it has fastmcp and the other deps installed), from the repo root.
+    # Keep stdin open with a pipe: a stdio MCP server that inherits a closed/EOF
+    # stdin shuts down immediately (clean EOF), which would look like a crash.
     proc = subprocess.Popen(
-        ["python3", "server.py"],
+        [sys.executable, "server.py"],
+        stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True
+        text=True,
+        cwd=str(_REPO_ROOT),
     )
 
     # Give it time to start

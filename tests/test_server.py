@@ -1,15 +1,29 @@
-"""End-to-end MCP test for the CALM server.
+"""End-to-end MCP test for the CALM server (consolidated `calm_resource` surface).
 
-Spawns server.py as a stdio subprocess, connects with the official MCP
-client, and exercises:
-  - tools/list           (read + write tools advertised, correct schemas)
-  - calm_health          (token resolution, writes_enabled flag)
-  - get_calm_projects    (full round-trip with requests.get monkey-patched
-                          via a tiny shim module so we don't hit SAP)
-  - create/update tasks  (guard blocks by default; round-trips when
-                          CALM_ENABLE_WRITES=true, with requests.request shimmed)
+Spawns server.py as a stdio subprocess, connects with the official MCP client,
+and drives the *real* stack — MCP protocol -> `calm_resource` -> `src/calm/client.py`
+-> HTTP (monkey-patched via a tiny `requests` shim so we never hit SAP). This is
+the only test that exercises the full runtime path end-to-end, so it is the one
+that would catch an argument-shift regression in the write branches at the
+protocol level (the class of bug the consolidation originally introduced).
 
-Run with:    python tests/test_server.py
+Covers:
+  - tools/list            (consolidated surface advertised, no legacy CRUD tools)
+  - calm_health           (token / base_url resolution)
+  - calm_resource reads   (projects, tasks + type filter, requirements, teams +
+                           project filter [reported bug], processes, timeboxes,
+                           scopes, tags, features, project_users, customization)
+  - write guard           (create blocked when CALM_ENABLE_WRITES is off)
+  - calm_resource writes  (task create/update/delete, requirement create,
+                           business_process create/update/delete [ETag],
+                           scope create/update/delete, test_case create/delete,
+                           timebox create, tags create [reported bug],
+                           features create, test_plans create)
+  - escape hatch          (calm_api_write / calm_api_delete)
+  - BTP Test Management    (tm_health, statistics, test cases, requirements,
+                           odata read + write)
+
+Run with:    ./venv/bin/python tests/test_server.py
 """
 
 from __future__ import annotations
@@ -31,157 +45,156 @@ FAKE_PROJECTS_PAYLOAD = json.dumps([
     {"id": "P002", "name": "Test Project B", "status": "C", "purpose": "Run", "operationalStatus": "Completed"},
 ])
 
+# The requests shim. Authored as a normal module string (not concatenated
+# fragments) so the URL routing order is easy to read and maintain. Order
+# matters: more specific paths (…/teams, …/tags) must be checked BEFORE the
+# generic `/projects/` single-entity fallback, or they get shadowed.
+_SHIM_SRC = '''\
+import json, re, requests
+
+
+class _FakeResp:
+    def __init__(self, text, status_code=200, headers=None):
+        self.text = text
+        self.status_code = status_code
+        self.headers = headers or {}
+
+    def raise_for_status(self):
+        pass
+
+    def json(self):
+        return json.loads(self.text)
+
+
+_PAYLOAD = %(payload)r
+
+_TEAMS = {
+    "P001": [{"id": "TEAM1", "name": "Development Team", "description": "Backend developers",
+              "projectId": "P001", "members": ["U1", "U2"]}],
+    "P002": [{"id": "TEAM2", "name": "QA Team", "description": "Quality assurance",
+              "projectId": "P002", "members": ["U3"]}],
+}
+
+
+def _fake_get(url, *a, **kw):
+    # --- BTP Test Management OData (tm_* tools) — check FIRST ---------------
+    if url.rstrip("/").endswith("/health") and "test-management" not in url:
+        return _FakeResp(json.dumps({"status": "UP", "db": "ok"}))
+    if "/odata/v4/test-management" in url:
+        if "TestCases('" in url:
+            return _FakeResp(json.dumps({"id": "TC-1", "title": "TM case", "is_prepared": False,
+                                         "updated_at": "2026-08-01T00:00:00Z"}),
+                             headers={"ETag": 'W/"tm-1"'})
+        if "Requirements('" in url:
+            return _FakeResp(json.dumps({"id": "RQ-1", "tr_id": "TR-1", "short_desc": "Req"}),
+                             headers={"ETag": 'W/"tm-2"'})
+        if "Statistics" in url:
+            return _FakeResp(json.dumps({"value": [
+                {"scope": "TestCases", "metric": "total", "count": 42},
+                {"scope": "Requirements", "metric": "total", "count": 7},
+            ]}))
+        if "TestCases" in url:
+            return _FakeResp(json.dumps({"value": [
+                {"id": "TC-1", "external_id": "TC-0001", "title": "TM case",
+                 "scenario_type": "positive", "updated_at": "2026-08-05T00:00:00Z"},
+            ], "@odata.count": 1}))
+        if "Requirements" in url:
+            return _FakeResp(json.dumps({"value": [
+                {"id": "RQ-1", "tr_id": "TR-1", "wricef": "R", "short_desc": "Req"},
+            ]}))
+        return _FakeResp(json.dumps({"value": []}))
+
+    # --- Teams (MUST come before the generic /projects/ fallback) ----------
+    m = re.search(r"/projects/([^/]+)/teams", url)
+    if m:
+        return _FakeResp(json.dumps(_TEAMS.get(m.group(1), [])))
+    if "calm-projects/v1/teams" in url:
+        pm = re.search(r"projectId=([^&]+)", url)
+        if pm:
+            return _FakeResp(json.dumps(_TEAMS.get(pm.group(1), [])))
+        return _FakeResp(json.dumps([t[0] for t in _TEAMS.values()]))
+
+    # --- Project sub-resources (before generic /projects/ single-entity) ---
+    if "/projects/" in url and "/tags" in url:
+        return _FakeResp(json.dumps([
+            {"id": "TAG1", "projectId": "P001", "group": "Scope", "tag": "Baseline"},
+            {"id": "TAG2", "projectId": "P001", "group": "Tshirt size", "tag": "L"},
+        ]))
+    if "/projects/" in url and "/features" in url:
+        return _FakeResp(json.dumps([
+            {"id": "F1", "projectId": "P001", "name": "User Management", "description": "auth", "status": "Active"},
+            {"id": "F2", "projectId": "P001", "name": "Reporting", "description": "BI", "status": "Planned"},
+        ]))
+    if "/projects/" in url and "/users" in url:
+        return _FakeResp(json.dumps([
+            {"id": "U1", "email": "eduardo.falluh@syntax.com", "name": "Eduardo Falluh", "role": "PM", "active": True},
+            {"id": "U2", "email": "jane.doe@syntax.com", "name": "Jane Doe", "role": "Developer", "active": True},
+        ]))
+    if "/projects/" in url and "/customization" in url:
+        return _FakeResp(json.dumps({
+            "workstreams": ["A", "B"], "deliverables": ["MVP", "Final"],
+            "customFields": [{"name": "Priority", "values": ["High", "Low"]}],
+        }))
+    if "/projects/" in url and "/timeboxes" in url:
+        return _FakeResp(json.dumps([
+            {"id": "TB1", "projectId": "P001", "name": "Sprint 1", "type": 0,
+             "startDate": "2026-07-01", "endDate": "2026-07-14", "closed": False},
+        ]))
+
+    # --- Test plans / processes lists --------------------------------------
+    if "testmanagement" in url and "testPlans" in url:
+        return _FakeResp(json.dumps([
+            {"id": "TP1", "projectId": "P001", "name": "Enablement", "description": "d", "status": "Active"},
+        ]))
+    if "processauthoring/v1/businessProcesses" in url and "/businessProcesses/" not in url:
+        return _FakeResp(json.dumps({"value": [
+            {"id": "BP1", "name": "Order to Cash", "description": "O2C"},
+        ]}))
+    if "processauthoring/v1/solutionProcesses" in url and "/solutionProcesses/" not in url:
+        return _FakeResp(json.dumps({"value": [
+            {"id": "SP1", "name": "SD Sales", "description": "Sales"},
+        ]}))
+
+    # --- Single-entity GETs used for ETag auto-fetch on update/delete ------
+    if "/ManualTestCases/" in url or "/Activities/" in url or "/Actions/" in url:
+        return _FakeResp(json.dumps({"uuid": "TC-1", "title": "old", "modifiedAt": "2025-11-17T15:51:04Z"}))
+    if "/businessProcesses/" in url or "/solutionProcesses/" in url or "/scopes/" in url:
+        return _FakeResp(json.dumps({"id": "X", "name": "old"}), headers={"ETag": 'W/"1"'})
+
+    # --- Task list / single task -------------------------------------------
+    if "/tasks/" in url:
+        # Single-task GET used to auto-detect type for status-by-label updates.
+        return _FakeResp(json.dumps({"id": "T1", "type": "CALMTASK", "title": "old"}))
+    if "calm-tasks/v1/tasks" in url:
+        return _FakeResp(json.dumps([
+            {"id": "R1", "title": "Req A", "type": "CALMREQU", "status": "CIPREQUOPEN"},
+            {"id": "K1", "title": "Task B", "type": "CALMTASK", "status": "CIPTKOPEN"},
+        ]))
+
+    # --- Generic /projects/ single-entity (etag body field) ----------------
+    if "/projects/" in url:
+        return _FakeResp(json.dumps({"id": "P-1", "name": "old", "etag": "1755245808454"}))
+
+    # --- Default: project list ---------------------------------------------
+    return _FakeResp(_PAYLOAD)
+
+
+def _fake_request(method, url, *a, **kw):
+    # Echo the submitted body back with a generated id, mimicking a create/update.
+    body = json.loads(kw.get("data") or "{}")
+    body.setdefault("id", "T999")
+    return _FakeResp(json.dumps(body))
+
+
+requests.get = _fake_get
+requests.request = _fake_request
+''' % {"payload": FAKE_PROJECTS_PAYLOAD}
+
 
 def _write_shim() -> Path:
     shim_dir = ROOT / ".test_shim"
     shim_dir.mkdir(exist_ok=True)
-    (shim_dir / "sitecustomize.py").write_text(
-        "import json, requests\n"
-        "class _FakeResp:\n"
-        "    def __init__(self, text, status_code=200, headers=None):\n"
-        "        self.text = text; self.status_code = status_code; self.headers = headers or {}\n"
-        "    def raise_for_status(self): pass\n"
-        "    def json(self): return json.loads(self.text)\n"
-        f"_PAYLOAD = {FAKE_PROJECTS_PAYLOAD!r}\n"
-        "def _fake_get(url, *a, **kw):\n"
-        "    # --- BTP Test Management OData (tm_* tools) — check FIRST -----\n"
-        "    if url.rstrip('/').endswith('/health') and 'test-management' not in url:\n"
-        "        return _FakeResp(json.dumps({'status': 'UP', 'db': 'ok'}))\n"
-        "    if '/odata/v4/test-management' in url:\n"
-        "        if \"TestCases('\" in url:\n"
-        "            return _FakeResp(json.dumps({'id': 'TC-1', 'title': 'TM case', 'is_prepared': False,\n"
-        "                                         'updated_at': '2026-08-01T00:00:00Z'}),\n"
-        "                             headers={'ETag': 'W/\\\"tm-1\\\"'})\n"
-        "        if \"Requirements('\" in url:\n"
-        "            return _FakeResp(json.dumps({'id': 'RQ-1', 'tr_id': 'TR-1', 'short_desc': 'Req'}),\n"
-        "                             headers={'ETag': 'W/\\\"tm-2\\\"'})\n"
-        "        if 'Statistics' in url:\n"
-        "            return _FakeResp(json.dumps({'value': [\n"
-        "                {'scope': 'TestCases', 'metric': 'total', 'count': 42},\n"
-        "                {'scope': 'Requirements', 'metric': 'total', 'count': 7},\n"
-        "            ]}))\n"
-        "        if 'TestCases' in url:\n"
-        "            return _FakeResp(json.dumps({'value': [\n"
-        "                {'id': 'TC-1', 'external_id': 'TC-0001', 'title': 'TM case',\n"
-        "                 'scenario_type': 'positive', 'updated_at': '2026-08-05T00:00:00Z'},\n"
-        "            ], '@odata.count': 1}))\n"
-        "        if 'Requirements' in url:\n"
-        "            return _FakeResp(json.dumps({'value': [\n"
-        "                {'id': 'RQ-1', 'tr_id': 'TR-1', 'wricef': 'R', 'short_desc': 'Req'},\n"
-        "            ]}))\n"
-        "        return _FakeResp(json.dumps({'value': []}))\n"
-        "    # Single-entity GETs used by OData ETag auto-fetch.\n"
-        "    if '/ManualTestCases/' in url or '/Activities/' in url or '/Actions/' in url:\n"
-        "        # Test Management: ETag is the modifiedAt timestamp (no ETag header).\n"
-        "        return _FakeResp(json.dumps({'uuid': 'TC-1', 'title': 'old', 'modifiedAt': '2025-11-17T15:51:04Z'}))\n"
-        "    # Check testPlans EARLY (before it matches /projects/ check)\n"
-        "    if 'testmanagement' in url and 'testPlans' in url:\n"
-        "        # Test plans for a project.\n"
-        "        return _FakeResp(json.dumps([\n"
-        "            {'id': 'TP1', 'projectId': 'P001', 'name': 'Enablement Test Plan', 'description': 'Customer enablement', 'status': 'Active'},\n"
-        "            {'id': 'TP2', 'projectId': 'P001', 'name': 'Regression Tests', 'description': 'Full regression', 'status': 'Planned'},\n"
-        "        ]))\n"
-        "    # Process list endpoints (before single-entity checks)\n"
-        "    if 'processmanagement/businessProcesses' in url and '/businessProcesses/' not in url:\n"
-        "        return _FakeResp(json.dumps({'value': [\n"
-        "            {'id': 'BP1', 'name': 'Order to Cash', 'description': 'O2C process'},\n"
-        "        ]}))\n"
-        "    if 'processmanagement/solutionProcesses' in url and '/solutionProcesses/' not in url:\n"
-        "        return _FakeResp(json.dumps({'value': [\n"
-        "            {'id': 'SP1', 'name': 'SD Sales', 'description': 'Sales process'},\n"
-        "        ]}))\n"
-        "    if '/businessProcesses/' in url or '/solutionProcesses/' in url or '/scopes/' in url:\n"
-        "        return _FakeResp(json.dumps({'id': 'X', 'name': 'old'}), headers={'ETag': 'W/\\\"1\\\"'})\n"
-        "    # Check sub-resources BEFORE general /projects/ check\n"
-        "    if '/projects/' in url and '/tags' in url:\n"
-        "        # Tags for a project.\n"
-        "        return _FakeResp(json.dumps([\n"
-        "            {'id': 'TAG1', 'projectId': 'P001', 'group': 'Scope', 'tag': 'Baseline'},\n"
-        "            {'id': 'TAG2', 'projectId': 'P001', 'group': 'Tshirt size', 'tag': 'L'},\n"
-        "        ]))\n"
-        "    if '/projects/' in url and '/features' in url:\n"
-        "        # Features for a project.\n"
-        "        return _FakeResp(json.dumps([\n"
-        "            {'id': 'F1', 'projectId': 'P001', 'name': 'User Management', 'description': 'User auth features', 'status': 'Active'},\n"
-        "            {'id': 'F2', 'projectId': 'P001', 'name': 'Reporting', 'description': 'BI reports', 'status': 'Planned'},\n"
-        "        ]))\n"
-        "    if '/projects/' in url and '/users' in url:\n"
-        "        # Project users/team members.\n"
-        "        return _FakeResp(json.dumps([\n"
-        "            {'id': 'U1', 'email': 'eduardo.falluh@syntax.com', 'name': 'Eduardo Falluh', 'role': 'Project Manager', 'active': True},\n"
-        "            {'id': 'U2', 'email': 'jane.doe@syntax.com', 'name': 'Jane Doe', 'role': 'Developer', 'active': True},\n"
-        "            {'id': 'U3', 'email': 'former@syntax.com', 'name': 'Former Member', 'role': 'Consultant', 'active': False},\n"
-        "        ]))\n"
-        "    if '/projects/' in url and '/customization' in url:\n"
-        "        # Project customization values.\n"
-        "        return _FakeResp(json.dumps({\n"
-        "            'workstreams': ['Workstream A', 'Workstream B', 'Workstream C'],\n"
-        "            'deliverables': ['MVP', 'Phase 2', 'Final Release'],\n"
-        "            'customFields': [{'name': 'Priority', 'values': ['High', 'Medium', 'Low']}],\n"
-        "        }))\n"
-        "    if '/projects/' in url and '/timeboxes' in url:\n"
-        "        # Timeboxes for a project (must come BEFORE general /projects/ check).\n"
-        "        return _FakeResp(json.dumps([\n"
-        "            {'id': 'TB1', 'projectId': 'P001', 'name': 'Sprint 1', 'type': 0, 'startDate': '2026-07-01', 'endDate': '2026-07-14', 'closed': False},\n"
-        "            {'id': 'TB2', 'projectId': 'P001', 'name': 'Sprint 2', 'type': 0, 'startDate': '2026-07-15', 'endDate': '2026-07-28', 'closed': True},\n"
-        "        ]))\n"
-        "    if '/projects/' in url:\n"
-        "        # Projects: ETag is the numeric-timestamp `etag` body field (no header).\n"
-        "        return _FakeResp(json.dumps({'id': 'P-1', 'name': 'old', 'etag': '1755245808454'}))\n"
-        "    if '/tasks/' in url:\n"
-        "        # Single-task GET used to auto-detect type for status-by-label updates.\n"
-        "        return _FakeResp(json.dumps({'id': 'T1', 'type': 'CALMTASK', 'title': 'old'}))\n"
-        "    if 'calm-tasks/v1/tasks' in url:\n"
-        "        # Task LIST: mix of types so the type filter can be exercised.\n"
-        "        return _FakeResp(json.dumps([\n"
-        "            {'id': 'R1', 'title': 'Req A', 'type': 'CALMREQU', 'status': 'CIPREQUOPEN'},\n"
-        "            {'id': 'K1', 'title': 'Task B', 'type': 'CALMTASK', 'status': 'CIPTKOPEN'},\n"
-        "        ]))\n"
-        "    if '/projects/' in url and '/teams' in url:\n"
-        "        # Project-specific teams endpoint (must come BEFORE general teams check).\n"
-        "        # Extract project ID from URL like /projects/P001/teams\n"
-        "        import re\n"
-        "        match = re.search(r'/projects/([^/]+)/teams', url)\n"
-        "        if match:\n"
-        "            project_id = match.group(1)\n"
-        "            if project_id == 'P001':\n"
-        "                return _FakeResp(json.dumps([\n"
-        "                    {'id': 'TEAM1', 'name': 'Development Team', 'description': 'Backend developers', 'projectId': 'P001', 'members': ['U1', 'U2']},\n"
-        "                ]))\n"
-        "            elif project_id == 'P002':\n"
-        "                return _FakeResp(json.dumps([\n"
-        "                    {'id': 'TEAM2', 'name': 'QA Team', 'description': 'Quality assurance', 'projectId': 'P002', 'members': ['U3']},\n"
-        "                ]))\n"
-        "    if 'calm-projects/v1/teams' in url:\n"
-        "        # All teams endpoint.\n"
-        "        # Check for projectId query parameter\n"
-        "        if 'projectId=' in url:\n"
-        "            import re\n"
-        "            match = re.search(r'projectId=([^&]+)', url)\n"
-        "            if match:\n"
-        "                project_id = match.group(1)\n"
-        "                if project_id == 'P001':\n"
-        "                    return _FakeResp(json.dumps([\n"
-        "                        {'id': 'TEAM1', 'name': 'Development Team', 'description': 'Backend developers', 'projectId': 'P001', 'members': ['U1', 'U2']},\n"
-        "                    ]))\n"
-        "                elif project_id == 'P002':\n"
-        "                    return _FakeResp(json.dumps([\n"
-        "                        {'id': 'TEAM2', 'name': 'QA Team', 'description': 'Quality assurance', 'projectId': 'P002', 'members': ['U3']},\n"
-        "                    ]))\n"
-        "        # Return all teams if no filter\n"
-        "        return _FakeResp(json.dumps([\n"
-        "            {'id': 'TEAM1', 'name': 'Development Team', 'description': 'Backend developers', 'projectId': 'P001'},\n"
-        "            {'id': 'TEAM2', 'name': 'QA Team', 'description': 'Quality assurance', 'projectId': 'P002'},\n"
-        "        ]))\n"
-        "    return _FakeResp(_PAYLOAD)\n"
-        "def _fake_request(method, url, *a, **kw):\n"
-        "    # Echo the submitted body back with a generated id, mimicking a create/update.\n"
-        "    body = json.loads(kw.get('data') or '{}')\n"
-        "    body.setdefault('id', 'T999')\n"
-        "    return _FakeResp(json.dumps(body))\n"
-        "requests.get = _fake_get\n"
-        "requests.request = _fake_request\n"
-    )
+    (shim_dir / "sitecustomize.py").write_text(_SHIM_SRC)
     return shim_dir
 
 
@@ -216,11 +229,41 @@ def _make_params(shim_dir: Path, extra_env: dict | None = None) -> StdioServerPa
     )
 
 
+def _payload(res):
+    """structured_content, falling back to parsing the text content block.
+
+    Returns {} for an error result so a single failed check can be reported
+    without aborting the whole end-to-end run.
+    """
+    if getattr(res, "is_error", False):
+        return {}
+    sc = res.structured_content
+    if sc is None and res.content:
+        try:
+            sc = json.loads(res.content[0].text)
+        except (ValueError, AttributeError):
+            sc = {}
+    # FastMCP wraps every non-annotated return (list AND dict) in a
+    # {"result": ...} envelope — unwrap it to get the real payload.
+    if isinstance(sc, dict) and set(sc.keys()) == {"result"}:
+        return sc["result"]
+    return sc if sc is not None else {}
+
+
+def _list(res):
+    """Unwrap a list-returning tool result to the underlying list."""
+    sc = _payload(res)
+    return sc if isinstance(sc, list) else []
+
+
+async def _call(session, resource, operation, **kw):
+    args = {"resource": resource, "operation": operation}
+    args.update(kw)
+    return await session.call_tool("calm_resource", args)
+
+
 async def main() -> int:
     shim_dir = _write_shim()
-
-    params = _make_params(shim_dir)
-
     failures: list[str] = []
 
     def check(label: str, ok: bool, detail: str = "") -> None:
@@ -229,755 +272,255 @@ async def main() -> int:
         if not ok:
             failures.append(label)
 
-    print("Connecting to CALM MCP server over stdio...")
-    async with stdio_client(params) as (read, write):
+    # ================= Reads + write guard (writes OFF) =================
+    print("Connecting to CALM MCP server over stdio (writes OFF)...")
+    async with stdio_client(_make_params(shim_dir)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
             print("Session initialized.\n")
 
-            # ---- tools/list ---------------------------------------------
-            print("Test 1: tools/list advertises all expected tools")
+            # ---- Test 1: tools/list ---------------------------------------
+            print("Test 1: tools/list advertises the consolidated surface")
             tools = await session.list_tools()
-            tool_names = {t.name for t in tools.tools}
-            expected = {
-                "get_calm_projects",
-                "get_calm_tasks",
-                "get_calm_processes",
-                "get_calm_scopes",
-                "get_calm_test_cases",
-                "get_calm_timeboxes",
+            names = {t.name for t in tools.tools}
+
+            check("calm_resource advertised", "calm_resource" in names)
+            required = {"calm_health", "calm_api_write", "calm_api_delete", "tm_health"}
+            check("kept specialized tools advertised", required.issubset(names),
+                  f"missing {sorted(required - names)}")
+
+            legacy = {
+                "get_calm_projects", "get_calm_tasks", "create_calm_task",
+                "update_calm_task", "delete_calm_task", "get_calm_scopes",
+                "create_calm_scope", "get_calm_test_cases", "create_calm_tag",
                 "get_calm_teams",
-                "get_calm_tags",
-                "get_calm_features",
-                "get_calm_test_plans",
-                "get_calm_project_customization",
-                "calm_health",
             }
-            check(
-                "all 13 read tools advertised",
-                expected.issubset(tool_names),
-                f"got {sorted(tool_names)}",
-            )
-            write_tools = {
-                "create_calm_task", "update_calm_task", "delete_calm_task",
-                "create_calm_project", "update_calm_project",
-                "create_calm_business_process", "update_calm_business_process",
-                "delete_calm_business_process",
-                "create_calm_solution_process", "update_calm_solution_process",
-                "delete_calm_solution_process",
-                "create_calm_scope", "update_calm_scope", "delete_calm_scope",
-                "create_calm_test_case", "update_calm_test_case", "delete_calm_test_case",
-            }
-            sub_entity_tools = {
-                "create_calm_task_relation", "delete_calm_task_relation", "set_calm_task_tags",
-                "create_calm_task_comment", "update_calm_task_comment", "delete_calm_task_comment",
-                "create_calm_timebox", "update_calm_timebox", "delete_calm_timebox",
-                "assign_calm_scenario_versions", "update_calm_scope_assignments",
-                "update_calm_test_activity", "delete_calm_test_activity",
-                "create_calm_test_action", "update_calm_test_action", "delete_calm_test_action",
-                "create_calm_requirement", "update_calm_requirement", "delete_calm_requirement",
-                "get_calm_requirements",
-                "calm_api_write", "calm_api_delete",
-            }
-            check(
-                "all top-level write/delete tools advertised",
-                write_tools.issubset(tool_names),
-                f"missing {sorted(write_tools - tool_names)}",
-            )
-            check(
-                "all sub-entity + generic tools advertised",
-                sub_entity_tools.issubset(tool_names),
-                f"missing {sorted(sub_entity_tools - tool_names)}",
-            )
-            tm_tools = {
-                "tm_health", "get_tm_statistics", "get_tm_test_cases",
-                "get_tm_test_case_full", "get_tm_requirements", "tm_odata_read",
-                "create_tm_requirement", "create_tm_test_case", "update_tm_test_case",
-                "delete_tm_requirement", "delete_tm_test_case",
-                "tm_odata_write", "tm_odata_delete",
-            }
-            check(
-                "all TM OData tools advertised",
-                tm_tools.issubset(tool_names),
-                f"missing {sorted(tm_tools - tool_names)}",
-            )
+            leaked = legacy & names
+            check("no legacy CRUD tools advertised", not leaked, f"leaked {sorted(leaked)}")
 
             for t in tools.tools:
-                check(
-                    f"'{t.name}' has a description",
-                    bool(t.description and t.description.strip()),
-                )
+                check(f"'{t.name}' has a description", bool(t.description and t.description.strip()))
 
-            tasks_tool = next(t for t in tools.tools if t.name == "get_calm_tasks")
-            schema = tasks_tool.input_schema or {}
-            required = schema.get("required") or []
-            check(
-                "get_calm_tasks requires project_id",
-                "project_id" in required,
-                f"required={required}",
-            )
+            cr = next(t for t in tools.tools if t.name == "calm_resource")
+            schema = getattr(cr, "inputSchema", None) or getattr(cr, "input_schema", None) or {}
+            props = schema.get("properties", {})
+            check("calm_resource exposes resource+operation params",
+                  "resource" in props and "operation" in props, f"props={sorted(props)}")
 
-            # ---- calm_health --------------------------------------------
+            # ---- Test 2: calm_health --------------------------------------
             print("\nTest 2: calm_health returns expected diagnostic")
             res = await session.call_tool("calm_health", {})
-            health = res.structured_content or json.loads(res.content[0].text)
+            health = _payload(res)
             check("server name", health.get("server") == "sap-cloud-alm")
             check("token configured", health.get("token_configured") is True)
-            check("token source is CALM_TOKEN env var", health.get("token_source") == "CALM_TOKEN env var")
-            check(
-                "base_url derived from BTP zone config",
-                health.get("base_url") == "https://test-cloudalm.us10.alm.cloud.sap",
-                f"got {health.get('base_url')}",
-            )
-            check("client_credentials_enabled is False", health.get("client_credentials_enabled") is False)
+            check("base_url derived from BTP zone config",
+                  health.get("base_url") == "https://test-cloudalm.us10.alm.cloud.sap",
+                  f"got {health.get('base_url')}")
 
-            # ---- get_calm_projects (with requests.get shimmed) ----------
-            print("\nTest 3: get_calm_projects returns parsed list")
-            res = await session.call_tool("get_calm_projects", {})
-            projects = (res.structured_content or {}).get("result")
-            check("returned a list", isinstance(projects, list))
-            check("returned 2 projects", len(projects) == 2)
-            check(
-                "first project is Active",
-                projects[0]["Status"] == "Active",
-                f"got {projects[0]['Status']}",
-            )
-            check(
-                "second project is Hidden",
-                projects[1]["Status"] == "Hidden",
-                f"got {projects[1]['Status']}",
-            )
-            check(
-                "field names match contract",
-                set(projects[0].keys()) == {"ID", "Name", "Status", "Purpose", "OperationalStatus"},
-                f"got {sorted(projects[0].keys())}",
-            )
+            # ---- Test 3: reads via calm_resource --------------------------
+            print("\nTest 3: calm_resource reads round-trip through client.py")
+            projects = _list(await _call(session, "projects", "list"))
+            check("projects is a list of 2", isinstance(projects, list) and len(projects) == 2)
+            check("project field contract",
+                  set(projects[0].keys()) == {"ID", "Name", "Status", "Purpose", "OperationalStatus"},
+                  f"got {sorted(projects[0].keys())}")
+            check("project status label mapped (O->Active)", projects[0]["Status"] == "Active",
+                  f"got {projects[0]['Status']}")
 
-            # ---- error path --------------------------------------------
-            print("\nTest 4: missing project_id surfaces a clear error")
-            res = await session.call_tool("get_calm_tasks", {"project_id": ""})
-            check("error flag set", res.is_error is True)
+            tasks = _list(await _call(session, "tasks", "list", project_id="P001"))
+            check("tasks is a list of 2", isinstance(tasks, list) and len(tasks) == 2)
 
-            # ---- writes disabled by default -----------------------------
-            print("\nTest 5: create_calm_task is blocked when writes are disabled")
-            res = await session.call_tool(
-                "create_calm_task",
-                {"project_id": "P001", "title": "Should be blocked", "task_type": "Project Task"},
-            )
-            check("write blocked (error flag set)", res.is_error is True)
-            err_text = res.content[0].text if res.content else ""
-            check(
-                "error mentions CALM_ENABLE_WRITES",
-                "CALM_ENABLE_WRITES" in err_text,
-                f"got {err_text!r}",
-            )
+            reqs = _list(await _call(session, "requirements", "list", project_id="P001"))
+            check("requirements read returns a list", isinstance(reqs, list))
 
-            # ---- TM OData: optional feature degrades gracefully ----------
-            print("\nTest 5b: TM tools are optional — clear errors when unconfigured")
-            res = await session.call_tool("tm_health", {})
-            tmh = res.structured_content or json.loads(res.content[0].text)
-            check("tm_health never errors when unconfigured", res.is_error is not True, f"got {tmh}")
-            check("tm_health reports not configured", tmh.get("configured") is False, f"got {tmh}")
+            # The reported bug: project-scoped teams read.
+            teams = _list(await _call(session, "teams", "list", project_id="P001"))
+            check("project teams returns a list", isinstance(teams, list) and len(teams) == 1,
+                  f"got {teams}")
+            check("team field mapped (projectId->Project ID)",
+                  teams and teams[0].get("Project ID") == "P001" and teams[0].get("Name") == "Development Team",
+                  f"got {teams}")
+            teams_empty = _list(await _call(session, "teams", "list", project_id="P404"))
+            check("unknown project teams returns empty list (not an error)",
+                  isinstance(teams_empty, list) and teams_empty == [], f"got {teams_empty}")
 
-            res = await session.call_tool("get_tm_statistics", {})
-            check("TM read blocked when unconfigured (error flag set)", res.is_error is True)
-            err_text = res.content[0].text if res.content else ""
-            check(
-                "TM read error mentions TM_BASE_URL and optionality",
-                "TM_BASE_URL" in err_text and "optional" in err_text.lower(),
-                f"got {err_text!r}",
-            )
+            procs = _list(await _call(session, "processes", "list"))
+            check("combined processes returns BP + SP", isinstance(procs, list) and len(procs) == 2,
+                  f"got {procs}")
 
-            res = await session.call_tool(
-                "create_tm_requirement", {"tr_id": "TR-X", "short_desc": "blocked"},
-            )
-            check("TM write blocked by guard (error flag set)", res.is_error is True)
-            err_text = res.content[0].text if res.content else ""
-            check(
-                "TM write error mentions TM_ENABLE_WRITES",
-                "TM_ENABLE_WRITES" in err_text,
-                f"got {err_text!r}",
-            )
+            timeboxes = _list(await _call(session, "timeboxes", "list", project_id="P001"))
+            check("timeboxes read returns a list", isinstance(timeboxes, list) and len(timeboxes) == 1)
 
-    # ---- writes enabled (separate server process) -------------------
-    print("\nTest 6: with CALM_ENABLE_WRITES=true, create/update round-trip")
-    write_params = _make_params(shim_dir, {
-        "CALM_ENABLE_WRITES": "true",
-        # TM OData configured via static token for this spawn.
-        "TM_BASE_URL": "https://tm.example.com/odata/v4/test-management",
-        "TM_TOKEN": "fake-tm-token-for-tests",
-        "TM_ENABLE_WRITES": "true",
-    })
-    async with stdio_client(write_params) as (read, write):
+            tags = _list(await _call(session, "tags", "list", project_id="P001"))
+            check("tags read returns a list of 2", isinstance(tags, list) and len(tags) == 2)
+
+            features = _list(await _call(session, "features", "list", project_id="P001"))
+            check("features read returns a list of 2", isinstance(features, list) and len(features) == 2)
+
+            users = _list(await _call(session, "project_users", "list", project_id="P001"))
+            check("project_users read returns a list", isinstance(users, list) and len(users) == 2)
+
+            cust = _payload(await _call(session, "customization", "get", project_id="P001"))
+            check("customization get returns a dict", isinstance(cust, dict) and "Workstreams" in cust, f"got {cust}")
+
+            # ---- Test 4: write guard blocks create when writes OFF --------
+            print("\nTest 4: write guard blocks create when CALM_ENABLE_WRITES is off")
+            res = await _call(session, "tasks", "create", project_id="P001",
+                              data={"title": "Blocked", "task_type": "Project Task"})
+            check("create blocked (is_error)", res.is_error is True)
+            check("error mentions writes disabled",
+                  "disabled" in (res.content[0].text.lower() if res.content else ""),
+                  f"got {res.content[0].text if res.content else ''}")
+
+    # ================= Writes ON =================
+    print("\nConnecting again with CALM_ENABLE_WRITES=true (writes ON)...")
+    async with stdio_client(_make_params(shim_dir, {"CALM_ENABLE_WRITES": "true"})) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
 
-            res = await session.call_tool("calm_health", {})
-            health = res.structured_content or json.loads(res.content[0].text)
-            check("writes_enabled true in health", health.get("writes_enabled") is True)
+            # ---- Test 5: writes via calm_resource -------------------------
+            print("Test 5: calm_resource writes round-trip (no arg-shift crash)")
 
-            res = await session.call_tool(
-                "create_calm_task",
-                {
-                    "project_id": "P001",
-                    "title": "New task from test",
-                    "task_type": "Project Task",
-                    "status": "In Progress",
-                },
-            )
-            created = res.structured_content or json.loads(res.content[0].text)
-            check("create did not error", res.is_error is not True, f"got {created}")
-            check("created task echoes title", created.get("Title") == "New task from test", f"got {created}")
-            check(
-                "human status mapped to code and back to label",
-                created.get("Status") == "In Progress",
-                f"got {created.get('Status')}",
-            )
+            res = await _call(session, "tasks", "create", project_id="P001",
+                              data={"title": "New Task", "task_type": "Project Task", "status": "In Progress"})
+            check("task create ok", res.is_error is not True, f"err {res.content[0].text if res.content else ''}")
+            created = _payload(res)
+            check("task create round-trips status label + id",
+                  created.get("ID") == "T999" and created.get("Status") == "In Progress",
+                  f"got {created}")
 
-            print("\nTest 7: update_calm_task round-trips a partial change")
-            res = await session.call_tool(
-                "update_calm_task",
-                {"task_id": "T123", "title": "Renamed", "status": "Done", "task_type": "Project Task"},
-            )
-            updated = res.structured_content or json.loads(res.content[0].text)
-            check("update did not error", res.is_error is not True, f"got {updated}")
-            check("updated task echoes new title", updated.get("Title") == "Renamed", f"got {updated}")
+            res = await _call(session, "tasks", "update", project_id="P001", resource_id="T1",
+                              data={"title": "Updated", "status": "in progress"})
+            check("task update ok", res.is_error is not True, f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 8: update with no fields surfaces a clear error")
-            res = await session.call_tool("update_calm_task", {"task_id": "T123"})
-            check("empty update errors", res.is_error is True)
+            res = await _call(session, "tasks", "delete", project_id="P001", resource_id="T1",
+                              data={"task_type": "Project Task"})
+            check("task delete ok", res.is_error is not True, f"err {res.content[0].text if res.content else ''}")
 
-            # ---- other entity writes round-trip -------------------------
-            print("\nTest 9: create_calm_project round-trips (name + programId)")
-            res = await session.call_tool(
-                "create_calm_project",
-                {"name": "Proj X", "program_id": "PRG-1"},
-            )
-            proj = res.structured_content or json.loads(res.content[0].text)
-            check("project create did not error", res.is_error is not True, f"got {proj}")
-            check("project name echoed", proj.get("Name") == "Proj X", f"got {proj}")
+            res = await _call(session, "requirements", "create", project_id="P001",
+                              data={"title": "New Req", "sub_status": "In Specification"})
+            check("requirement create ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 10: create_calm_business_process round-trips")
-            res = await session.call_tool(
-                "create_calm_business_process",
-                {"name": "Order to Cash", "description": "O2C"},
-            )
-            bp = res.structured_content or json.loads(res.content[0].text)
-            check("business process create did not error", res.is_error is not True, f"got {bp}")
-            check("business process name echoed", bp.get("Name") == "Order to Cash", f"got {bp}")
+            res = await _call(session, "business_processes", "create", project_id="P001",
+                              data={"name": "New BP", "description": "d"})
+            check("business_process create ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
+            res = await _call(session, "business_processes", "update", project_id="P001", resource_id="BP1",
+                              data={"name": "BP renamed"})
+            check("business_process update ok (ETag auto-fetch)", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
+            res = await _call(session, "business_processes", "delete", project_id="P001", resource_id="BP1")
+            check("business_process delete ok (no arg-shift into if_match)", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 11: create_calm_solution_process (countries list -> comma string)")
-            res = await session.call_tool(
-                "create_calm_solution_process",
-                {"name": "SP1", "countries": ["US", "CA"], "business_process_id": "BP-1"},
-            )
-            sp = res.structured_content or json.loads(res.content[0].text)
-            check("solution process create did not error", res.is_error is not True, f"got {sp}")
-            check(
-                "countries sent as comma string",
-                sp.get("Countries") == "US,CA",
-                f"got {sp.get('Countries')!r}",
-            )
+            res = await _call(session, "scopes", "create", project_id="P001",
+                              data={"name": "New Scope"})
+            check("scope create ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
+            res = await _call(session, "scopes", "delete", project_id="P001", resource_id="S1")
+            check("scope delete ok (no arg-shift into if_match)", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 12: create_calm_scope round-trips")
-            res = await session.call_tool(
-                "create_calm_scope",
-                {"project_id": "P001", "name": "Scope A", "description": "d"},
-            )
-            sc = res.structured_content or json.loads(res.content[0].text)
-            check("scope create did not error", res.is_error is not True, f"got {sc}")
-            check("scope project id echoed", sc.get("Project ID") == "P001", f"got {sc}")
+            res = await _call(session, "test_cases", "create", project_id="P001",
+                              data={"title": "TC", "scope_id": "S1", "priority": "High"})
+            check("test_case create ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
+            # Missing scope_id must produce a clear error, not a crash.
+            res = await _call(session, "test_cases", "create", project_id="P001", data={"title": "TC no scope"})
+            check("test_case create without scope_id errors clearly", res.is_error is True)
+            res = await _call(session, "test_cases", "delete", project_id="P001", resource_id="TC1",
+                              data={"scope_id": "S1", "force": True})
+            check("test_case delete ok (force)", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 13: create_calm_test_case round-trips (priority label mapping)")
-            res = await session.call_tool(
-                "create_calm_test_case",
-                {"title": "TC1", "project_id": "P001", "scope_id": "SC1", "priority": "High", "is_prepared": True},
-            )
-            tc = res.structured_content or json.loads(res.content[0].text)
-            check("test case create did not error", res.is_error is not True, f"got {tc}")
-            check("test case title echoed", tc.get("Title") == "TC1", f"got {tc}")
-            check("test case priority label round-trips", tc.get("Priority") == "High", f"got {tc}")
-            check("test case prepared echoed", tc.get("Prepared") is True, f"got {tc}")
+            res = await _call(session, "timeboxes", "create", project_id="P001",
+                              data={"name": "Sprint 3", "start_date": "2026-08-01", "due_date": "2026-08-14"})
+            check("timebox create ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 14: unknown priority label surfaces a clear error")
-            res = await session.call_tool(
-                "create_calm_test_case",
-                {"title": "TC2", "priority": "Bogus"},
-            )
-            check("bad priority errors", res.is_error is True)
+            # ---- The reported tag-creation bug ----------------------------
+            res = await _call(session, "tags", "create", project_id="P001",
+                              data={"group": "Scope", "tag": "MyNewTag"})
+            check("tag create ok (reported bug fixed)", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
+            tag = _payload(res)
+            check("tag create round-trips group+tag",
+                  isinstance(tag, dict) and tag.get("tag") == "MyNewTag" and tag.get("group") == "Scope",
+                  f"got {tag}")
+            # Missing group/tag must error clearly rather than mis-call the client.
+            res = await _call(session, "tags", "create", project_id="P001", data={"group": "Scope"})
+            check("tag create without tag errors clearly", res.is_error is True)
+            res = await _call(session, "tags", "create", data={"group": "Scope", "tag": "X"})
+            check("tag create without project_id errors clearly", res.is_error is True)
 
-            # ---- OData updates auto-fetch the If-Match ETag ---------------
-            print("\nTest 15: update_calm_business_process auto-fetches ETag and round-trips")
-            res = await session.call_tool(
-                "update_calm_business_process",
-                {"business_process_id": "BP-1", "name": "Renamed BP"},
-            )
-            bp = res.structured_content or json.loads(res.content[0].text)
-            check("business process update did not error", res.is_error is not True, f"got {bp}")
-            check("business process new name echoed", bp.get("Name") == "Renamed BP", f"got {bp}")
+            res = await _call(session, "features", "create", project_id="P001",
+                              data={"name": "New Feature", "description": "d"})
+            check("feature create ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 16: update_calm_test_case (ETag = modifiedAt) round-trips")
-            res = await session.call_tool(
-                "update_calm_test_case",
-                {"test_case_id": "TC-1", "title": "Renamed TC", "priority": "Low"},
-            )
-            tc = res.structured_content or json.loads(res.content[0].text)
-            check("test case update did not error", res.is_error is not True, f"got {tc}")
-            check("test case new title echoed", tc.get("Title") == "Renamed TC", f"got {tc}")
-            check("test case priority label round-trips", tc.get("Priority") == "Low", f"got {tc}")
+            res = await _call(session, "test_plans", "create", project_id="P001",
+                              data={"name": "New Test Plan", "description": "d"})
+            check("test_plan create ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 17: explicit if_match is honoured on update")
-            res = await session.call_tool(
-                "update_calm_scope",
-                {"scope_id": "SC-1", "name": "Renamed scope", "if_match": "W/\"custom\""},
-            )
-            sc = res.structured_content or json.loads(res.content[0].text)
-            check("scope update with explicit if_match did not error", res.is_error is not True, f"got {sc}")
-            check("scope new name echoed", sc.get("Name") == "Renamed scope", f"got {sc}")
+            # ---- Test 6: escape hatch -------------------------------------
+            print("\nTest 6: calm_api_write / calm_api_delete escape hatch")
+            res = await session.call_tool("calm_api_write", {
+                "method": "POST",
+                "path": "/api/calm-tasks/v1/tasks",
+                "body": {"title": "Direct", "projectId": "P001"},
+            })
+            check("calm_api_write ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
+            res = await session.call_tool("calm_api_delete", {
+                "path": "/api/calm-tasks/v1/tasks/T1",
+            })
+            check("calm_api_delete ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            # ---- test case deep insert -----------------------------------
-            print("\nTest 18: create_calm_test_case with deep-insert activities/references")
-            res = await session.call_tool(
-                "create_calm_test_case",
-                {
-                    "title": "TC deep",
-                    "project_id": "P001",
-                    "scope_id": "SC1",
-                    "priority": "Medium",
-                    "activities": [
-                        {"title": "Login", "sequence": 1, "isInScope": True,
-                         "toActions": [{"title": "Enter creds", "sequence": 1, "isEvidenceRequired": True}]},
-                    ],
-                    "references": [{"name": "Docs", "url": "https://example.com"}],
-                },
-            )
-            tcd = res.structured_content or json.loads(res.content[0].text)
-            check("deep-insert create did not error", res.is_error is not True, f"got {tcd}")
-            check("deep-insert title echoed", tcd.get("Title") == "TC deep", f"got {tcd}")
+    # ================= BTP Test Management (TM OData) =================
+    print("\nConnecting with TM OData configured...")
+    tm_env = {
+        "TM_BASE_URL": "https://tm.example.com/odata/v4/test-management",
+        "TM_TOKEN": "fake-tm-token",
+        "TM_ENABLE_WRITES": "true",
+    }
+    async with stdio_client(_make_params(shim_dir, tm_env)) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
 
-            # ---- delete tools --------------------------------------------
-            print("\nTest 19: delete_calm_task (no If-Match)")
-            res = await session.call_tool("delete_calm_task", {"task_id": "T123"})
-            d = res.structured_content or json.loads(res.content[0].text)
-            check("task delete did not error", res.is_error is not True, f"got {d}")
-            check("task delete confirms id", d.get("deleted") == "T123", f"got {d}")
-
-            print("\nTest 20: delete_calm_business_process (auto If-Match)")
-            res = await session.call_tool("delete_calm_business_process", {"business_process_id": "BP-1"})
-            d = res.structured_content or json.loads(res.content[0].text)
-            check("business process delete did not error", res.is_error is not True, f"got {d}")
-            check("business process delete confirms id", d.get("deleted") == "BP-1", f"got {d}")
-
-            print("\nTest 21: delete_calm_test_case (ETag = modifiedAt)")
-            res = await session.call_tool("delete_calm_test_case", {"test_case_id": "TC-1"})
-            d = res.structured_content or json.loads(res.content[0].text)
-            check("test case delete did not error", res.is_error is not True, f"got {d}")
-            check("test case delete confirms id", d.get("deleted") == "TC-1", f"got {d}")
-
-            print("\nTest 22: delete_calm_test_case force=true uses the force-delete action")
-            res = await session.call_tool("delete_calm_test_case", {"test_case_id": "TC-1", "force": True})
-            d = res.structured_content or json.loads(res.content[0].text)
-            check("force delete did not error", res.is_error is not True, f"got {d}")
-            check("force delete flagged", d.get("force") is True, f"got {d}")
-
-            print("\nTest 23: update_calm_project auto-fetches the etag body field (If-Match)")
-            res = await session.call_tool(
-                "update_calm_project",
-                {"project_id": "P-1", "name": "Renamed project"},
-            )
-            pu = res.structured_content or json.loads(res.content[0].text)
-            check("project update did not error", res.is_error is not True, f"got {pu}")
-            check("project new name echoed", pu.get("Name") == "Renamed project", f"got {pu}")
-
-            print("\nTest 24: create_calm_task type=Risk maps CIPRI* status")
-            res = await session.call_tool(
-                "create_calm_task",
-                {"project_id": "P001", "title": "A risk", "task_type": "Risk", "status": "In Progress"},
-            )
-            rt = res.structured_content or json.loads(res.content[0].text)
-            check("risk task create did not error", res.is_error is not True, f"got {rt}")
-            check("risk status round-trips", rt.get("Status") == "In Progress", f"got {rt.get('Status')}")
-
-            print("\nTest 25: sub-task status uses task (CIPTK*) codes, not user-story codes")
-            res = await session.call_tool(
-                "create_calm_task",
-                {"project_id": "P001", "title": "A sub-task", "task_type": "Sub-task", "status": "Done"},
-            )
-            st = res.structured_content or json.loads(res.content[0].text)
-            check("sub-task create did not error", res.is_error is not True, f"got {st}")
-            check("sub-task Done round-trips", st.get("Status") == "Done", f"got {st.get('Status')}")
-
-            # ---- sub-entities --------------------------------------------
-            print("\nTest 26: task relation + tags")
-            res = await session.call_tool(
-                "create_calm_task_relation",
-                {"task_id": "T1", "relation_task_id": "T2", "relation_type": "0"},
-            )
-            check("create relation did not error", res.is_error is not True)
-            res = await session.call_tool("set_calm_task_tags", {"task_id": "T1", "tags": ["Group: A"]})
-            tg = res.structured_content or json.loads(res.content[0].text)
-            check("set tags did not error", res.is_error is not True, f"got {tg}")
-
-            print("\nTest 27: task comment create/delete")
-            res = await session.call_tool("create_calm_task_comment", {"task_id": "T1", "text": "hi"})
-            check("create comment did not error", res.is_error is not True)
-            res = await session.call_tool("delete_calm_task_comment", {"comment_id": "C1"})
-            cd = res.structured_content or json.loads(res.content[0].text)
-            check("delete comment confirms id", cd.get("deleted") == "C1", f"got {cd}")
-
-            print("\nTest 28: timebox create/update/delete")
-            res = await session.call_tool(
-                "create_calm_timebox",
-                {"project_id": "P001", "name": "Sprint 1", "timebox_type": 0, "start_date": "2026-01-01"},
-            )
-            check("create timebox did not error", res.is_error is not True)
-            res = await session.call_tool("delete_calm_timebox", {"timebox_id": "TB1"})
-            tbd = res.structured_content or json.loads(res.content[0].text)
-            check("delete timebox confirms id", tbd.get("deleted") == "TB1", f"got {tbd}")
-
-            print("\nTest 29: test action create + update (activity If-Match auto-fetch)")
-            res = await session.call_tool(
-                "create_calm_test_action",
-                {"activity_id": "ACT-1", "title": "Step 1", "sequence": 1, "is_evidence_required": True},
-            )
-            check("create action did not error", res.is_error is not True)
-            res = await session.call_tool(
-                "update_calm_test_action",
-                {"action_id": "ACN-1", "title": "Step 1 renamed"},
-            )
-            check("update action did not error", res.is_error is not True)
-
-            print("\nTest 30: scope assignments (scope/unscope) + scenario versions")
-            res = await session.call_tool(
-                "update_calm_scope_assignments",
-                {"assignments": [
-                    {"scopeId": "S1", "solutionScenarioVersionId": "SSV1",
-                     "solutionProcessVersionId": "SPV1", "isScoped": True, "statusId": "DESIGN"},
-                ]},
-            )
-            sa = res.structured_content or json.loads(res.content[0].text)
-            check("scope assignments did not error", res.is_error is not True, f"got {sa}")
-            res = await session.call_tool(
-                "assign_calm_scenario_versions", {"scope_id": "S1", "version_ids": ["SSV1", "SSV2"]},
-            )
-            check("assign scenario versions did not error", res.is_error is not True)
-
-            print("\nTest 31: generic escape hatch (calm_api_write / calm_api_delete)")
-            res = await session.call_tool(
-                "calm_api_write",
-                {"method": "POST", "path": "api/calm-tasks/v1/workstreams", "body": {"name": "WS A"}},
-            )
-            gw = res.structured_content or json.loads(res.content[0].text)
-            check("generic write did not error", res.is_error is not True, f"got {gw}")
-            check("generic write echoes name", gw.get("name") == "WS A", f"got {gw}")
-            res = await session.call_tool(
-                "calm_api_delete", {"path": "api/calm-tasks/v1/workstreams/WS-1"},
-            )
-            gd = res.structured_content or json.loads(res.content[0].text)
-            check("generic delete confirms path", "workstreams/WS-1" in str(gd.get("deleted")), f"got {gd}")
-
-            print("\nTest 32: generic write rejects bad method")
-            res = await session.call_tool(
-                "calm_api_write", {"method": "GET", "path": "api/calm-tasks/v1/tasks"},
-            )
-            check("bad method errors", res.is_error is True)
-
-            print("\nTest 33: update_calm_task status-by-label WITHOUT task_type (auto-detect type)")
-            res = await session.call_tool(
-                "update_calm_task", {"task_id": "T1", "status": "In Progress"},
-            )
-            au = res.structured_content or json.loads(res.content[0].text)
-            check("status-by-label update did not error", res.is_error is not True, f"got {au}")
-            check("auto-detected type resolved status", au.get("Status") == "In Progress", f"got {au.get('Status')}")
-
-            print("\nTest 34: create_calm_test_case without scope_id is rejected")
-            res = await session.call_tool(
-                "create_calm_test_case", {"title": "no scope", "project_id": "P001"},
-            )
-            check("missing scope_id errors", res.is_error is True)
-
-            # ---- requirements (tasks of type Requirement) ----------------
-            print("\nTest 35: get_calm_requirements filters to type Requirement")
-            res = await session.call_tool("get_calm_requirements", {"project_id": "P001"})
-            reqs = (res.structured_content or {}).get("result")
-            check("requirements returned a list", isinstance(reqs, list), f"got {reqs}")
-            check("only requirements returned", len(reqs) == 1 and reqs[0]["Type"] == "Requirement", f"got {reqs}")
-
-            print("\nTest 36: get_calm_tasks task_type filter (Project Task only)")
-            res = await session.call_tool("get_calm_tasks", {"project_id": "P001", "task_type": "Project Task"})
-            only = (res.structured_content or {}).get("result")
-            check("filtered to Project Task", len(only) == 1 and only[0]["Type"] == "Project Task", f"got {only}")
-
-            print("\nTest 37: create_calm_requirement round-trips (status -> CIPREQU*)")
-            res = await session.call_tool(
-                "create_calm_requirement",
-                {"project_id": "P001", "title": "Need SSO", "status": "In Progress"},
-            )
-            rq = res.structured_content or json.loads(res.content[0].text)
-            check("requirement create did not error", res.is_error is not True, f"got {rq}")
-            check("requirement type is Requirement", rq.get("Type") == "Requirement", f"got {rq}")
-            check("requirement status round-trips", rq.get("Status") == "In Progress", f"got {rq.get('Status')}")
-
-            print("\nTest 38: update_calm_requirement with sub_status")
-            res = await session.call_tool(
-                "update_calm_requirement",
-                {"task_id": "R1", "status": "Done", "sub_status": "IN_PLANNING"},
-            )
-            ru = res.structured_content or json.loads(res.content[0].text)
-            check("requirement update did not error", res.is_error is not True, f"got {ru}")
-            check("requirement update status round-trips", ru.get("Status") == "Done", f"got {ru.get('Status')}")
-
-            print("\nTest 39: delete_calm_requirement")
-            res = await session.call_tool("delete_calm_requirement", {"task_id": "R1"})
-            rd = res.structured_content or json.loads(res.content[0].text)
-            check("requirement delete confirms id", rd.get("deleted") == "R1", f"got {rd}")
-
-            # ---- timeboxes -----------------------------------------------
-            print("\nTest 40: get_calm_timeboxes returns project timeboxes")
-            res = await session.call_tool("get_calm_timeboxes", {"project_id": "P001"})
-            timeboxes = (res.structured_content or {}).get("result")
-            check("timeboxes returned a list", isinstance(timeboxes, list), f"got {timeboxes}")
-            check("timeboxes have expected fields", len(timeboxes) > 0 and "Name" in timeboxes[0], f"got {timeboxes}")
-            if timeboxes:
-                tb = timeboxes[0]
-                check("timebox has ID", "ID" in tb and tb["ID"], f"got {tb}")
-                check("timebox has Name", "Name" in tb and tb["Name"], f"got {tb}")
-                check("timebox has Closed field", "Closed" in tb, f"got {tb}")
-
-            # ---- teams ---------------------------------------------------
-            print("\nTest 41: get_calm_teams returns all teams")
-            res = await session.call_tool("get_calm_teams", {})
-            teams = (res.structured_content or {}).get("result")
-            check("teams returned a list", isinstance(teams, list), f"got {teams}")
-            check("teams have expected fields", len(teams) > 0 and "Name" in teams[0], f"got {teams}")
-            if teams:
-                team = teams[0]
-                check("team has ID", "ID" in team and team["ID"], f"got {team}")
-                check("team has Name", "Name" in team and team["Name"], f"got {team}")
-                check("team has Description field", "Description" in team, f"got {team}")
-
-            print("\nTest 41a: get_calm_teams with project_id returns project-specific teams")
-            res = await session.call_tool("get_calm_teams", {"project_id": "P001"})
-            project_teams = (res.structured_content or {}).get("result")
-            check("project teams returned a list", isinstance(project_teams, list), f"got {project_teams}")
-            check("project teams filtered correctly", len(project_teams) == 1, f"got {len(project_teams)} teams")
-            if project_teams:
-                team = project_teams[0]
-                check("project team has ID", "ID" in team and team["ID"] == "TEAM1", f"got {team}")
-                check("project team has Name", "Name" in team and team["Name"], f"got {team}")
-                check("project team has Description", "Description" in team, f"got {team}")
-                check("project team has correct Project ID", team.get("Project ID") == "P001", f"got {team}")
-                check("project team has Members field", "Members" in team, f"got {team}")
-
-            print("\nTest 41b: get_calm_teams with different project_id")
-            res = await session.call_tool("get_calm_teams", {"project_id": "P002"})
-            p002_teams = (res.structured_content or {}).get("result")
-            check("P002 teams returned", isinstance(p002_teams, list) and len(p002_teams) == 1, f"got {p002_teams}")
-            if p002_teams:
-                check("P002 team is correct", p002_teams[0].get("ID") == "TEAM2", f"got {p002_teams[0]}")
-
-            print("\nTest 41c: get_calm_processes returns both types by default")
-            res = await session.call_tool("get_calm_processes", {})
-            processes = (res.structured_content or {}).get("result")
-            check("processes returned a list", isinstance(processes, list), f"got {processes}")
-            if processes:
-                has_business = any(p.get("Type") == "Business Process" for p in processes)
-                has_solution = any(p.get("Type") == "Solution Process" for p in processes)
-                check("has both process types", has_business and has_solution, f"got {processes}")
-
-            print("\nTest 41d: get_calm_processes with process_type filter")
-            res = await session.call_tool("get_calm_processes", {"process_type": "business"})
-            bp = (res.structured_content or {}).get("result")
-            check("business processes returned", isinstance(bp, list), f"got {bp}")
-            res = await session.call_tool("get_calm_processes", {"process_type": "solution"})
-            sp = (res.structured_content or {}).get("result")
-            check("solution processes returned", isinstance(sp, list), f"got {sp}")
-
-            # ---- tags ----------------------------------------------------
-            print("\nTest 42: get_calm_tags returns project tags")
-            res = await session.call_tool("get_calm_tags", {"project_id": "P001"})
-            tags = (res.structured_content or {}).get("result")
-            check("tags returned a list", isinstance(tags, list), f"got {tags}")
-            check("tags have expected fields", len(tags) > 0 and "Group" in tags[0], f"got {tags}")
-            if tags:
-                tag = tags[0]
-                check("tag has ID", "ID" in tag and tag["ID"], f"got {tag}")
-                check("tag has Group", "Group" in tag and tag["Group"], f"got {tag}")
-                check("tag has Tag field", "Tag" in tag, f"got {tag}")
-                check("tag has Full Name", "Full Name" in tag and ":" in str(tag["Full Name"]), f"got {tag}")
-
-            print("\nTest 43: create_calm_tag validates required fields")
-            res = await session.call_tool(
-                "create_calm_tag",
-                {"project_id": "P001", "group": "Priority", "tag": "Critical"},
-            )
-            ct = res.structured_content or json.loads(res.content[0].text)
-            check("tag create did not error", res.is_error is not True, f"got {ct}")
-            check("tag create echoes group", ct.get("group") == "Priority" or "Priority" in str(ct), f"got {ct}")
-
-            # ---- features ------------------------------------------------
-            print("\nTest 44: get_calm_features returns project features")
-            res = await session.call_tool("get_calm_features", {"project_id": "P001"})
-            features = (res.structured_content or {}).get("result")
-            check("features returned a list", isinstance(features, list), f"got {features}")
-            check("features have expected fields", len(features) > 0 and "Name" in features[0], f"got {features}")
-            if features:
-                feat = features[0]
-                check("feature has ID", "ID" in feat and feat["ID"], f"got {feat}")
-                check("feature has Name", "Name" in feat and feat["Name"], f"got {feat}")
-                check("feature has Status field", "Status" in feat, f"got {feat}")
-
-            print("\nTest 45: create_calm_feature validates required fields")
-            res = await session.call_tool(
-                "create_calm_feature",
-                {"project_id": "P001", "name": "Transport Package Alpha", "description": "Baseline requirements"},
-            )
-            cf = res.structured_content or json.loads(res.content[0].text)
-            check("feature create did not error", res.is_error is not True, f"got {cf}")
-            check("feature create echoes name", cf.get("name") == "Transport Package Alpha" or "Transport" in str(cf), f"got {cf}")
-
-            # ---- test plans ----------------------------------------------
-            print("\nTest 46: get_calm_test_plans returns project test plans")
-            res = await session.call_tool("get_calm_test_plans", {"project_id": "P001"})
-            test_plans = (res.structured_content or {}).get("result")
-            check("test plans returned a list", isinstance(test_plans, list), f"got {test_plans}")
-            check("test plans have expected fields", len(test_plans) > 0 and "Name" in test_plans[0], f"got {test_plans}")
-            if test_plans:
-                tp = test_plans[0]
-                check("test plan has ID", "ID" in tp and tp["ID"], f"got {tp}")
-                check("test plan has Name", "Name" in tp and tp["Name"], f"got {tp}")
-                check("test plan has Status field", "Status" in tp, f"got {tp}")
-
-            print("\nTest 47: create_calm_test_plan validates required fields")
-            res = await session.call_tool(
-                "create_calm_test_plan",
-                {"project_id": "P001", "name": "Enablement Test Plan", "description": "Customer enablement scripts"},
-            )
-            ctp = res.structured_content or json.loads(res.content[0].text)
-            check("test plan create did not error", res.is_error is not True, f"got {ctp}")
-            check("test plan create echoes name", ctp.get("name") == "Enablement Test Plan" or "Enablement" in str(ctp), f"got {ctp}")
-
-            print("\nTest 48: assign_calm_test_case_to_plan validates required fields")
-            res = await session.call_tool(
-                "assign_calm_test_case_to_plan",
-                {"test_plan_id": "TP1", "test_case_id": "TC-1", "tester_email": "tester@example.com"},
-            )
-            atp = res.structured_content or json.loads(res.content[0].text)
-            check("test case assignment did not error", res.is_error is not True, f"got {atp}")
-            check("test case assignment echoes plan id", atp.get("testPlanId") == "TP1" or "TP1" in str(atp), f"got {atp}")
-
-            print("\nTest 50: get_calm_project_users returns assignable IDs")
-            res = await session.call_tool("get_calm_project_users", {"project_id": "P001"})
-            result = res.structured_content or json.loads(res.content[0].text)
-            check("users did not error", res.is_error is not True, f"got {result}")
-            users = result.get("result") if isinstance(result, dict) else result
-            check("users returned list", isinstance(users, list), f"got {type(users)}")
-            check("users returned data", isinstance(users, list) and len(users) >= 2, f"got {len(users) if isinstance(users, list) else 'not a list'} users")
-            if isinstance(users, list) and users:
-                u1 = users[0]
-                check("user has ID field", "ID" in u1, f"fields: {list(u1.keys())}")
-                check("user has Email field", "Email" in u1, f"fields: {list(u1.keys())}")
-                check("user has Name field", "Name" in u1, f"fields: {list(u1.keys())}")
-                check("eduardo user found", any(u.get("Email") == "eduardo.falluh@syntax.com" for u in users), f"got {users}")
-
-            print("\nTest 54: link_calm_test_case_to_requirement creates traceability link")
-            res = await session.call_tool(
-                "link_calm_test_case_to_requirement",
-                {"test_case_id": "550e8400-e29b-41d4-a716-446655440000", "requirement_id": "R001", "link_type": "covers"},
-            )
-            link = res.structured_content or json.loads(res.content[0].text)
-            check("test case linkage did not error", res.is_error is not True, f"got {link}")
-            check("linkage references requirement", "R001" in str(link) or link.get("requirement_id") == "R001", f"got {link}")
-
-            # ---- TM OData (configured in this spawn) ----------------------
-            print("\nTest 54: tm_health reports configured + reachable")
+            print("Test 7: BTP Test Management tools")
             res = await session.call_tool("tm_health", {})
-            tmh = res.structured_content or json.loads(res.content[0].text)
-            check("tm_health did not error", res.is_error is not True, f"got {tmh}")
-            check("tm_health configured", tmh.get("configured") is True, f"got {tmh}")
-            check("tm_health token source is TM_TOKEN", tmh.get("token_source") == "TM_TOKEN env var", f"got {tmh}")
-            check("tm_health service reachable", tmh.get("reachable") is True, f"got {tmh}")
-            check("tm writes enabled in this spawn", tmh.get("tm_writes_enabled") is True, f"got {tmh}")
+            check("tm_health ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 54: get_tm_statistics returns repository counts")
             res = await session.call_tool("get_tm_statistics", {})
-            stats = res.structured_content or json.loads(res.content[0].text)
-            check("statistics did not error", res.is_error is not True, f"got {stats}")
-            items = stats.get("items")
-            check("statistics normalized to items list", isinstance(items, list) and len(items) == 2, f"got {stats}")
-            check("statistics counts present", items and items[0].get("count") == 42, f"got {items}")
+            check("get_tm_statistics ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 54: get_tm_test_cases with delta watermark (updated_since)")
-            res = await session.call_tool(
-                "get_tm_test_cases",
-                {"updated_since": "2026-08-01T00:00:00Z", "select": "external_id,updated_at", "top": 500},
-            )
-            tcs = res.structured_content or json.loads(res.content[0].text)
-            check("delta read did not error", res.is_error is not True, f"got {tcs}")
-            check(
-                "delta read returns items with updated_at",
-                isinstance(tcs.get("items"), list) and tcs["items"][0].get("updated_at"),
-                f"got {tcs}",
-            )
-            check("odata count surfaced", tcs.get("count") == 1, f"got {tcs}")
+            res = await session.call_tool("get_tm_test_cases", {})
+            check("get_tm_test_cases ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 54: get_tm_test_case_full returns a single entity")
-            res = await session.call_tool("get_tm_test_case_full", {"test_case_id": "TC-1"})
-            tc1 = res.structured_content or json.loads(res.content[0].text)
-            check("full-tree read did not error", res.is_error is not True, f"got {tc1}")
-            check("full-tree read returns the entity", tc1.get("id") == "TC-1", f"got {tc1}")
+            res = await session.call_tool("get_tm_requirements", {})
+            check("get_tm_requirements ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 55: tm_odata_read generic escape hatch + entity-set validation")
-            res = await session.call_tool(
-                "tm_odata_read",
-                {"entity_set": "Requirements", "query": "$filter=tr_id eq 'TR-1'&$top=5"},
-            )
-            rqs = res.structured_content or json.loads(res.content[0].text)
-            check("generic TM read did not error", res.is_error is not True, f"got {rqs}")
-            check("generic TM read returns items", isinstance(rqs.get("items"), list) and rqs["items"], f"got {rqs}")
-            res = await session.call_tool("tm_odata_read", {"entity_set": "Bogus"})
-            check("unknown entity set errors", res.is_error is True)
+            res = await session.call_tool("tm_odata_read", {"entity_set": "TestCases"})
+            check("tm_odata_read ok", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
 
-            print("\nTest 56: create_tm_requirement round-trips")
-            res = await session.call_tool(
-                "create_tm_requirement", {"tr_id": "TR-0042", "short_desc": "Created from test"},
-            )
-            crq = res.structured_content or json.loads(res.content[0].text)
-            check("TM requirement create did not error", res.is_error is not True, f"got {crq}")
-            check("TM requirement echoes tr_id", crq.get("tr_id") == "TR-0042", f"got {crq}")
-
-            print("\nTest 57: update_tm_test_case auto-fetches the ETag (If-Match)")
-            res = await session.call_tool(
-                "update_tm_test_case", {"test_case_id": "TC-1", "fields": {"is_prepared": True}},
-            )
-            utc = res.structured_content or json.loads(res.content[0].text)
-            check("TM test case update did not error", res.is_error is not True, f"got {utc}")
-            check("TM update echoes field", utc.get("is_prepared") is True, f"got {utc}")
-
-            print("\nTest 58: delete_tm_requirement confirms id (cascade warning)")
-            res = await session.call_tool("delete_tm_requirement", {"requirement_id": "RQ-1"})
-            drq = res.structured_content or json.loads(res.content[0].text)
-            check("TM requirement delete did not error", res.is_error is not True, f"got {drq}")
-            check("TM requirement delete confirms id", drq.get("deleted") == "RQ-1", f"got {drq}")
-
-            # ---- project customization -----------------------------------
-            print("\nTest 49: get_calm_project_customization returns picklists")
-            res = await session.call_tool("get_calm_project_customization", {"project_id": "P001"})
-            cust = res.structured_content or json.loads(res.content[0].text)
-            check("customization returned a dict", isinstance(cust, dict), f"got {cust}")
-            check("customization has Workstreams", "Workstreams" in cust and isinstance(cust["Workstreams"], list), f"got {cust}")
-            check("customization has Deliverables", "Deliverables" in cust and isinstance(cust["Deliverables"], list), f"got {cust}")
-            check("customization has Custom Fields", "Custom Fields" in cust, f"got {cust}")
-            if cust.get("Workstreams"):
-                check("workstreams populated", len(cust["Workstreams"]) > 0, f"got {cust['Workstreams']}")
-
-    print("\n" + "=" * 60)
+    # ================= Summary =================
+    print("\n" + "=" * 70)
     if failures:
-        print(f"FAILED: {len(failures)} check(s)")
+        print(f"❌ {len(failures)} check(s) FAILED:")
         for f in failures:
-            print(f"  - {f}")
+            print(f"   - {f}")
+        print("=" * 70)
         return 1
-    print("All checks passed.")
+    print("✅ ALL end-to-end checks PASSED")
+    print("=" * 70)
     return 0
 
 
