@@ -591,6 +591,85 @@ def test_test_plan_assignment_create():
         )
 
 
+def test_task_tags_valid_tags_pass_validation():
+    """Tags that exist in the project's configured list are sent through."""
+    fn = _fn()
+    configured = [
+        {"Group": "Scope", "Tag": "Baseline", "Full Name": "Scope: Baseline"},
+        {"Group": "Tshirt size", "Tag": "L", "Full Name": "Tshirt size: L"},
+    ]
+    with patch("src.calm.client.get_tags", return_value=configured) as mget:
+        with patch("src.calm.client.set_task_tags") as mset:
+            mset.return_value = {"ok": True}
+            fn(Ctx(), resource="task_tags", operation="update", resource_id="T1",
+               project_id="P1", data={"tags": ["Scope: Baseline", "Tshirt size: L"]})
+            mget.assert_called_once_with("P1", TOKEN, BASE_URL)
+            mset.assert_called_once_with(
+                token=TOKEN, task_id="T1", tags=["Scope: Baseline", "Tshirt size: L"],
+                base_url=BASE_URL, user_email=None,
+            )
+
+
+def test_task_tags_unknown_tag_raises_not_silently_dropped():
+    """The whole point: an undefined tag must error, not vanish."""
+    fn = _fn()
+    configured = [{"Group": "Scope", "Tag": "Baseline", "Full Name": "Scope: Baseline"}]
+    with patch("src.calm.client.get_tags", return_value=configured):
+        with patch("src.calm.client.set_task_tags") as mset:
+            with pytest.raises(ValueError, match="not defined in project P1"):
+                fn(Ctx(), resource="task_tags", operation="update", resource_id="T1",
+                   project_id="P1", data={"tags": ["Scope: Baseline", "Made Up: Nope"]})
+            mset.assert_not_called()  # nothing sent when any tag is invalid
+
+
+def test_task_tags_validation_ignores_colon_spacing():
+    """'Scope:Baseline' must match a configured 'Scope: Baseline'."""
+    fn = _fn()
+    configured = [{"Group": "Scope", "Tag": "Baseline", "Full Name": "Scope: Baseline"}]
+    with patch("src.calm.client.get_tags", return_value=configured):
+        with patch("src.calm.client.set_task_tags") as mset:
+            mset.return_value = {"ok": True}
+            fn(Ctx(), resource="task_tags", operation="update", resource_id="T1",
+               project_id="P1", data={"tags": ["Scope:Baseline"]})
+            mset.assert_called_once()
+
+
+def test_task_tags_dict_form_validates():
+    """Tags given as {'group','tag'} dicts validate the same way."""
+    fn = _fn()
+    configured = [{"Group": "Scope", "Tag": "Baseline", "Full Name": "Scope: Baseline"}]
+    with patch("src.calm.client.get_tags", return_value=configured):
+        with patch("src.calm.client.set_task_tags") as mset:
+            mset.return_value = {"ok": True}
+            fn(Ctx(), resource="task_tags", operation="update", resource_id="T1",
+               project_id="P1", data={"tags": [{"group": "Scope", "tag": "Baseline"}]})
+            mset.assert_called_once()
+
+
+def test_task_tags_no_project_id_skips_validation():
+    """Backward compatible: without project_id we can't read the list, so send as-is."""
+    fn = _fn()
+    with patch("src.calm.client.get_tags") as mget:
+        with patch("src.calm.client.set_task_tags") as mset:
+            mset.return_value = {"ok": True}
+            fn(Ctx(), resource="task_tags", operation="update", resource_id="T1",
+               data={"tags": ["Anything: Goes"]})
+            mget.assert_not_called()
+            mset.assert_called_once()
+
+
+def test_task_tags_skip_validation_flag():
+    """An explicit opt-out bypasses the project-tag check even with project_id."""
+    fn = _fn()
+    with patch("src.calm.client.get_tags") as mget:
+        with patch("src.calm.client.set_task_tags") as mset:
+            mset.return_value = {"ok": True}
+            fn(Ctx(), resource="task_tags", operation="update", resource_id="T1",
+               project_id="P1", data={"tags": ["Made Up: Nope"], "skip_validation": True})
+            mget.assert_not_called()
+            mset.assert_called_once()
+
+
 def test_subentity_write_guard_blocks_when_disabled(monkeypatch):
     """The write guard must also cover the new sub-entity branches."""
     monkeypatch.setenv("CALM_ENABLE_WRITES", "")

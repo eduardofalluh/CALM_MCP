@@ -21,6 +21,50 @@ from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
 from src.calm.tools.user_resolver import resolve_assignee
 
 
+def _normalize_tag(t: Any) -> str:
+    """Normalize a tag to a comparable 'group:tag' key.
+
+    Accepts a "Group: Tag" string (colon spacing is ignored) or a
+    {"group": ..., "tag": ...} dict, so "Scope: Baseline", "Scope:Baseline"
+    and {"group": "Scope", "tag": "Baseline"} all compare equal.
+    """
+    if isinstance(t, dict):
+        return f"{str(t.get('group', '')).strip()}:{str(t.get('tag', '')).strip()}".lower()
+    s = str(t)
+    if ":" in s:
+        group, _, tag = s.partition(":")
+        return f"{group.strip()}:{tag.strip()}".lower()
+    return s.strip().lower()
+
+
+def _validate_task_tags(tags: list, project_id: str, token: str, base_url: str | None) -> None:
+    """Reject tags that aren't defined in the project before assigning them.
+
+    CALM *silently drops* tags on a task when they don't exactly match a
+    project-configured tag, so a caller never learns the tag didn't stick. We
+    read the project's configured tag list and raise a clear, actionable error
+    listing the valid tags instead of letting the assignment vanish.
+    """
+    if not tags:
+        return
+    configured = client.get_tags(project_id, token, base_url)
+    valid_by_norm = {
+        _normalize_tag({"group": t.get("Group"), "tag": t.get("Tag")}): t.get("Full Name")
+        for t in configured
+        if t.get("Group") and t.get("Tag")
+    }
+    unknown = [t for t in tags if _normalize_tag(t) not in valid_by_norm]
+    if unknown:
+        valid_names = sorted(v for v in valid_by_norm.values() if v)
+        raise ValueError(
+            f"These tag(s) are not defined in project {project_id} and CALM would "
+            f"silently drop them: {unknown}. "
+            f"Valid tags for this project: {valid_names or '(none configured yet)'}. "
+            f"Create a missing tag first with resource='tags', operation='create', "
+            f"data={{'group': ..., 'tag': ...}}."
+        )
+
+
 def register(mcp: FastMCP) -> None:
     """Register unified MCP tools for context optimization."""
 
@@ -97,7 +141,10 @@ def register(mcp: FastMCP) -> None:
                     update → resource_id=comment_id, data={text, extra_fields};
                     delete → resource_id=comment_id
                 - task_tags: update (set/replace a task's tags) → resource_id=task_id,
-                    data={tags: ["Group: Tag", ...]}
+                    data={tags: ["Group: Tag", ...]}. Pass project_id to validate the
+                    tags against the project's configured list (recommended — CALM
+                    silently drops tags that aren't defined; validation turns that
+                    into a clear error). data={skip_validation: True} bypasses the check.
                 - test_actions: create → resource_id=activity_id,
                     data={title (required), description, expected_result, sequence,
                     is_evidence_required}; update → resource_id=action_id,
@@ -883,6 +930,12 @@ def register(mcp: FastMCP) -> None:
                 tags = d.get("tags")
                 if tags is None:
                     raise ValueError("data must include 'tags' (a list like ['Group: Tag', ...])")
+                # Validate against the project's configured tags so unknown tags
+                # raise a clear error instead of being silently dropped by CALM.
+                # Pass project_id to enable validation (skip only if caller opts
+                # out with data={'skip_validation': True}).
+                if project_id and not d.get("skip_validation"):
+                    _validate_task_tags(tags, project_id, h.token, h.base_url)
                 return client.set_task_tags(
                     token=h.token, task_id=task_id, tags=tags, base_url=h.base_url, user_email=acting_email
                 )
