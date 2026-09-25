@@ -641,7 +641,13 @@ def register(mcp: FastMCP) -> None:
 
         elif resource == "scopes":
             if operation == "list":
-                return client.get_scopes(h.token, h.base_url)
+                # The scopes endpoint is tenant-wide; when a project_id is given,
+                # filter to that project (each record carries "Project ID") so the
+                # param is honored. Without one, return all scopes (unchanged).
+                scopes = client.get_scopes(h.token, h.base_url)
+                if project_id:
+                    scopes = [s for s in scopes if s.get("Project ID") == project_id]
+                return scopes
             elif operation == "create":
                 ensure_writes_enabled()
                 if not project_id:

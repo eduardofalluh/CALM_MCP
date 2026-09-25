@@ -743,5 +743,32 @@ def test_client_api_read_builds_url_and_querystring():
         assert url2 == f"{BASE_URL}/api/calm-projects/v1/projects?%24top=5"
 
 
+# --------------------------------------------------------------------------- #
+# scopes list — project_id filtering (tenant-wide endpoint, filtered in-tool)
+# --------------------------------------------------------------------------- #
+
+def test_scopes_list_filters_by_project_id():
+    fn = _fn()
+    all_scopes = [
+        {"ID": "s1", "Project ID": "P1", "Name": "Finance"},
+        {"ID": "s2", "Project ID": "P2", "Name": "Logistics"},
+        {"ID": "s3", "Project ID": "P1", "Name": "HR"},
+    ]
+    with patch("src.calm.client.get_scopes", return_value=all_scopes):
+        result = fn(Ctx(), resource="scopes", operation="list", project_id="P1")
+        assert [s["ID"] for s in result] == ["s1", "s3"]
+
+
+def test_scopes_list_without_project_id_returns_all():
+    fn = _fn()
+    all_scopes = [
+        {"ID": "s1", "Project ID": "P1"},
+        {"ID": "s2", "Project ID": "P2"},
+    ]
+    with patch("src.calm.client.get_scopes", return_value=all_scopes):
+        result = fn(Ctx(), resource="scopes", operation="list")
+        assert len(result) == 2
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
