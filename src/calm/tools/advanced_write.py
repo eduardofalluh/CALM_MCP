@@ -1,14 +1,20 @@
-"""Generic low-level write tools — an escape hatch for any CALM API endpoint
-that doesn't have a dedicated tool (e.g. feature/document/hierarchy assignments,
+"""Generic low-level CALM API tools — an escape hatch for any endpoint that
+doesn't have a dedicated tool (e.g. feature/document/hierarchy assignments,
 workstreams, deliverables, programs, system groups, deployment plans, external
 integrations, process-authoring assets/flows/diagrams/activities, publish/draft
 actions, test-case applications/references/task assignments).
 
-Both tools are guarded by CALM_ENABLE_WRITES. The caller supplies the exact
-API-relative path and JSON body, so these can hit anything the token is scoped for.
+Three tools complete the read/write/delete trio: `calm_api_read` (GET),
+`calm_api_write` (POST/PATCH) and `calm_api_delete` (DELETE). The write and
+delete tools are guarded by CALM_ENABLE_WRITES; `calm_api_read` is read-only and
+always available (never gated), so an agent can always read even if the unified
+`calm_resource` tool is not enabled for it. The caller supplies the exact
+API-relative path, so these can hit anything the token is scoped for.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from fastmcp import Context, FastMCP
 
@@ -17,6 +23,29 @@ from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
 
 
 def register(mcp: FastMCP) -> None:
+
+    @mcp.tool()
+    def calm_api_read(path: str, ctx: Context, params: dict | None = None) -> Any:
+        """Low-level GET for any CALM API path. Read-only — always available
+        (NOT gated by CALM_ENABLE_WRITES).
+
+        Use this to READ any endpoint, especially when you need a value that a
+        write call requires. The classic case: a requirement/task POST needs the
+        project UUID in the path — list projects here first to find it.
+
+        Args:
+            path: API-relative path from the tenant base URL, e.g.
+                "api/calm-projects/v1/projects" (list projects → get project UUIDs),
+                "api/calm-tasks/v1/tasks/{id}" (one task),
+                "api/calm-projects/v1/projects/{id}" (one project).
+            params: optional query parameters, e.g. {"$top": 50}.
+
+        Returns the parsed JSON response.
+        """
+        if not path:
+            raise ValueError("path is required")
+        h = get_calm_headers(ctx)
+        return client.api_read(token=h.token, path=path, params=params, base_url=h.base_url)
 
     @mcp.tool()
     def calm_api_write(

@@ -1387,6 +1387,28 @@ def delete_test_case(
 
 # --- Generic escape hatch ---------------------------------------------------
 
+def api_read(
+    token: str,
+    path: str,
+    params: dict | None = None,
+    base_url: str | None = None,
+) -> Any:
+    """Low-level GET for any CALM API path (read-only escape hatch, mirroring
+    api_write/api_delete). `path` is relative to the tenant base URL, e.g.
+    "api/calm-projects/v1/projects" or "api/calm-tasks/v1/tasks/{id}". Optional
+    `params` are appended as the query string. Uses the same GET path as the
+    dedicated read tools so it works against the CALM read endpoints. Read-only —
+    never gated by CALM_ENABLE_WRITES.
+    """
+    url = f"{_base_url(base_url)}/{path.lstrip('/')}"
+    if params:
+        from urllib.parse import urlencode
+
+        sep = "&" if "?" in url else "?"
+        url = f"{url}{sep}{urlencode(params)}"
+    return _get(url, token)
+
+
 def api_write(
     token: str,
     method: str,

@@ -681,5 +681,67 @@ def test_subentity_write_guard_blocks_when_disabled(monkeypatch):
         m.assert_not_called()
 
 
+# --------------------------------------------------------------------------- #
+# calm_api_read — the read/GET escape hatch (advanced_write.py)
+# --------------------------------------------------------------------------- #
+
+def _read_fn():
+    """Return the underlying calm_api_read function from a fresh registration."""
+    from fastmcp import FastMCP
+
+    from src.calm.tools.advanced_write import register
+
+    mcp = FastMCP("test")
+    register(mcp)
+    tool = asyncio.run(mcp.get_tool("calm_api_read"))
+    return tool.fn
+
+
+def test_api_read_calls_client_with_path_and_params():
+    fn = _read_fn()
+    with patch("src.calm.client.api_read") as m:
+        m.return_value = [{"id": "P1"}]
+        fn("api/calm-projects/v1/projects", Ctx(), params={"$top": 50})
+        m.assert_called_once_with(
+            token=TOKEN,
+            path="api/calm-projects/v1/projects",
+            params={"$top": 50},
+            base_url=BASE_URL,
+        )
+
+
+def test_api_read_requires_path():
+    fn = _read_fn()
+    with pytest.raises(ValueError, match="path is required"):
+        fn("", Ctx())
+
+
+def test_api_read_is_not_write_gated(monkeypatch):
+    """Reads must work even when writes are disabled — the whole point of the
+    escape hatch is that an agent without calm_resource can still read."""
+    monkeypatch.setenv("CALM_ENABLE_WRITES", "")
+    fn = _read_fn()
+    with patch("src.calm.client.api_read") as m:
+        m.return_value = {"ok": True}
+        result = fn("api/calm-projects/v1/projects", Ctx())
+        assert result == {"ok": True}
+        m.assert_called_once()
+
+
+def test_client_api_read_builds_url_and_querystring():
+    """client.api_read builds the tenant URL + query string and delegates to _get."""
+    import src.calm.client as c
+    with patch("src.calm.client._get") as g:
+        g.return_value = {"ok": True}
+        c.api_read(token=TOKEN, path="api/calm-tasks/v1/tasks/3-1", base_url=BASE_URL)
+        called_url = g.call_args.args[0]
+        assert called_url == f"{BASE_URL}/api/calm-tasks/v1/tasks/3-1"
+        # leading slash on path is tolerated, and params become a query string
+        c.api_read(token=TOKEN, path="/api/calm-projects/v1/projects",
+                   params={"$top": 5}, base_url=BASE_URL)
+        url2 = g.call_args.args[0]
+        assert url2 == f"{BASE_URL}/api/calm-projects/v1/projects?%24top=5"
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
