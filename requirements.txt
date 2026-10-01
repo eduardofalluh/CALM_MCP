@@ -1,3 +1,6 @@
 fastmcp>=2.12.0
 requests>=2.31.0
 python-dotenv>=1.0.0
+# TOON (Token-Oriented Object Notation) encoder for token-efficient tool output.
+# Pinned to a working commit — PyPI 0.1.0 is a non-functional stub.
+toon_format @ git+https://github.com/toon-format/toon-python.git@3c5e623c89658de93d201a620d3632f5d13ceb1f

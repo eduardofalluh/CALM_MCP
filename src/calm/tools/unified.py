@@ -224,6 +224,14 @@ def register(mcp: FastMCP) -> None:
         Returns:
             List of resources for "list", single resource dict for "get"/"create"/"update"/"delete".
 
+        Output format:
+            Text output is encoded as TOON (Token-Oriented Object Notation) by
+            default, a compact representation that costs far fewer tokens than
+            JSON for the uniform lists these operations return. The structured
+            output is unchanged JSON. Set the environment variable
+            CALM_OUTPUT_FORMAT=json to receive plain JSON text instead (no code
+            change or redeploy needed).
+
         Examples:
             # List all projects
             calm_resource(resource="projects", operation="list")

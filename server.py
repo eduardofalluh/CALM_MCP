@@ -36,6 +36,7 @@ from fastmcp import FastMCP
 from starlette.middleware import Middleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from src.calm.toon_middleware import ToonOutputMiddleware
 from src.calm.tools import (
     advanced_write,
     health,
@@ -143,6 +144,11 @@ class _TrustProxyMiddleware:
 
 
 mcp = FastMCP("sap-cloud-alm")
+
+# Encode tool text output as TOON (token-efficient) by default; set
+# CALM_OUTPUT_FORMAT=json to revert per-agent with no redeploy. Structured
+# content on the wire stays JSON, so clients reading it are unaffected.
+mcp.add_middleware(ToonOutputMiddleware())
 
 # ============================================================================
 # PHASE 3 COMPLETE: Tool Consolidation
