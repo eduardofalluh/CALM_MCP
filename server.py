@@ -123,6 +123,42 @@ def _maybe_init_token_manager() -> bool:
     return False
 
 
+def _startup_auth_check() -> None:
+    """Fetch one token at startup so a bad/corrupted credential fails loudly here
+    instead of as a confusing 'invalid credentials' 401 on the first data request.
+
+    Never crashes the server: XSUAA may be briefly unreachable, and the request-time
+    path still works once it recovers. We only *log* the outcome, with an actionable
+    hint for the most common deployment mistake — a secret containing '$' that the
+    shell / Docker / k8s expanded away because it wasn't single-quoted.
+    """
+    from src.calm.token_manager import get_managed_token
+
+    try:
+        token = get_managed_token()
+        if token:
+            log.info("CALM auth self-check OK — acquired a token at startup (len=%d).", len(token))
+        return
+    except Exception as exc:  # noqa: BLE001 - want the full message in the log
+        log.error("CALM auth self-check FAILED at startup: %s", exc)
+        # Note: we can't inspect the secret for a '$' here — if the shell already
+        # expanded it, the '$...' tail is gone by the time we read the env var — so
+        # we always surface this as the most common cause of a startup 401.
+        log.error(
+            "Most common cause: CALM_CLIENT_SECRET was corrupted in transit. SAP "
+            "service-key secrets often contain '$'; an unquoted shell export, "
+            "Dockerfile ENV, docker-compose, or k8s value expands everything after "
+            "'$' to empty, so CALM receives a truncated secret. Single-quote the "
+            "value (CALM_CLIENT_SECRET='...$...') or escape it as '\\$' so it reaches "
+            "the server intact. Also verify the id/secret are current and that "
+            "CALM_IDENTITY_ZONE/CALM_REGION_ZONE match the service key."
+        )
+        log.error(
+            "The server will keep running and retry on each request, but CALM calls "
+            "will return 'invalid credentials' until the credential is fixed."
+        )
+
+
 class _TrustProxyMiddleware:
     """Rewrites the Host header to 'localhost' before the MCP transport security check.
 
@@ -255,6 +291,8 @@ def main() -> None:
             "CALM_CLIENT_ID/CALM_CLIENT_SECRET not set — "
             "falling back to Authorization header or CALM_TOKEN env var."
         )
+    else:
+        _startup_auth_check()
 
     if args.http:
         log.info("Starting CALM MCP on http://%s:%s", args.host, args.port)
