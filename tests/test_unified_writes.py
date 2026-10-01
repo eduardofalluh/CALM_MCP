@@ -324,30 +324,41 @@ def test_test_case_delete_force_and_if_match():
 # tags  (the user-reported bug: project_id + group + tag)
 # --------------------------------------------------------------------------- #
 
-def test_tag_create_passes_project_group_tag():
+def test_tag_create_returns_unavailable_without_calling_client():
+    """SAP's public API exposes no scope for creating tag definitions, so
+    create must return a clear 'unavailable' explanation and never attempt the
+    doomed write."""
     fn = _fn()
     with patch("src.calm.client.create_tag") as m:
-        m.return_value = {"ID": "TAG1"}
-        fn(Ctx(), resource="tags", operation="create", project_id="P1",
-           data={"group": "Region", "tag": "EMEA"})
-        m.assert_called_once_with(
-            token=TOKEN, project_id="P1", group="Region", tag="EMEA",
-            base_url=BASE_URL, user_email=None,
-        )
+        result = fn(Ctx(), resource="tags", operation="create", project_id="P1",
+                    data={"group": "Region", "tag": "EMEA"})
+        m.assert_not_called()
+        assert result["status"] == "unavailable"
+        assert result["supported"] is False
+        assert result["resource"] == "tags"
+        # Points the user at the supported alternative (task_tags / the UI)
+        assert "task_tags" in result["alternative"]
 
 
-def test_tag_create_requires_project_id():
+def test_tag_list_returns_unavailable_on_403():
+    """When the project tag-definition read 403s (no scope exists), surface the
+    platform-limitation explanation rather than the raw error."""
     fn = _fn()
-    with pytest.raises(ValueError, match="project_id"):
-        fn(Ctx(), resource="tags", operation="create",
-           data={"group": "Region", "tag": "EMEA"})
+    err = RuntimeError("CALM API error: HTTP 403 Forbidden at .../tags — ...")
+    with patch("src.calm.client.get_tags", side_effect=err):
+        result = fn(Ctx(), resource="tags", operation="list", project_id="P1")
+        assert result["status"] == "unavailable"
+        assert result["resource"] == "tags"
 
 
-def test_tag_create_requires_group_and_tag():
+def test_tag_list_reraises_non_auth_error():
+    """A transient (non-403/401/404) failure is a real error — don't mask it as
+    a platform limitation."""
     fn = _fn()
-    with pytest.raises(ValueError, match="group.*tag|tag.*group|'group' and 'tag'"):
-        fn(Ctx(), resource="tags", operation="create", project_id="P1",
-           data={"group": "Region"})
+    err = RuntimeError("CALM API error: HTTP 500 Internal Server Error at .../tags")
+    with patch("src.calm.client.get_tags", side_effect=err):
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            fn(Ctx(), resource="tags", operation="list", project_id="P1")
 
 
 # --------------------------------------------------------------------------- #
@@ -395,10 +406,10 @@ def test_user_email_override_reaches_client():
 def test_write_guard_blocks_when_disabled(monkeypatch):
     monkeypatch.setenv("CALM_ENABLE_WRITES", "")
     fn = _fn()
-    with patch("src.calm.client.create_tag") as m:
+    with patch("src.calm.client.create_business_process") as m:
         with pytest.raises(ValueError, match="Write operations are disabled"):
-            fn(Ctx(), resource="tags", operation="create", project_id="P1",
-               data={"group": "g", "tag": "t"})
+            fn(Ctx(), resource="business_processes", operation="create",
+               data={"name": "BP"})
         m.assert_not_called()
 
 
@@ -610,6 +621,23 @@ def test_task_tags_valid_tags_pass_validation():
             )
 
 
+def test_task_tags_validation_best_effort_on_403():
+    """If reading the project tag list 403s (no scope in SAP's API), validation
+    is skipped and the assignment still goes through via the Tasks API. This is
+    the fix for 'tag assignment sometimes works, sometimes doesn't'."""
+    fn = _fn()
+    err = RuntimeError("CALM API error: HTTP 403 Forbidden at .../tags — ...")
+    with patch("src.calm.client.get_tags", side_effect=err):
+        with patch("src.calm.client.set_task_tags") as mset:
+            mset.return_value = {"ok": True}
+            fn(Ctx(), resource="task_tags", operation="update", resource_id="T1",
+               project_id="P1", data={"tags": ["Scope: Baseline"]})
+            mset.assert_called_once_with(
+                token=TOKEN, task_id="T1", tags=["Scope: Baseline"],
+                base_url=BASE_URL, user_email=None,
+            )
+
+
 def test_task_tags_unknown_tag_raises_not_silently_dropped():
     """The whole point: an undefined tag must error, not vanish."""
     fn = _fn()
@@ -768,6 +796,45 @@ def test_scopes_list_without_project_id_returns_all():
     with patch("src.calm.client.get_scopes", return_value=all_scopes):
         result = fn(Ctx(), resource="scopes", operation="list")
         assert len(result) == 2
+
+
+# --------------------------------------------------------------------------- #
+# project_users / customization — SAP platform limitations (no public scope)
+# --------------------------------------------------------------------------- #
+
+def test_project_users_list_returns_unavailable_on_403():
+    fn = _fn()
+    err = RuntimeError("CALM API error: HTTP 403 Forbidden at .../members")
+    with patch("src.calm.client.get_project_users", side_effect=err):
+        result = fn(Ctx(), resource="project_users", operation="list", project_id="P1")
+        assert result["status"] == "unavailable"
+        assert result["resource"] == "project_users"
+
+
+def test_project_users_list_succeeds_when_api_allows():
+    """If a tenant ever exposes it, the real data still comes through."""
+    fn = _fn()
+    members = [{"email": "a@x.com"}]
+    with patch("src.calm.client.get_project_users", return_value=members):
+        result = fn(Ctx(), resource="project_users", operation="list", project_id="P1")
+        assert result == members
+
+
+def test_customization_get_returns_unavailable_on_403():
+    fn = _fn()
+    err = RuntimeError("CALM API error: HTTP 403 Forbidden at .../customization")
+    with patch("src.calm.client.get_project_customization", side_effect=err):
+        result = fn(Ctx(), resource="customization", operation="get", project_id="P1")
+        assert result["status"] == "unavailable"
+        assert result["resource"] == "customization"
+
+
+def test_customization_get_reraises_non_auth_error():
+    fn = _fn()
+    err = RuntimeError("CALM API error: HTTP 500 Internal Server Error")
+    with patch("src.calm.client.get_project_customization", side_effect=err):
+        with pytest.raises(RuntimeError, match="HTTP 500"):
+            fn(Ctx(), resource="customization", operation="get", project_id="P1")
 
 
 if __name__ == "__main__":

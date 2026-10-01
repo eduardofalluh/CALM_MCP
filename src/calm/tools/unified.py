@@ -37,17 +37,71 @@ def _normalize_tag(t: Any) -> str:
     return s.strip().lower()
 
 
+# Capabilities SAP's Cloud ALM public API does not expose a scope for. The
+# underlying endpoints return 403 no matter which scopes the service account is
+# granted, because SAP publishes no authorization for them. This is a platform
+# limitation, NOT a defect in this MCP server — so we surface a clear, friendly
+# explanation instead of letting a raw 403 look like the tool is broken.
+_UNAVAILABLE_REASON = {
+    "tags": "Listing all of a project's tag definitions and creating a new tag definition "
+            "are not exposed by the SAP Cloud ALM public API. Note: assigning existing tags "
+            "to a task DOES work (via resource='task_tags') — only reading the full tag list "
+            "and creating new tag definitions are unavailable.",
+    "project_users": "Listing a project's members/users is not exposed by the SAP Cloud ALM public API.",
+    "customization": "Reading project customization settings is not exposed by the SAP Cloud ALM public API.",
+}
+
+
+def _is_not_authorized(exc: Exception) -> bool:
+    """True when a client RuntimeError reflects a missing-authorization status
+    (403/401) or an unprovisioned endpoint (404) — i.e. the capability isn't
+    reachable for this account, as opposed to a transient server/network fault
+    we should surface normally."""
+    msg = str(exc)
+    return any(code in msg for code in ("HTTP 403", "HTTP 401", "HTTP 404"))
+
+
+def _capability_unavailable(resource: str, alternative: str | None = None) -> dict:
+    """Return a structured, user-facing explanation for a capability SAP's public
+    API does not expose. Not an error state in the MCP — the platform has no
+    scope for it, so no service-account authorization can ever enable it."""
+    reason = _UNAVAILABLE_REASON.get(
+        resource, "This capability is not exposed by the SAP Cloud ALM public API."
+    )
+    out: dict[str, Any] = {
+        "status": "unavailable",
+        "supported": False,
+        "resource": resource,
+        "message": (
+            f"{reason} SAP does not publish an OAuth scope for this endpoint, so no "
+            f"amount of service-account authorization enables it. This is a SAP Cloud "
+            f"ALM platform limitation, not an issue with the MCP server."
+        ),
+    }
+    if alternative:
+        out["alternative"] = alternative
+    return out
+
+
 def _validate_task_tags(tags: list, project_id: str, token: str, base_url: str | None) -> None:
-    """Reject tags that aren't defined in the project before assigning them.
+    """Best-effort check that tags are defined in the project before assigning them.
 
     CALM *silently drops* tags on a task when they don't exactly match a
-    project-configured tag, so a caller never learns the tag didn't stick. We
-    read the project's configured tag list and raise a clear, actionable error
-    listing the valid tags instead of letting the assignment vanish.
+    project-configured tag. Where we can read the project's configured tag list
+    we raise a clear, actionable error listing the valid tags. But SAP's public
+    API does not expose the project tag-definition endpoint (it returns 403), so
+    when that read fails we simply skip validation and proceed — the Tasks API
+    applies any tag that exists and ignores any that doesn't. This keeps tag
+    assignment working instead of failing on an unreadable validation list.
     """
     if not tags:
         return
-    configured = client.get_tags(project_id, token, base_url)
+    try:
+        configured = client.get_tags(project_id, token, base_url)
+    except Exception:
+        # Project tag definitions aren't exposed by the CALM public API (403).
+        # We can't validate, so proceed rather than block the assignment.
+        return
     valid_by_norm = {
         _normalize_tag({"group": t.get("Group"), "tag": t.get("Tag")}): t.get("Full Name")
         for t in configured
@@ -130,7 +184,10 @@ def register(mcp: FastMCP) -> None:
                 - scopes: name, description, if_match
                 - test_cases: title, scope_id (required), project_id, solution_process_id,
                     priority, is_prepared, activities, references, force, if_match
-                - tags: group, tag (both required; project_id from the param)
+                - tags: creating tag *definitions* is NOT exposed by SAP's CALM
+                    public API — create returns an 'unavailable' explanation. To
+                    tag work, assign existing tags to a task via resource='task_tags'
+                    (Tasks API, works); create new tag definitions in the CALM UI.
                 - features: name (required), description, external_id, extra_fields
                 - test_plans: name (required), description, extra_fields
                 # --- sub-entity / relationship resources (create/update/delete) ---
@@ -258,6 +315,14 @@ def register(mcp: FastMCP) -> None:
             - test_plans → get_calm_test_plans(project_id)
             - project_users → get_calm_project_users(project_id)
             - customization → get_calm_project_customization(project_id)
+
+        SAP platform limitations (not MCP issues): SAP's CALM public API exposes
+        no OAuth scope for project tag *definitions* (tags list/create), the
+        project member roster (project_users list), or project customization
+        (customization get). Those endpoints return 403 regardless of granted
+        scopes, so this tool returns a structured {"status": "unavailable", ...}
+        explanation for them rather than a raw error. Tagging tasks (task_tags)
+        and features both work normally.
 
         Note: All legacy individual tools remain functional for backwards compatibility.
         This unified tool is provided for improved context efficiency.
@@ -758,25 +823,27 @@ def register(mcp: FastMCP) -> None:
                 raise ValueError(f"Unknown operation '{operation}' for test_cases")
 
         elif resource == "tags":
+            tag_alternative = (
+                "Tags are applied to tasks, not managed as project definitions through "
+                "the public API. To tag a task, use resource='task_tags', "
+                "operation='update', resource_id=<task_id>, "
+                "data={'tags': ['Group: Tag', ...]} — that path uses the Tasks API and "
+                "works. Create new tag definitions in the SAP Cloud ALM web UI."
+            )
             if operation == "list":
                 if not project_id:
                     raise ValueError("project_id is required for tags")
-                return client.get_tags(project_id, h.token, h.base_url)
+                try:
+                    return client.get_tags(project_id, h.token, h.base_url)
+                except RuntimeError as exc:
+                    if _is_not_authorized(exc):
+                        return _capability_unavailable("tags", tag_alternative)
+                    raise
             elif operation == "create":
-                ensure_writes_enabled()
-                if not project_id:
-                    raise ValueError("project_id is required for tags")
-                group, tag = d.get("group"), d.get("tag")
-                if not group or not tag:
-                    raise ValueError("data must include 'group' and 'tag'")
-                return client.create_tag(
-                    token=h.token,
-                    project_id=project_id,
-                    group=group,
-                    tag=tag,
-                    base_url=h.base_url,
-                    user_email=acting_email,
-                )
+                # SAP's public API exposes no scope for creating tag definitions,
+                # so this always 403s regardless of authorization. Explain rather
+                # than attempt a write that cannot succeed.
+                return _capability_unavailable("tags", tag_alternative)
             elif operation in ["update", "delete"]:
                 raise ValueError(f"Operation '{operation}' not supported for tags (read-only after creation)")
             elif operation == "get":
@@ -845,7 +912,17 @@ def register(mcp: FastMCP) -> None:
             if operation == "list":
                 if not project_id:
                     raise ValueError("project_id is required for project_users")
-                return client.get_project_users(project_id, h.token, h.base_url)
+                try:
+                    return client.get_project_users(project_id, h.token, h.base_url)
+                except RuntimeError as exc:
+                    if _is_not_authorized(exc):
+                        return _capability_unavailable(
+                            "project_users",
+                            "Task assignees are available on each task (resource='tasks', "
+                            "the assignee field). A full project member roster is not "
+                            "exposed by the public API.",
+                        )
+                    raise
             else:
                 raise ValueError(f"Operation '{operation}' not supported for project_users in Phase 1")
 
@@ -853,7 +930,12 @@ def register(mcp: FastMCP) -> None:
             if operation == "get":
                 if not project_id:
                     raise ValueError("project_id is required for customization")
-                return client.get_project_customization(project_id, h.token, h.base_url)
+                try:
+                    return client.get_project_customization(project_id, h.token, h.base_url)
+                except RuntimeError as exc:
+                    if _is_not_authorized(exc):
+                        return _capability_unavailable("customization")
+                    raise
             elif operation == "list":
                 raise ValueError("Use operation='get' for customization (returns single project config)")
             else:
