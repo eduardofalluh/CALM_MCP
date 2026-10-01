@@ -787,6 +787,39 @@ def test_scopes_list_filters_by_project_id():
         assert [s["ID"] for s in result] == ["s1", "s3"]
 
 
+# --------------------------------------------------------------------------- #
+# features — use the dedicated Features service, not the Projects path
+# --------------------------------------------------------------------------- #
+
+def test_get_features_uses_features_service_and_filters_by_project():
+    """features.read unlocks /api/calm-features/v1/Features — NOT the Projects
+    path (which 403s). The client hits the Features service and filters by
+    project client-side."""
+    import src.calm.client as c
+    raw = [
+        {"id": "F1", "projectId": "P1", "name": "A"},
+        {"id": "F2", "projectId": "P2", "name": "B"},
+        {"id": "F3", "projectId": "P1", "name": "C"},
+    ]
+    with patch("src.calm.client._get", return_value=raw) as g:
+        result = c.get_features("P1", TOKEN, BASE_URL)
+        called_url = g.call_args.args[0]
+        assert called_url == f"{BASE_URL}/api/calm-features/v1/Features"
+        assert "/projects/" not in called_url
+        assert [f["ID"] for f in result] == ["F1", "F3"]
+
+
+def test_create_feature_posts_to_features_service_with_project_in_body():
+    import src.calm.client as c
+    with patch("src.calm.client._write", return_value={"id": "F9"}) as w:
+        c.create_feature(token=TOKEN, project_id="P1", name="New", base_url=BASE_URL)
+        method, url = w.call_args.args[0], w.call_args.args[1]
+        body = w.call_args.args[3]
+        assert method == "POST"
+        assert url == f"{BASE_URL}/api/calm-features/v1/Features"
+        assert body["projectId"] == "P1" and body["name"] == "New"
+
+
 def test_scopes_list_without_project_id_returns_all():
     fn = _fn()
     all_scopes = [

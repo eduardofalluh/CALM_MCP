@@ -568,18 +568,23 @@ def get_project_users(project_id: str, token: str, base_url: str | None = None) 
 # --- Features ---------------------------------------------------------------
 
 def get_features(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
-    """Return all features for a project.
+    """Return features for a project.
 
     Features are higher-level groupings used for transport tracking and
     release planning. Each feature can contain multiple requirements.
+
+    Features have their own dedicated service — ``/api/calm-features/v1/Features``
+    — which is what the ``features.read`` scope unlocks. The Projects-service
+    path (``/projects/{id}/features``) is NOT the real Features API and returns
+    an empty 403, so we query the Features service and filter by project here.
     """
-    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/features"
+    url = f"{_base_url(base_url)}/api/calm-features/v1/Features"
     result = _get(url, token)
     items = result if isinstance(result, list) else result.get("value", [])
-    return [
+    mapped = [
         {
             "ID": item.get("id"),
-            "Project ID": item.get("projectId") or project_id,
+            "Project ID": item.get("projectId") or item.get("project"),
             "Name": item.get("name"),
             "Description": item.get("description"),
             "Status": item.get("status"),
@@ -587,6 +592,12 @@ def get_features(project_id: str, token: str, base_url: str | None = None) -> li
         }
         for item in items
     ]
+    # Filter to the requested project. Guard against a field-name mismatch: if
+    # no item carries a project id at all, return everything rather than hide
+    # all results behind a wrong assumption about the field name.
+    if project_id and any(f["Project ID"] for f in mapped):
+        return [f for f in mapped if f["Project ID"] == project_id]
+    return mapped
 
 
 def create_feature(
@@ -622,7 +633,9 @@ def create_feature(
     if extra_fields:
         body.update(extra_fields)
 
-    url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/features"
+    # Features have their own service; the Projects-service path is not the
+    # real Features API (see get_features).
+    url = f"{_base_url(base_url)}/api/calm-features/v1/Features"
     result = _write("POST", url, token, body, user_email=user_email)
     return result if isinstance(result, dict) and result else {"submitted": body}
 

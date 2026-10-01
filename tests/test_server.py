@@ -120,6 +120,14 @@ def _fake_get(url, *a, **kw):
             {"id": "TAG1", "projectId": "P001", "group": "Scope", "tag": "Baseline"},
             {"id": "TAG2", "projectId": "P001", "group": "Tshirt size", "tag": "L"},
         ]))
+    # Features have their own service (features.read); the project-path variant
+    # below is not the real Features API. Match the service endpoint first.
+    if "calm-features/v1/Features" in url:
+        return _FakeResp(json.dumps([
+            {"id": "F1", "projectId": "P001", "name": "User Management", "description": "auth", "status": "Active"},
+            {"id": "F2", "projectId": "P001", "name": "Reporting", "description": "BI", "status": "Planned"},
+            {"id": "F9", "projectId": "P999", "name": "Other project feature", "description": "x", "status": "Active"},
+        ]))
     if "/projects/" in url and "/features" in url:
         return _FakeResp(json.dumps([
             {"id": "F1", "projectId": "P001", "name": "User Management", "description": "auth", "status": "Active"},
@@ -439,20 +447,23 @@ async def main() -> int:
             check("timebox create ok", res.is_error is not True,
                   f"err {res.content[0].text if res.content else ''}")
 
-            # ---- The reported tag-creation bug ----------------------------
+            # ---- Tag creation: not exposed by SAP's public API ------------
+            # Creating tag *definitions* has no scope in SAP's CALM public API,
+            # so the tool returns a clear 'unavailable' explanation instead of a
+            # raw 403. (Assigning existing tags to a task still works — see the
+            # task_tags path.)
             res = await _call(session, "tags", "create", project_id="P001",
                               data={"group": "Scope", "tag": "MyNewTag"})
-            check("tag create ok (reported bug fixed)", res.is_error is not True,
+            check("tag create returns a result (not a hard error)", res.is_error is not True,
                   f"err {res.content[0].text if res.content else ''}")
             tag = _payload(res)
-            check("tag create round-trips group+tag",
-                  isinstance(tag, dict) and tag.get("tag") == "MyNewTag" and tag.get("group") == "Scope",
+            check("tag create reports unavailable (SAP platform limitation)",
+                  isinstance(tag, dict) and tag.get("status") == "unavailable"
+                  and tag.get("resource") == "tags",
                   f"got {tag}")
-            # Missing group/tag must error clearly rather than mis-call the client.
-            res = await _call(session, "tags", "create", project_id="P001", data={"group": "Scope"})
-            check("tag create without tag errors clearly", res.is_error is True)
-            res = await _call(session, "tags", "create", data={"group": "Scope", "tag": "X"})
-            check("tag create without project_id errors clearly", res.is_error is True)
+            check("tag create points to the task_tags alternative",
+                  isinstance(tag, dict) and "task_tags" in (tag.get("alternative") or ""),
+                  f"got {tag}")
 
             res = await _call(session, "features", "create", project_id="P001",
                               data={"name": "New Feature", "description": "d"})
