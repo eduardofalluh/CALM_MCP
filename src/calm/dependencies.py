@@ -17,6 +17,8 @@ Base URL resolution order:
 
 from __future__ import annotations
 
+import hashlib
+import logging
 import os
 
 from fastmcp import Context
@@ -24,6 +26,19 @@ from fastmcp import Context
 from .config import build_auth_url, build_base_url, get_auth_url, get_base_url
 from .models import CALMHeaders
 from .token_manager import get_managed_token, get_or_create_token_manager
+
+log = logging.getLogger("calm-mcp.auth")
+
+
+def _fp(secret: str | None) -> str:
+    """Non-reversible fingerprint of a secret for logs: '<len>:<sha256[:8]>'.
+
+    Never returns the secret itself — just enough to tell two secrets apart and
+    spot truncation. 'none' when absent.
+    """
+    if not secret:
+        return "none"
+    return f"{len(secret)}:{hashlib.sha256(secret.encode()).hexdigest()[:8]}"
 
 
 def writes_enabled() -> bool:
@@ -87,6 +102,19 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
     except Exception:
         pass
 
+    # Diagnostic: what the request actually carried (no secret values — fingerprint only).
+    log.info(
+        "CALM headers in: client_id=%s client_secret_fp=%s identity_zone=%s region_zone=%s "
+        "auth_url_hdr=%s base_url_hdr=%s bearer=%s",
+        client_id_hdr or "-",
+        _fp(client_secret_hdr),
+        identity_zone or "-",
+        region_zone or "-",
+        auth_url_hdr or "-",
+        base_url or "-",
+        "yes" if auth_bearer_token else "no",
+    )
+
     # Resolve base URL: explicit header > zone headers > env vars
     if not base_url:
         if identity_zone or region_zone:
@@ -102,12 +130,26 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
             auth_url = build_auth_url(identity_zone, region_zone)
         else:
             auth_url = get_auth_url()
+        log.info(
+            "CALM auth path=HEADER (per-tenant) client_id=%s secret_fp=%s auth_url=%s base_url=%s",
+            client_id_hdr, _fp(client_secret_hdr), auth_url, base_url,
+        )
         mgr = get_or_create_token_manager(client_id_hdr, client_secret_hdr, auth_url)
         token = mgr.get_token()
         token_source = "client_credentials (header)"
 
     # --- 2. Server-startup token manager (env vars) ---
     if not token:
+        # NOTE: this uses the POD ENV credential, which is shared by ALL tenants.
+        # If a request routed to one tenant's base_url (from headers) but reaches
+        # this branch, it is authenticating with the env credential — a mismatch
+        # that yields 'invalid_client' for every tenant except the one whose
+        # credential is in the pod env.
+        log.info(
+            "CALM auth path=ENV (shared pod credential) env_client_id=%s env_secret_fp=%s "
+            "against base_url=%s  <-- header credential was NOT present",
+            os.getenv("CALM_CLIENT_ID") or "-", _fp(os.getenv("CALM_CLIENT_SECRET")), base_url,
+        )
         managed = get_managed_token()
         if managed:
             token = managed
