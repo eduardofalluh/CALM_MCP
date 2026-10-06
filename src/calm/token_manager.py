@@ -24,6 +24,7 @@ request headers rather than server env vars.
 from __future__ import annotations
 
 import base64
+import hashlib
 import threading
 import time
 
@@ -138,13 +139,28 @@ def get_managed_token() -> str | None:
 # Per-tenant cache — used when credentials arrive via request headers
 # ---------------------------------------------------------------------------
 
-_tenant_managers: dict[tuple[str, str], TokenManager] = {}
+# Keyed by (client_id, auth_url, secret_fingerprint). The secret fingerprint is
+# ESSENTIAL: without it, a rotated secret for an already-seen (client_id, auth_url)
+# would return the stale manager and keep sending the OLD secret to XSUAA — a
+# silent "invalid_client" that persists until the pod restarts. Including the
+# fingerprint means a changed secret transparently creates a fresh manager.
+_tenant_managers: dict[tuple[str, str, str], TokenManager] = {}
 _tenant_lock = threading.Lock()
 
 
+def _secret_fingerprint(client_secret: str) -> str:
+    """Non-reversible fingerprint of the secret for cache-keying (never the secret)."""
+    return hashlib.sha256(client_secret.encode()).hexdigest()[:16]
+
+
 def get_or_create_token_manager(client_id: str, client_secret: str, auth_url: str) -> TokenManager:
-    """Return a cached TokenManager for (client_id, auth_url), creating one if needed."""
-    key = (client_id, auth_url)
+    """Return a cached TokenManager for (client_id, auth_url, secret), creating one if needed.
+
+    The secret is part of the cache key so that rotating a tenant's secret always
+    produces a manager bound to the current secret — the old entry is simply left
+    behind (it holds no live token once expired) rather than shadowing the new one.
+    """
+    key = (client_id, auth_url, _secret_fingerprint(client_secret))
     with _tenant_lock:
         if key not in _tenant_managers:
             _tenant_managers[key] = TokenManager(
