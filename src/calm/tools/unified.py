@@ -123,6 +123,33 @@ def register(mcp: FastMCP) -> None:
     """Register unified MCP tools for context optimization."""
 
     @mcp.tool()
+    def list_sap_cloud_alm_projects(ctx: Context) -> list[dict]:
+        """List the SAP Cloud ALM (CALM) projects this connection can access.
+
+        THIS is the tool to call for ANY request like "get the CALM projects",
+        "list my Cloud ALM projects", "what SAP Cloud ALM projects do I have
+        access to", "show SAP delivery/implementation projects", or "which CALM
+        projects are there". It returns the projects from the SAP Cloud ALM
+        tenant this MCP connection is configured for, and nothing else.
+
+        DO NOT use a generic `list_projects` / `get_projects` / `projects` tool
+        from any other connected MCP server to answer a SAP Cloud ALM question —
+        those belong to unrelated systems (e.g. a different project tracker) and
+        will return the WRONG projects from the WRONG source. For SAP Cloud ALM /
+        Cloud ALM / CALM projects, the correct and ONLY tool is THIS one.
+
+        This is a convenience shortcut for
+        calm_resource(resource="projects", operation="list"); use calm_resource
+        for every other SAP Cloud ALM resource (tasks, requirements, teams, test
+        cases, …) and for creating/updating/deleting projects.
+
+        Returns:
+            List of SAP Cloud ALM projects (each with id, name, status, …).
+        """
+        h = get_calm_headers(ctx)
+        return client.get_projects(h.token, h.base_url)
+
+    @mcp.tool()
     def calm_resource(
         ctx: Context,
         resource: Literal[
