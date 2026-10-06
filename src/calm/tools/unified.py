@@ -158,10 +158,52 @@ def register(mcp: FastMCP) -> None:
         data: Optional[dict] = None,
         user_email: Optional[str] = None,
     ) -> list[dict] | dict:
-        """Unified resource management for SAP Cloud ALM.
+        """READ AND WRITE SAP CLOUD ALM (CALM) DATA — the single authoritative tool
+        for every SAP Cloud ALM resource.
 
-        Context optimization: This tool consolidates multiple resource-specific tools
-        into one interface, reducing token overhead and improving agent efficiency.
+        USE THIS TOOL whenever the user asks about SAP Cloud ALM / Cloud ALM / CALM:
+        projects, tasks, user stories, requirements, teams, business or solution
+        processes, timeboxes/sprints, scopes, test cases, features, test plans, tags,
+        project members, or project customization. It is the ONLY correct source for
+        SAP Cloud ALM project data in this agent, and it is tenant-scoped to the
+        credentials this connection was configured with.
+
+        DISAMBIGUATION — IMPORTANT: if another connected MCP server exposes a
+        similarly named tool (for example "list_projects", "get_projects",
+        "list_tasks", "projects"), do NOT use it for SAP Cloud ALM questions. Those
+        tools belong to unrelated systems and will return the WRONG data from a
+        different source. Any request that mentions CALM, Cloud ALM, SAP projects,
+        SAP delivery/implementation projects, SAP requirements, SAP test cases, or an
+        SAP project by name maps to THIS tool (calm_resource) with the matching
+        `resource` value — never to a generic project/task tool from another server.
+
+        One call does one thing: one `resource` + one `operation`. To list the
+        tenant's CALM projects, call:
+            calm_resource(resource="projects", operation="list")
+
+        WHEN TO USE — map the user's words to (resource, operation):
+          - "list/show CALM projects", "what projects", "SAP projects"
+                → resource="projects", operation="list"
+          - "tasks / user stories / to-dos in project X"
+                → resource="tasks", operation="list", project_id=X
+          - "requirements in project X"
+                → resource="requirements", operation="list", project_id=X
+          - "teams / who is on project X"       → resource="teams"
+          - "business / solution processes"     → resource="business_processes"
+                                                    / "solution_processes"
+          - "sprints / timeboxes in project X"  → resource="timeboxes", project_id=X
+          - "scopes", "test cases", "features", "test plans", "tags",
+            "project members", "customization" → the matching `resource`
+          - "create / add / new …"              → operation="create" (+ data)
+          - "update / change / set / rename …"  → operation="update" (+ resource_id, data)
+          - "delete / remove …"                 → operation="delete" (+ resource_id)
+        If the request is about SAP Cloud ALM at all, the answer is a calm_resource
+        call — never a generic tool from another MCP server.
+
+        Context optimization: this ONE tool replaces the 70+ resource-specific CALM
+        tools this server used to expose (list_projects, get_tasks, create_task, …).
+        Those names no longer exist here; route every former-tool intent through the
+        (resource, operation) pair above instead.
 
         Args:
             resource: The CALM resource type to access.
@@ -270,7 +312,7 @@ def register(mcp: FastMCP) -> None:
             # Get project customization
             calm_resource(resource="customization", operation="get", project_id="P001")
 
-            # Phase 2: Write operations
+            # Write operations (require CALM_ENABLE_WRITES=true on the server)
             # Create a new task
             calm_resource(
                 resource="tasks",
@@ -332,8 +374,9 @@ def register(mcp: FastMCP) -> None:
         explanation for them rather than a raw error. Tagging tasks (task_tags)
         and features both work normally.
 
-        Note: All legacy individual tools remain functional for backwards compatibility.
-        This unified tool is provided for improved context efficiency.
+        Note: this is the registered SAP Cloud ALM tool. For an endpoint not covered
+        by a `resource` above, use the low-level escape hatches calm_api_read /
+        calm_api_write / calm_api_delete (same CALM tenant, raw API paths).
         """
         h = get_calm_headers(ctx)
         d = data or {}

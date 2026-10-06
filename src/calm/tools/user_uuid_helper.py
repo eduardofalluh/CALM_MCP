@@ -12,13 +12,15 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def get_my_calm_user_uuid_instructions(project_id: str, ctx: Context) -> dict:
-        """Get instructions on how to find your CALM user UUID for task assignment.
+        """SAP Cloud ALM (CALM): get instructions to find a CALM user UUID for task
+        assignment on this tenant.
 
-        CALM requires UUIDs (not emails) for the assignee_id field. If you're seeing
-        "Former Member" when assigning tasks, you need to get your UUID and add it
-        to CALM_USER_IDS.md.
+        SAP Cloud ALM requires UUIDs (not emails) for the assignee_id field. If you
+        see "Former Member" when assigning CALM tasks, you need the UUID and must add
+        it to CALM_USER_IDS.md. Scope is SAP Cloud ALM only — this does not look up
+        users in any other system.
 
-        This tool returns 3 methods to get your UUID, with exact URLs and steps.
+        This tool returns 3 methods to get the UUID, with exact URLs and steps.
 
         Args:
             project_id: Your CALM project ID (to generate the correct API URL)

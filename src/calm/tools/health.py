@@ -14,10 +14,13 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def calm_health(ctx: Context) -> dict:
-        """Diagnostic tool. Confirms the MCP server is up and reports token status,
-        resolved URLs, and the raw zone header values received. Use this to verify
-        that GenAI Studio is injecting the correct header values.
-        Does NOT make a live CALM API call.
+        """SAP Cloud ALM (CALM) connection diagnostic. Confirms THIS SAP Cloud ALM
+        MCP server is up and reports token status, the resolved tenant OAuth/API
+        URLs, and the raw per-tenant header values received (identity zone, region,
+        client id). Use this to verify GenAI Studio is injecting the correct SAP
+        Cloud ALM credentials for this connection and that the server resolved the
+        intended tenant — not another one. Does NOT make a live CALM API call and
+        never returns project data; for CALM data use calm_resource.
         """
         token_source = None
         identity_zone = None

@@ -28,7 +28,9 @@ def register(mcp: FastMCP) -> None:
         ctx: Context,
         wricef: str | None = None,
     ) -> dict:
-        """Create a testing requirement in the Test Management repository.
+        """Create a testing requirement in the OPTIONAL BTP Test Management OData
+        repository (NOT SAP Cloud ALM native — for CALM requirements use
+        calm_resource(resource="requirements", operation="create")).
 
         Args:
             tr_id: requirement key, e.g. "TR-0042".
@@ -46,9 +48,11 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def create_tm_test_case(test_case: dict, ctx: Context) -> dict:
-        """Create a test case — supports DEEP INSERT of the whole tree in one
-        request: test case → activities → actions → field entries, plus
-        applications.
+        """Create a test case in the OPTIONAL BTP Test Management OData repository
+        (NOT SAP Cloud ALM native — for CALM test cases use
+        calm_resource(resource="test_cases", operation="create")). Supports DEEP
+        INSERT of the whole tree in one request: test case → activities → actions →
+        field entries, plus applications.
 
         Args:
             test_case: entity payload, e.g.

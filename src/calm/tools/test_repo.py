@@ -68,11 +68,14 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def get_tm_statistics(ctx: Context) -> dict:
-        """Aggregated repository counts: totals per entity plus breakdowns by
-        scenario type, priority and prepared flag.
+        """BTP Test Management repository (OPTIONAL OData feed, NOT SAP Cloud ALM
+        native): aggregated counts — totals per entity plus breakdowns by scenario
+        type, priority and prepared flag.
 
-        This is the quickest way to check whether the CALM→repository sync has
-        data: zero or stale counts mean the inbound feed has not run.
+        Use the tm_* tools only for the separate BTP Test Management OData repository;
+        for SAP Cloud ALM's own test cases use calm_resource(resource="test_cases").
+        This is the quickest way to check whether the CALM→repository sync has data:
+        zero or stale counts mean the inbound feed has not run.
         """
         h = get_tm_headers(ctx)
         return tm_client.get_statistics(h.token, h.base_url)
@@ -89,7 +92,9 @@ def register(mcp: FastMCP) -> None:
         count: bool = False,
         updated_since: str | None = None,
     ) -> dict:
-        """List test cases from the Test Management repository (OData query).
+        """List test cases from the OPTIONAL BTP Test Management OData repository
+        (NOT SAP Cloud ALM native — for CALM's own test cases use
+        calm_resource(resource="test_cases")). OData query.
 
         Args:
             filter: OData $filter, e.g. "scenario_type eq 'negative'".
@@ -137,7 +142,9 @@ def register(mcp: FastMCP) -> None:
         top: int | None = None,
         count: bool = False,
     ) -> dict:
-        """List testing requirements from the repository.
+        """List testing requirements from the OPTIONAL BTP Test Management OData
+        repository (NOT SAP Cloud ALM native — for CALM requirements use
+        calm_resource(resource="requirements")).
 
         Fields: id, tr_id (e.g. "TR-0001"), wricef, short_desc, created_at,
         updated_at. Set expand_test_cases=true to include each requirement's

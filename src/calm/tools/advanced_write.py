@@ -26,12 +26,15 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def calm_api_read(path: str, ctx: Context, params: dict | None = None) -> Any:
-        """Low-level GET for any CALM API path. Read-only — always available
-        (NOT gated by CALM_ENABLE_WRITES).
+        """SAP Cloud ALM (CALM) low-level GET — raw read for any SAP Cloud ALM API
+        path on THIS tenant. Read-only, always available (NOT gated by
+        CALM_ENABLE_WRITES).
 
-        Use this to READ any endpoint, especially when you need a value that a
+        Prefer calm_resource for normal reads; use this ESCAPE HATCH only for SAP
+        Cloud ALM endpoints that calm_resource does not cover, or to fetch a value a
         write call requires. The classic case: a requirement/task POST needs the
-        project UUID in the path — list projects here first to find it.
+        project UUID in the path — list projects here first to find it. This hits
+        the SAP Cloud ALM tenant only; do not use it for non-CALM systems.
 
         Args:
             path: API-relative path from the tenant base URL, e.g.
@@ -55,9 +58,12 @@ def register(mcp: FastMCP) -> None:
         body: dict | list | None = None,
         if_match: str | None = None,
     ) -> dict:
-        """Low-level POST/PATCH to any CALM API path. Requires CALM_ENABLE_WRITES=true.
+        """SAP Cloud ALM (CALM) low-level POST/PATCH — raw write to any SAP Cloud ALM
+        API path on THIS tenant. Requires CALM_ENABLE_WRITES=true.
 
-        Use this for documented endpoints that don't yet have a dedicated tool.
+        Prefer calm_resource for normal create/update; use this ESCAPE HATCH only for
+        documented SAP Cloud ALM endpoints that calm_resource does not yet cover.
+        Writes go to the SAP Cloud ALM tenant only — never another system.
 
         Args:
             method: "POST" or "PATCH".
@@ -86,7 +92,10 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def calm_api_delete(path: str, ctx: Context, if_match: str | None = None) -> dict:
-        """Low-level DELETE to any CALM API path. Requires CALM_ENABLE_WRITES=true.
+        """SAP Cloud ALM (CALM) low-level DELETE — raw delete for any SAP Cloud ALM
+        API path on THIS tenant. Requires CALM_ENABLE_WRITES=true. Use this ESCAPE
+        HATCH only for SAP Cloud ALM endpoints that calm_resource does not cover;
+        deletes affect the SAP Cloud ALM tenant only.
 
         Args:
             path: API-relative path, e.g. "api/calm-tasks/v1/workstreams/{id}".

@@ -130,11 +130,12 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def get_calm_oauth_metadata(ctx: Context) -> dict:
-        """Get OAuth 2.0 Protected Resource Metadata (RFC 9728).
+        """SAP Cloud ALM (CALM): OAuth 2.0 Protected Resource Metadata (RFC 9728).
 
-        Returns the metadata document that MCP clients use to discover the
-        authorization server and required scopes. This is the entry point for
-        MCP OAuth flows per the MCP specification.
+        Returns the metadata document that MCP clients use to discover THIS SAP Cloud
+        ALM tenant's authorization server and required scopes. Entry point for MCP
+        OAuth flows per the MCP specification. SAP Cloud ALM only — not a general
+        OAuth tool for other services.
 
         The metadata is also available at:
         GET {base_url}/.well-known/oauth-protected-resource
@@ -147,11 +148,11 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def get_calm_authorization_server_metadata(ctx: Context) -> dict:
-        """Get OAuth 2.0 Authorization Server Metadata (RFC 8414).
+        """SAP Cloud ALM (CALM): OAuth 2.0 Authorization Server Metadata (RFC 8414).
 
-        Returns the authorization server's capabilities and endpoints.
-        MCP clients fetch this after discovering the authorization server
-        from the Protected Resource Metadata.
+        Returns THIS SAP Cloud ALM tenant's authorization server capabilities and
+        endpoints. MCP clients fetch this after discovering the authorization server
+        from the Protected Resource Metadata. SAP Cloud ALM only.
 
         The metadata is also available at:
         GET {auth_base_url}/.well-known/oauth-authorization-server
