@@ -16,11 +16,14 @@ def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def get_calm_oauth_endpoints(ctx: Context) -> dict:
-        """Get SAP Cloud ALM OAuth endpoints for user authentication.
+        """SAP Cloud ALM (CALM): OAuth endpoints for user authentication on THIS tenant.
 
         Returns the OAuth authorization server endpoints that GenAI Studio needs
-        to implement user-delegated OAuth flows. This enables users to login with
-        their own CALM credentials instead of using a shared service account.
+        to implement user-delegated OAuth flows for SAP Cloud ALM. This enables
+        users to login with their own CALM credentials instead of using a shared
+        service account. SAP Cloud ALM only — not a general OAuth tool for other
+        services, and never a source of project/task data (for CALM data use
+        calm_resource).
 
         **Why OAuth?**
         - CALM History shows the actual user's name (not "API")
