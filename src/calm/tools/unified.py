@@ -315,8 +315,11 @@ def register(mcp: FastMCP) -> None:
             # List all scopes
             calm_resource(resource="scopes", operation="list")
 
-            # List test cases
+            # List test cases (each result includes a "Tags" list and "Display ID")
             calm_resource(resource="test_cases", operation="list")
+            # Filter test cases by CALM tag (exact, case-sensitive) and/or project
+            calm_resource(resource="test_cases", operation="list",
+                          project_id="P001", data={"tag": "SIT"})
 
             # List business processes
             calm_resource(resource="business_processes", operation="list")
@@ -830,7 +833,12 @@ def register(mcp: FastMCP) -> None:
 
         elif resource == "test_cases":
             if operation == "list":
-                return client.get_test_cases(h.token, h.base_url)
+                return client.get_test_cases(
+                    h.token,
+                    h.base_url,
+                    tag=d.get("tag"),
+                    project_id=project_id or d.get("project_id"),
+                )
             elif operation == "create":
                 ensure_writes_enabled()
                 tc_project_id = project_id or d.get("project_id")

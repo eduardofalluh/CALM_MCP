@@ -12,6 +12,7 @@ import json
 import logging
 import uuid
 from typing import Any
+from urllib.parse import quote
 
 import requests
 
@@ -366,8 +367,35 @@ def get_scopes(token: str, base_url: str | None = None) -> list[dict]:
     ]
 
 
-def get_test_cases(token: str, base_url: str | None = None) -> list[dict]:
-    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases"
+def get_test_cases(
+    token: str,
+    base_url: str | None = None,
+    tag: str | None = None,
+    project_id: str | None = None,
+) -> list[dict]:
+    """List manual test cases, optionally filtered by tag and/or project.
+
+    Each returned case includes its CALM tags (the labels under
+    ``toTagAssignments``, e.g. "SIT", "P2P"). When ``tag`` is given, the
+    filtering is done server-side with an OData ``any()`` clause on the tag
+    label (exact match, case-sensitive — CALM stores tags case-sensitively).
+    ``project_id`` restricts the result to one project.
+    """
+    # Always expand tags so the "Tags" field is populated.
+    query = "$expand=toTagAssignments"
+
+    filters: list[str] = []
+    if project_id:
+        # projectId is Edm.Guid — it must NOT be quoted (quoting yields a 400).
+        filters.append(f"projectId eq {project_id}")
+    if tag:
+        # Tag label is a string; escape embedded single quotes by doubling.
+        esc = tag.replace("'", "''")
+        filters.append(f"toTagAssignments/any(t:t/label eq '{esc}')")
+    if filters:
+        query += "&$filter=" + quote(" and ".join(filters), safe="")
+
+    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases?{query}"
     result = _get(url, token)
     return [_format_test_case(item) for item in result.get("value", [])]
 
@@ -1140,15 +1168,24 @@ def update_scope(
 
 def _format_test_case(item: dict) -> dict:
     priority_code = str(item.get("priorityCode"))
+    # Tags (CALM "tags") come from the toTagAssignments navigation collection,
+    # present only when the caller expanded it. Each entry carries a `label`.
+    tags = [
+        t.get("label")
+        for t in (item.get("toTagAssignments") or [])
+        if isinstance(t, dict) and t.get("label")
+    ]
     return {
         # Test Management is OData; the key is `uuid` (fall back to `id`).
         "ID": item.get("uuid") or item.get("id"),
+        "Display ID": item.get("displayId"),
         "Project ID": item.get("projectId"),
         "Scope ID": item.get("scopeId"),
         "Solution Process ID": item.get("solutionProcessId"),
         "Title": item.get("title"),
         "Prepared": item.get("isPrepared"),
         "Priority": TESTCASE_PRIORITY_MAP.get(priority_code, priority_code),
+        "Tags": tags,
     }
 
 

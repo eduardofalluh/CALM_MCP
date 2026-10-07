@@ -159,6 +159,16 @@ class TestUnifiedToolOtherResources:
         result = _tool_fn()(mock_ctx, resource="test_cases", operation="list")
         assert len(result) == 1
 
+    @patch("src.calm.client.get_test_cases")
+    def test_list_test_cases_tag_filter(self, mock_get, mock_ctx):
+        """resource=test_cases forwards the tag + project filter to the client."""
+        mock_get.return_value = [{"ID": "TC1", "Tags": ["SIT"]}]
+        _tool_fn()(mock_ctx, resource="test_cases", operation="list",
+                   project_id="P001", data={"tag": "SIT"})
+        _, kwargs = mock_get.call_args
+        assert kwargs["tag"] == "SIT"
+        assert kwargs["project_id"] == "P001"
+
     @patch("src.calm.client.get_project_customization")
     def test_get_customization(self, mock_get, mock_ctx):
         mock_get.return_value = {"projectId": "P001"}
