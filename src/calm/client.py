@@ -372,14 +372,19 @@ def get_test_cases(
     base_url: str | None = None,
     tag: str | None = None,
     project_id: str | None = None,
+    title_contains: str | None = None,
 ) -> list[dict]:
-    """List manual test cases, optionally filtered by tag and/or project.
+    """List manual test cases, optionally filtered by tag, project and/or title.
 
     Each returned case includes its CALM tags (the labels under
-    ``toTagAssignments``, e.g. "SIT", "P2P"). When ``tag`` is given, the
-    filtering is done server-side with an OData ``any()`` clause on the tag
-    label (exact match, case-sensitive — CALM stores tags case-sensitively).
-    ``project_id`` restricts the result to one project.
+    ``toTagAssignments``, e.g. "SIT", "P2P"). All filters are applied
+    server-side and combined with ``and``:
+
+    - ``tag``: exact, case-sensitive match on a tag label (CALM stores tags
+      case-sensitively).
+    - ``project_id``: restrict to one project.
+    - ``title_contains``: case-insensitive substring match on the title
+      (useful when a grouping like "SIT" lives in the title rather than a tag).
     """
     # Always expand tags so the "Tags" field is populated.
     query = "$expand=toTagAssignments"
@@ -392,6 +397,10 @@ def get_test_cases(
         # Tag label is a string; escape embedded single quotes by doubling.
         esc = tag.replace("'", "''")
         filters.append(f"toTagAssignments/any(t:t/label eq '{esc}')")
+    if title_contains:
+        # Case-insensitive substring match via tolower() on both sides.
+        esc = title_contains.replace("'", "''").lower()
+        filters.append(f"contains(tolower(title),'{esc}')")
     if filters:
         query += "&$filter=" + quote(" and ".join(filters), safe="")
 

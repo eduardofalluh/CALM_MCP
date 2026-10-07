@@ -64,6 +64,19 @@ def test_tag_single_quote_escaped():
     assert "O%27%27Brien" in url
 
 
+def test_title_contains_case_insensitive():
+    url, _ = _capture(title_contains="SIT")
+    # Lowercased on both sides via tolower() for a case-insensitive match.
+    assert "contains%28tolower%28title%29%2C%27sit%27%29" in url
+
+
+def test_title_and_tag_combined():
+    url, _ = _capture(tag="SIT", title_contains="login")
+    assert "%20and%20" in url
+    assert "label%20eq%20%27SIT%27" in url
+    assert "tolower%28title%29%2C%27login%27" in url
+
+
 def test_missing_tag_assignments_yields_empty_list():
     def fake_get(url, token):
         return {"value": [{"uuid": "u2", "title": "No tags", "priorityCode": 1}]}

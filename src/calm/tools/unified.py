@@ -320,6 +320,9 @@ def register(mcp: FastMCP) -> None:
             # Filter test cases by CALM tag (exact, case-sensitive) and/or project
             calm_resource(resource="test_cases", operation="list",
                           project_id="P001", data={"tag": "SIT"})
+            # Or match a grouping that lives in the title (case-insensitive substring)
+            calm_resource(resource="test_cases", operation="list",
+                          data={"title_contains": "SIT"})
 
             # List business processes
             calm_resource(resource="business_processes", operation="list")
@@ -838,6 +841,7 @@ def register(mcp: FastMCP) -> None:
                     h.base_url,
                     tag=d.get("tag"),
                     project_id=project_id or d.get("project_id"),
+                    title_contains=d.get("title_contains"),
                 )
             elif operation == "create":
                 ensure_writes_enabled()
