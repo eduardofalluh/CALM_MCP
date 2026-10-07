@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import threading
 import time
 
@@ -32,7 +33,26 @@ import requests
 
 from .config import build_auth_url
 
+log = logging.getLogger("calm-mcp.token")
+
 _REFRESH_BUFFER_SECONDS = 60  # refresh this many seconds before expiry
+
+
+def _secret_diag(secret: str | None) -> str:
+    """Non-reversible diagnostic for a secret: length, sha256 prefix, and whether
+    it has surrounding whitespace. Never contains the secret itself — just enough
+    to compare against a known-good value and to spot truncation or stray
+    whitespace/newlines that corrupt Basic auth and cause a misleading 401.
+    """
+    if not secret:
+        return "secret=none"
+    fp = hashlib.sha256(secret.encode()).hexdigest()[:8]
+    lead_ws = secret[:1].isspace()
+    trail_ws = secret[-1:].isspace()
+    return (
+        f"secret_len={len(secret)} secret_fp={fp} "
+        f"leading_ws={lead_ws} trailing_ws={trail_ws}"
+    )
 
 
 class TokenManager:
@@ -56,8 +76,13 @@ class TokenManager:
         """
         if not client_secret and not client_cert:
             raise ValueError("TokenManager needs either client_secret or client_cert")
-        self._client_id = client_id
-        self._client_secret = client_secret
+        self._client_id = client_id.strip() if isinstance(client_id, str) else client_id
+        # Trim stray whitespace/newlines: XSUAA client secrets never contain
+        # surrounding whitespace, but header/env pipelines sometimes append a
+        # trailing \r\n or space, which corrupts the Base64 Basic-auth and yields
+        # a misleading 401 "Bad credentials". Trimming here is a safe no-op for a
+        # well-formed secret.
+        self._client_secret = client_secret.strip() if isinstance(client_secret, str) else client_secret
         self._client_cert = client_cert
         self._auth_url = auth_url or build_auth_url()
         self._token: str | None = None
@@ -89,6 +114,10 @@ class TokenManager:
         else:
             raw = f"{self._client_id}:{self._client_secret}".encode()
             basic = base64.b64encode(raw).decode()
+            log.info(
+                "XSUAA token POST (client_secret): auth_url=%s client_id=%s %s",
+                self._auth_url, self._client_id, _secret_diag(self._client_secret),
+            )
             resp = requests.post(
                 self._auth_url,
                 data={"grant_type": "client_credentials"},
@@ -101,10 +130,23 @@ class TokenManager:
             mode = "client_secret"
 
         if resp.status_code != 200:
+            # Build a non-reversible credential diagnostic so the failure itself
+            # says WHICH credential was used — compare secret_fp/len against the
+            # known-good Ebsco secret to tell "wrong/mangled secret forwarded"
+            # (config) apart from a genuine XSUAA problem. Never the secret itself.
+            diag = (
+                f" [client_id={self._client_id} {_secret_diag(self._client_secret)}]"
+                if mode == "client_secret"
+                else f" [client_id={self._client_id} mode=x509]"
+            )
+            log.warning(
+                "XSUAA token request failed (%s): HTTP %s at %s — %s%s",
+                mode, resp.status_code, self._auth_url, resp.text[:300], diag,
+            )
             # Surface XSUAA's actual message (never the secret) to aid debugging.
             raise RuntimeError(
                 f"XSUAA token request failed ({mode}): HTTP {resp.status_code} "
-                f"{resp.reason} at {self._auth_url} — response: {resp.text[:500]}"
+                f"{resp.reason} at {self._auth_url} — response: {resp.text[:500]}{diag}"
             )
         data = resp.json()
 

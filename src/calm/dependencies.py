@@ -107,6 +107,19 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
             region_zone = h.get("x-calm-region-zone") or None
             client_id_hdr = h.get("x-calm-client-id")
             client_secret_hdr = h.get("x-calm-client-secret")
+            # Trim stray whitespace/newlines some header pipelines add. A trailing
+            # \r\n or space on the secret corrupts the Base64 Basic-auth and causes
+            # a misleading XSUAA 401 "Bad credentials". Record if we had to, so a
+            # mangled-forward shows up in the logs.
+            if client_id_hdr and client_id_hdr != client_id_hdr.strip():
+                log.warning("x-calm-client-id had surrounding whitespace — trimming")
+                client_id_hdr = client_id_hdr.strip()
+            if client_secret_hdr and client_secret_hdr != client_secret_hdr.strip():
+                log.warning(
+                    "x-calm-client-secret had surrounding whitespace — trimming (len %d -> %d)",
+                    len(client_secret_hdr), len(client_secret_hdr.strip()),
+                )
+                client_secret_hdr = client_secret_hdr.strip()
             auth_bearer_token = _token_from_authorization(h.get("Authorization"))
             raw_auth = h.get("x-calm-auth-url")
             if raw_auth and raw_auth.strip().startswith("https://"):
