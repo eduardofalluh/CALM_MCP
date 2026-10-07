@@ -362,7 +362,7 @@ def test_tag_list_reraises_non_auth_error():
 
 
 # --------------------------------------------------------------------------- #
-# features / test_plans
+# features
 # --------------------------------------------------------------------------- #
 
 def test_feature_create():
@@ -374,18 +374,6 @@ def test_feature_create():
         m.assert_called_once_with(
             token=TOKEN, project_id="P1", name="Feat", description=None,
             external_id="EX1", extra_fields=None, base_url=BASE_URL, user_email=None,
-        )
-
-
-def test_test_plan_create():
-    fn = _fn()
-    with patch("src.calm.client.create_test_plan") as m:
-        m.return_value = {"ID": "TP1"}
-        fn(Ctx(), resource="test_plans", operation="create", project_id="P1",
-           data={"name": "Plan"})
-        m.assert_called_once_with(
-            token=TOKEN, project_id="P1", name="Plan", description=None,
-            extra_fields=None, base_url=BASE_URL, user_email=None,
         )
 
 
@@ -586,19 +574,6 @@ def test_test_case_link_create():
         m.assert_called_once_with(
             token=TOKEN, test_case_id="TC1", requirement_id="3-999",
             link_type="validates", base_url=BASE_URL, user_email=None,
-        )
-
-
-def test_test_plan_assignment_create():
-    fn = _fn()
-    with patch("src.calm.client.assign_test_case_to_plan") as m:
-        m.return_value = {"ok": True}
-        fn(Ctx(), resource="test_plan_assignments", operation="create", resource_id="TP1",
-           data={"test_case_id": "TC1", "tester_email": "qa@x.com"})
-        m.assert_called_once_with(
-            token=TOKEN, test_plan_id="TP1", test_case_id="TC1",
-            tester_email="qa@x.com", extra_fields=None,
-            base_url=BASE_URL, user_email=None,
         )
 
 

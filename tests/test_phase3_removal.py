@@ -121,7 +121,6 @@ def test_unified_tool_functionality():
         "test_cases",
         "tags",
         "features",
-        "test_plans",
         "project_users",
         "customization"
     ]

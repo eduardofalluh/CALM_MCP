@@ -18,7 +18,7 @@ Covers:
                            business_process create/update/delete [ETag],
                            scope create/update/delete, test_case create/delete,
                            timebox create, tags create [reported bug],
-                           features create, test_plans create)
+                           features create)
   - escape hatch          (calm_api_write / calm_api_delete)
   - BTP Test Management    (tm_health, statistics, test cases, requirements,
                            odata read + write)
@@ -149,11 +149,7 @@ def _fake_get(url, *a, **kw):
              "startDate": "2026-07-01", "endDate": "2026-07-14", "closed": False},
         ]))
 
-    # --- Test plans / processes lists --------------------------------------
-    if "testmanagement" in url and "testPlans" in url:
-        return _FakeResp(json.dumps([
-            {"id": "TP1", "projectId": "P001", "name": "Enablement", "description": "d", "status": "Active"},
-        ]))
+    # --- Processes lists ---------------------------------------------------
     if "processauthoring/v1/businessProcesses" in url and "/businessProcesses/" not in url:
         return _FakeResp(json.dumps({"value": [
             {"id": "BP1", "name": "Order to Cash", "description": "O2C"},
@@ -468,11 +464,6 @@ async def main() -> int:
             res = await _call(session, "features", "create", project_id="P001",
                               data={"name": "New Feature", "description": "d"})
             check("feature create ok", res.is_error is not True,
-                  f"err {res.content[0].text if res.content else ''}")
-
-            res = await _call(session, "test_plans", "create", project_id="P001",
-                              data={"name": "New Test Plan", "description": "d"})
-            check("test_plan create ok", res.is_error is not True,
                   f"err {res.content[0].text if res.content else ''}")
 
             # ---- Test 6: escape hatch -------------------------------------

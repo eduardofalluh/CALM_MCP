@@ -165,7 +165,6 @@ def register(mcp: FastMCP) -> None:
             "test_cases",
             "tags",
             "features",
-            "test_plans",
             "project_users",
             "customization",
             "task_relations",
@@ -176,7 +175,6 @@ def register(mcp: FastMCP) -> None:
             "scope_assignments",
             "scenario_versions",
             "test_case_links",
-            "test_plan_assignments",
         ],
         operation: Literal["list", "get", "create", "update", "delete"] = "list",
         project_id: Optional[str] = None,
@@ -190,7 +188,7 @@ def register(mcp: FastMCP) -> None:
 
         USE THIS TOOL whenever the user asks about SAP Cloud ALM / Cloud ALM / CALM:
         projects, tasks, user stories, requirements, teams, business or solution
-        processes, timeboxes/sprints, scopes, test cases, features, test plans, tags,
+        processes, timeboxes/sprints, scopes, test cases, features, tags,
         project members, or project customization. It is the ONLY correct source for
         SAP Cloud ALM project data in this agent, and it is tenant-scoped to the
         credentials this connection was configured with.
@@ -219,7 +217,7 @@ def register(mcp: FastMCP) -> None:
           - "business / solution processes"     → resource="business_processes"
                                                     / "solution_processes"
           - "sprints / timeboxes in project X"  → resource="timeboxes", project_id=X
-          - "scopes", "test cases", "features", "test plans", "tags",
+          - "scopes", "test cases", "features", "tags",
             "project members", "customization" → the matching `resource`
           - "create / add / new …"              → operation="create" (+ data)
           - "update / change / set / rename …"  → operation="update" (+ resource_id, data)
@@ -258,7 +256,6 @@ def register(mcp: FastMCP) -> None:
                     tag work, assign existing tags to a task via resource='task_tags'
                     (Tasks API, works); create new tag definitions in the CALM UI.
                 - features: name (required), description, external_id, extra_fields
-                - test_plans: name (required), description, extra_fields
                 # --- sub-entity / relationship resources (create/update/delete) ---
                 - task_relations: create → resource_id=parent task_id,
                     data={relation_task_id (required), relation_type (default "0")};
@@ -285,9 +282,6 @@ def register(mcp: FastMCP) -> None:
                     resource_id=scope_id, data={version_ids: [...]}
                 - test_case_links: create (link test case → requirement) →
                     resource_id=test_case_id, data={requirement_id (required), link_type}
-                - test_plan_assignments: create (assign test case → plan) →
-                    resource_id=test_plan_id, data={test_case_id (required),
-                    tester_email, extra_fields}
             user_email: Optional for write operations - acting user's email for audit logs.
 
         Returns:
@@ -333,7 +327,6 @@ def register(mcp: FastMCP) -> None:
             # List project-specific resources
             calm_resource(resource="tags", operation="list", project_id="P001")
             calm_resource(resource="features", operation="list", project_id="P001")
-            calm_resource(resource="test_plans", operation="list", project_id="P001")
             calm_resource(resource="project_users", operation="list", project_id="P001")
 
             # Get project customization
@@ -389,7 +382,6 @@ def register(mcp: FastMCP) -> None:
             - test_cases → get_calm_test_cases()
             - tags → get_calm_tags(project_id)
             - features → get_calm_features(project_id)
-            - test_plans → get_calm_test_plans(project_id)
             - project_users → get_calm_project_users(project_id)
             - customization → get_calm_project_customization(project_id)
 
@@ -958,34 +950,6 @@ def register(mcp: FastMCP) -> None:
             else:
                 raise ValueError(f"Unknown operation '{operation}' for features")
 
-        elif resource == "test_plans":
-            if operation == "list":
-                if not project_id:
-                    raise ValueError("project_id is required for test_plans")
-                return client.get_test_plans(project_id, h.token, h.base_url)
-            elif operation == "create":
-                ensure_writes_enabled()
-                tp_project_id = project_id or d.get("project_id")
-                if not tp_project_id:
-                    raise ValueError("project_id is required for test_plans (pass project_id or data['project_id'])")
-                if not d.get("name"):
-                    raise ValueError("data must include 'name' for create operation")
-                return client.create_test_plan(
-                    token=h.token,
-                    project_id=tp_project_id,
-                    name=d.get("name"),
-                    description=d.get("description"),
-                    extra_fields=d.get("extra_fields"),
-                    base_url=h.base_url,
-                    user_email=acting_email,
-                )
-            elif operation in ["update", "delete"]:
-                raise ValueError(f"Operation '{operation}' not supported for test_plans (read-only after creation)")
-            elif operation == "get":
-                raise ValueError("Use operation='list' with project_id to get test_plans, then filter by ID")
-            else:
-                raise ValueError(f"Unknown operation '{operation}' for test_plans")
-
         elif resource == "project_users":
             if operation == "list":
                 if not project_id:
@@ -1238,28 +1202,6 @@ def register(mcp: FastMCP) -> None:
                 )
             else:
                 raise ValueError(f"Operation '{operation}' not supported for test_case_links (use create)")
-
-        elif resource == "test_plan_assignments":
-            # Assigning a test case to a test plan.
-            if operation == "create":
-                ensure_writes_enabled()
-                test_plan_id = resource_id or d.get("test_plan_id")
-                if not test_plan_id:
-                    raise ValueError("resource_id (test_plan_id) is required to assign a test case to a plan")
-                test_case_id = d.get("test_case_id")
-                if not test_case_id:
-                    raise ValueError("data must include 'test_case_id'")
-                return client.assign_test_case_to_plan(
-                    token=h.token,
-                    test_plan_id=test_plan_id,
-                    test_case_id=test_case_id,
-                    tester_email=d.get("tester_email"),
-                    extra_fields=d.get("extra_fields"),
-                    base_url=h.base_url,
-                    user_email=acting_email,
-                )
-            else:
-                raise ValueError(f"Operation '{operation}' not supported for test_plan_assignments (use create)")
 
         else:
             raise ValueError(f"Unknown resource type: {resource}")

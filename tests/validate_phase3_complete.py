@@ -174,7 +174,7 @@ def test_unified_tool_signature():
     required_resources = [
         "projects", "tasks", "requirements", "teams", "processes",
         "business_processes", "solution_processes", "timeboxes",
-        "scopes", "test_cases", "tags", "features", "test_plans",
+        "scopes", "test_cases", "tags", "features",
         "project_users", "customization"
     ]
 
