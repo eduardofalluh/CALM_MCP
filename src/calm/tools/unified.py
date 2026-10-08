@@ -175,6 +175,10 @@ def register(mcp: FastMCP) -> None:
             "scope_assignments",
             "scenario_versions",
             "test_case_links",
+            "analytics",
+            "team_roles",
+            "feature_status",
+            "feature_priorities",
         ],
         operation: Literal["list", "get", "create", "update", "delete"] = "list",
         project_id: Optional[str] = None,
@@ -219,6 +223,14 @@ def register(mcp: FastMCP) -> None:
           - "sprints / timeboxes in project X"  → resource="timeboxes", project_id=X
           - "scopes", "test cases", "features", "tags",
             "project members", "customization" → the matching `resource`
+          - "readiness %", "status breakdown", "how many tasks done",
+            "effort/story points rollup"       → resource="analytics",
+                data={"provider":"DP_TASKS"}, project_id=X  (group rows by
+                "statusText"; providers: DP_TASKS, DP_PROJECTS, DP_FEATURES)
+          - "who is staffed / roles on a team"  → resource="team_roles",
+                resource_id=<team_id from resource='teams'>
+          - "feature status / priority value help" → resource="feature_status"
+                / "feature_priorities"
           - "create / add / new …"              → operation="create" (+ data)
           - "update / change / set / rename …"  → operation="update" (+ resource_id, data)
           - "delete / remove …"                 → operation="delete" (+ resource_id)
@@ -1214,6 +1226,62 @@ def register(mcp: FastMCP) -> None:
                 )
             else:
                 raise ValueError(f"Operation '{operation}' not supported for test_case_links (use create)")
+
+        elif resource == "analytics":
+            # Aggregated analytics rows (status breakdowns, readiness %, effort/
+            # story-point sums) without paging every task. provider defaults to
+            # DP_TASKS; DP_PROJECTS and DP_FEATURES are also available.
+            if operation == "list":
+                try:
+                    return client.get_analytics(
+                        h.token,
+                        provider=d.get("provider", "DP_TASKS"),
+                        base_url=h.base_url,
+                        top=int(d["top"]) if d.get("top") is not None else None,
+                        project_id=project_id or d.get("project_id"),
+                        raw_filter=d.get("raw_filter"),
+                    )
+                except RuntimeError as exc:
+                    if _is_not_authorized(exc):
+                        return {
+                            "status": "unavailable",
+                            "supported": False,
+                            "resource": "analytics",
+                            "provider": d.get("provider", "DP_TASKS"),
+                            "message": (
+                                f"The analytics provider '{d.get('provider', 'DP_TASKS')}' "
+                                "requires a scope the connected service key is not granted. "
+                                "DP_TASKS, DP_PROJECTS and DP_FEATURES work with standard "
+                                "implementation scopes; others (e.g. DP_REQUIREMENTS, "
+                                "DP_TESTS) need the matching analytics scope added to the "
+                                "key's BTP service binding."
+                            ),
+                        }
+                    raise
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for analytics (use list)")
+
+        elif resource == "team_roles":
+            # Roles and staffed members of a team (resource_id = team_id).
+            if operation == "list":
+                team_id = resource_id or d.get("team_id")
+                if not team_id:
+                    raise ValueError("resource_id (team_id) is required for team_roles; get it from resource='teams'")
+                return client.get_team_roles(team_id, h.token, h.base_url)
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for team_roles (use list)")
+
+        elif resource == "feature_status":
+            if operation == "list":
+                return client.get_feature_status(h.token, h.base_url)
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for feature_status (use list)")
+
+        elif resource == "feature_priorities":
+            if operation == "list":
+                return client.get_feature_priorities(h.token, h.base_url)
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for feature_priorities (use list)")
 
         else:
             raise ValueError(f"Unknown resource type: {resource}")

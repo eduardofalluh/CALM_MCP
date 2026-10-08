@@ -716,6 +716,135 @@ def link_test_case_to_requirement(
     return result if isinstance(result, dict) and result else {"submitted": body, "test_case_id": test_case_id, "requirement_id": requirement_id}
 
 
+# --- Analytics --------------------------------------------------------------
+
+# CALM Analytics DataSet rows are a pivoted key/value grid: dimensions arrive as
+# d1k/d1v..d30k/d30v and metrics as m1k/m1v..m15k/m15v. Raw, that is unreadable.
+# Collapse each row back into a flat {dimension: value, ...} dict plus a nested
+# "Metrics" dict so an agent can group/count directly (e.g. by "statusText").
+def _unpivot_analytics_row(row: dict) -> dict:
+    dims: dict[str, Any] = {}
+    for i in range(1, 31):
+        k = row.get(f"d{i}k")
+        if k:
+            dims[k] = row.get(f"d{i}v")
+    metrics: dict[str, Any] = {}
+    for i in range(1, 16):
+        k = row.get(f"m{i}k")
+        if k:
+            metrics[k] = row.get(f"m{i}v")
+    out: dict[str, Any] = {"Provider": row.get("provider"), "Snapshot": row.get("date")}
+    out.update(dims)
+    out["Metrics"] = metrics
+    return out
+
+
+# Providers reachable with the standard implementation scopes. DP_REQUIREMENTS
+# and DP_TESTS are listed in SAP docs but 403 on tenants that do not grant the
+# matching scope, so they are not advertised as always-available here.
+ANALYTICS_PROVIDERS = ("DP_TASKS", "DP_PROJECTS", "DP_FEATURES")
+
+
+# The DataSet OData surface caps each page at 1000 rows and returns no
+# @odata.nextLink/@odata.count, so completeness requires $skip paging. Guard a
+# runaway with a hard ceiling (50 pages = 50k rows) — far beyond any real project.
+_ANALYTICS_PAGE = 1000
+_ANALYTICS_MAX_ROWS = 50_000
+
+
+def get_analytics(
+    token: str,
+    provider: str = "DP_TASKS",
+    base_url: str | None = None,
+    top: int | None = None,
+    project_id: str | None = None,
+    raw_filter: str | None = None,
+) -> list[dict]:
+    """Return CALM Analytics rows for a provider, unpivoted to flat dicts.
+
+    ``provider`` is one of DP_TASKS / DP_PROJECTS / DP_FEATURES (others require
+    extra scopes and 403). Each returned row carries the provider's dimensions
+    flattened to top level (e.g. ``statusText``, ``team``, ``phase``,
+    ``workstream``, ``priority``, ``dueDate``, ``overdue``) plus a ``Metrics``
+    dict (e.g. ``counter``, ``storyPoints``, ``effort``). This is the efficient
+    way to compute status breakdowns / readiness % without paging every task.
+
+    All pages are fetched (the server caps each page at 1000 rows), so counts
+    are complete; pass ``top`` to cap the number of rows returned. ``project_id``
+    filters client-side on the ``project`` dimension (the DataSet OData surface
+    does not filter on pivoted dimension columns server-side). ``raw_filter``
+    appends a raw OData clause to the mandatory provider filter.
+    """
+    flt = f"provider eq '{provider}'"
+    if raw_filter:
+        flt += f" and {raw_filter}"
+    encoded = quote(flt, safe="")
+    base = _base_url(base_url)
+
+    raw: list[dict] = []
+    skip = 0
+    while skip < _ANALYTICS_MAX_ROWS:
+        query = f"$filter={encoded}&$top={_ANALYTICS_PAGE}&$skip={skip}"
+        url = f"{base}/api/calm-analytics/v1/odata/v4/analytics/DataSet?{query}"
+        result = _get(url, token)
+        items = result.get("value", []) if isinstance(result, dict) else (result or [])
+        raw.extend(items)
+        if len(items) < _ANALYTICS_PAGE:
+            break  # last (partial) page
+        if top is not None and len(raw) >= top:
+            break
+        skip += _ANALYTICS_PAGE
+
+    rows = [_unpivot_analytics_row(r) for r in raw]
+    if project_id:
+        rows = [r for r in rows if r.get("project") == project_id]
+    if top is not None:
+        rows = rows[:top]
+    return rows
+
+
+# --- Team roles / staffing --------------------------------------------------
+
+def get_team_roles(team_id: str, token: str, base_url: str | None = None) -> list[dict]:
+    """Return the roles (and their staffed members) of a project team.
+
+    ``team_id`` comes from resource='teams'. Each role lists its members, so this
+    answers "who is staffed as the <role> on this team".
+    """
+    url = f"{_base_url(base_url)}/api/calm-projects/v1/teams/{team_id}/roles"
+    result = _get(url, token)
+    items = result if isinstance(result, list) else result.get("value", [])
+    return [
+        {
+            "Role ID": item.get("roleId"),
+            "Role Name": item.get("roleName"),
+            "Description": item.get("roleDescription"),
+            "Custom": item.get("isCustom"),
+            "Member Count": len(item.get("members") or []),
+            "Members": item.get("members") or [],
+        }
+        for item in items
+    ]
+
+
+# --- Feature reference data -------------------------------------------------
+
+def get_feature_status(token: str, base_url: str | None = None) -> list[dict]:
+    """Return the Feature status value help (code -> name), e.g. CREATED -> 'In Specification'."""
+    url = f"{_base_url(base_url)}/api/calm-features/v1/FeatureStatus"
+    result = _get(url, token)
+    items = result.get("value", []) if isinstance(result, dict) else (result or [])
+    return [{"Code": item.get("code"), "Name": item.get("name")} for item in items]
+
+
+def get_feature_priorities(token: str, base_url: str | None = None) -> list[dict]:
+    """Return the Feature priority value help (code -> name), e.g. 10 -> 'Very High'."""
+    url = f"{_base_url(base_url)}/api/calm-features/v1/FeaturePriorities"
+    result = _get(url, token)
+    items = result.get("value", []) if isinstance(result, dict) else (result or [])
+    return [{"Code": item.get("code"), "Name": item.get("name")} for item in items]
+
+
 # --- Project Customization Values -------------------------------------------
 
 def get_project_customization(project_id: str, token: str, base_url: str | None = None) -> dict:
