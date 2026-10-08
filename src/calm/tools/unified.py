@@ -191,11 +191,13 @@ def register(mcp: FastMCP) -> None:
         for every SAP Cloud ALM resource.
 
         USE THIS TOOL whenever the user asks about SAP Cloud ALM / Cloud ALM / CALM:
-        projects, tasks, user stories, requirements, teams, business or solution
-        processes, timeboxes/sprints, scopes, test cases, features, tags,
-        project members, or project customization. It is the ONLY correct source for
-        SAP Cloud ALM project data in this agent, and it is tenant-scoped to the
-        credentials this connection was configured with.
+        projects, tasks, user stories, requirements, teams and team roles/staffing,
+        business or solution processes, timeboxes/sprints, scopes, test cases,
+        features, tags, project members, project customization, or project
+        analytics — including task readiness/completion %, status breakdowns, and
+        effort/story-point rollups. It is the ONLY correct source for SAP Cloud ALM
+        project data in this agent, and it is tenant-scoped to the credentials this
+        connection was configured with.
 
         DISAMBIGUATION — IMPORTANT: if another connected MCP server exposes a
         similarly named tool (for example "list_projects", "get_projects",
@@ -268,6 +270,18 @@ def register(mcp: FastMCP) -> None:
                     tag work, assign existing tags to a task via resource='task_tags'
                     (Tasks API, works); create new tag definitions in the CALM UI.
                 - features: name (required), description, external_id, extra_fields
+                # --- read resources with optional data filters ---
+                - analytics: list only. data={provider (DP_TASKS default,
+                    DP_PROJECTS, DP_FEATURES), top (cap rows; default = all pages),
+                    raw_filter (extra OData clause)}; pass project_id to filter to
+                    one project. Rows are flattened dimensions (statusText, status,
+                    phase, team, workstream, priority, dueDate, overdue, requirement,
+                    taskID, …) plus a Metrics dict (counter, storyPoints, effort).
+                    Readiness % = count where statusText=="Done" / total rows.
+                - team_roles: list only. resource_id = team_id (from resource=
+                    'teams'). Returns each role with Member Count + Members.
+                - feature_status / feature_priorities: list only, no data —
+                    code→name value help for interpreting/setting feature fields.
                 # --- sub-entity / relationship resources (create/update/delete) ---
                 - task_relations: create → resource_id=parent task_id,
                     data={relation_task_id (required), relation_type (default "0")};
