@@ -752,9 +752,13 @@ def _format_task(item: dict) -> dict:
     return {
         "ID": item.get("id"),
         "Display ID": item.get("displayId") or item.get("externalId"),
+        # FRICEF/RICEFW/FS codes live in externalId on CALM tasks (e.g. "FTS-DEV-01").
+        "External ID (FRICEF)": item.get("externalId"),
         "Title": item.get("title"),
         "Type": TASK_TYPE_MAP.get(item.get("type"), item.get("type")),
         "Status": TASK_STATUS_MAP.get(item.get("status"), item.get("status")),
+        # parentId links a task/user story to its parent work item (e.g. a requirement).
+        "Parent ID": item.get("parentId"),
         "StartDate": item.get("startDate"),
         "DueDate": item.get("dueDate"),
         "AssigneeName": item.get("assigneeName"),
