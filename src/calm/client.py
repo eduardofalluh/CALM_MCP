@@ -12,7 +12,7 @@ import json
 import logging
 import uuid
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse
 
 import requests
 
@@ -176,6 +176,116 @@ def _get(url: str, token: str) -> Any:
     return resp.json()
 
 
+# Safety ceilings so a misbehaving endpoint can never spin forever.
+_PAGE_MAX_REQUESTS = 500
+_PAGE_MAX_ROWS = 200_000
+# Only probe for a next page when the first page is at least this large; smaller
+# collections are certainly complete (CALM's server page caps are >= 100), so we
+# avoid a pointless extra request on tiny reference lists (statuses, tags, …).
+_PAGE_PROBE_MIN = 50
+
+
+def _row_id(row: Any) -> Any:
+    """A stable identity for a collection row, for de-duping across pages.
+
+    Falls back to a hashable snapshot of the row when no id-like key exists, so
+    an endpoint that silently ignores ``$skip`` (returning the same page) is
+    detected instead of looping forever.
+    """
+    if isinstance(row, dict):
+        for key in ("id", "uuid", "Id", "ID", "guid", "objectId", "displayId"):
+            if row.get(key) is not None:
+                return (key, row[key])
+        return ("__snapshot__", json.dumps(row, sort_keys=True, default=str))
+    return ("__value__", str(row))
+
+
+def _with_skip(url: str, skip: int) -> str:
+    """Return ``url`` with ``$skip`` set to ``skip`` (replacing any existing one)."""
+    parts = urlparse(url)
+    params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
+              if k != "$skip"]
+    params.append(("$skip", str(skip)))
+    return urlunparse(parts._replace(query=urlencode(params, safe="(),'/:")))
+
+
+def _get_all(url: str, token: str) -> list:
+    """Fetch a COMPLETE OData collection, never a single truncated page.
+
+    Verified live against a real tenant (Ebsco, us10): CALM's two collection
+    shapes page differently, and this handles both without ever truncating:
+
+    * **OData envelope** (``{"value": [...]}`` — Test Management, Features):
+      caps a page (100 test cases) and does NOT emit ``@odata.nextLink``; the
+      client must advance ``$skip`` (confirmed honored — ``$skip=5`` returns a
+      different window). ``$top`` is itself capped at 100. We page via ``$skip``
+      until a short/empty page.
+    * **Bare list** (``[...]`` — e.g. ``calm-tasks/v1/tasks``): returns the
+      COMPLETE collection in one response (seen: 4356 rows) and REJECTS
+      ``$skip`` with HTTP 400 "not supported yet". So a bare list is already
+      complete — return it as-is and never probe.
+
+    ``@odata.nextLink`` is still followed if a service ever emits it. Rows are
+    de-duped by id (so an endpoint that ignores ``$skip`` is detected rather
+    than looped), the ``$skip`` probe is skipped for small pages, and any
+    rejection of ``$skip`` stops paging gracefully (page one is then the best
+    complete answer) so listing is never made worse than a single read. Hard
+    ceilings bound both the request count and the total rows.
+    """
+    first = _get(url, token)
+    # A bare-list REST endpoint returns the whole collection and rejects $skip —
+    # it's already complete, so never probe it.
+    if not isinstance(first, dict):
+        return list(first or [])
+
+    items = list(first.get("value", []))
+    next_link = first.get("@odata.nextLink")
+
+    # (a) Server-driven paging: follow @odata.nextLink to exhaustion.
+    if next_link:
+        requests_made = 1
+        while (next_link and requests_made < _PAGE_MAX_REQUESTS
+               and len(items) < _PAGE_MAX_ROWS):
+            link = next_link if next_link.startswith("http") else urljoin(url, next_link)
+            page = _get(link, token)
+            if not isinstance(page, dict):
+                break
+            items.extend(page.get("value", []))
+            next_link = page.get("@odata.nextLink")
+            requests_made += 1
+        return items
+
+    # (b) No link: if the first page looks capped, advance $skip while new rows
+    # keep arriving. Small collections are complete, so skip the extra request.
+    page_size = len(items)
+    if page_size < _PAGE_PROBE_MIN:
+        return items
+    seen = {_row_id(r) for r in items}
+    skip = page_size
+    requests_made = 1
+    while requests_made < _PAGE_MAX_REQUESTS and len(items) < _PAGE_MAX_ROWS:
+        try:
+            page = _get(_with_skip(url, skip), token)
+        except Exception as exc:
+            # Endpoint doesn't support $skip (HTTP 400) or a transient failure:
+            # page one is our best complete answer — don't make listing worse.
+            log.debug("stopping $skip paging at skip=%s: %s", skip, exc)
+            break
+        batch = page.get("value", []) if isinstance(page, dict) else (page or [])
+        if not batch:
+            break
+        new = [r for r in batch if _row_id(r) not in seen]
+        if not new:  # endpoint ignored $skip, or no further data
+            break
+        items.extend(new)
+        seen.update(_row_id(r) for r in new)
+        skip += len(batch)
+        requests_made += 1
+        if len(batch) < page_size:  # a short page is the last page
+            break
+    return items
+
+
 def _write(
     method: str,
     url: str,
@@ -302,8 +412,7 @@ def get_tasks(
     if task_type:
         type_code = resolve_task_type_code(task_type)
         url += f"&type={type_code}"
-    result = _get(url, token)
-    items = result if isinstance(result, list) else result.get("value", [])
+    items = _get_all(url, token)
     if type_code:
         items = [it for it in items if it.get("type") == type_code]
     return [_format_task(item) for item in items]
@@ -311,7 +420,6 @@ def get_tasks(
 
 def get_projects(token: str, base_url: str | None = None) -> list[dict]:
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects"
-    result = _get(url, token)
     return [
         {
             "ID": item.get("id"),
@@ -320,26 +428,24 @@ def get_projects(token: str, base_url: str | None = None) -> list[dict]:
             "Purpose": item.get("purpose"),
             "OperationalStatus": item.get("operationalStatus"),
         }
-        for item in result
+        for item in _get_all(url, token)
     ]
 
 
 def get_business_processes(token: str, base_url: str | None = None) -> list[dict]:
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/businessProcesses"
-    result = _get(url, token)
     return [
         {
             "ID": item.get("id"),
             "Name": item.get("name"),
             "Description": item.get("description"),
         }
-        for item in result.get("value", [])
+        for item in _get_all(url, token)
     ]
 
 
 def get_solution_processes(token: str, base_url: str | None = None) -> list[dict]:
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses"
-    result = _get(url, token)
     return [
         {
             "ID": item.get("id"),
@@ -349,13 +455,12 @@ def get_solution_processes(token: str, base_url: str | None = None) -> list[dict
             "Countries": item.get("countries"),
             "State": item.get("state"),
         }
-        for item in result.get("value", [])
+        for item in _get_all(url, token)
     ]
 
 
 def get_scopes(token: str, base_url: str | None = None) -> list[dict]:
     url = f"{_base_url(base_url)}/api/calm-processmanagement/v1/scopes"
-    result = _get(url, token)
     return [
         {
             "ID": item.get("id"),
@@ -363,7 +468,7 @@ def get_scopes(token: str, base_url: str | None = None) -> list[dict]:
             "Name": item.get("name"),
             "Description": item.get("description"),
         }
-        for item in result.get("value", [])
+        for item in _get_all(url, token)
     ]
 
 
@@ -405,8 +510,9 @@ def get_test_cases(
         query += "&$filter=" + quote(" and ".join(filters), safe="")
 
     url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases?{query}"
-    result = _get(url, token)
-    return [_format_test_case(item) for item in result.get("value", [])]
+    # Page through every record — the service caps a page at ~100 test cases, so
+    # a single read would silently drop matches (incl. tag matches) beyond it.
+    return [_format_test_case(item) for item in _get_all(url, token)]
 
 
 def get_timeboxes(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
@@ -416,8 +522,7 @@ def get_timeboxes(project_id: str, token: str, base_url: str | None = None) -> l
     name, type (numeric), startDate, endDate, closed (boolean).
     """
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/timeboxes"
-    result = _get(url, token)
-    items = result if isinstance(result, list) else result.get("value", [])
+    items = _get_all(url, token)
     return [
         {
             "ID": item.get("id"),
@@ -439,8 +544,7 @@ def get_teams(token: str, base_url: str | None = None) -> list[dict]:
     what the CALM API exposes; common fields: id, name, description, members.
     """
     url = f"{_base_url(base_url)}/api/calm-projects/v1/teams"
-    result = _get(url, token)
-    items = result if isinstance(result, list) else result.get("value", [])
+    items = _get_all(url, token)
     return [
         {
             "ID": item.get("id"),
@@ -473,8 +577,7 @@ def get_project_teams(project_id: str, token: str, base_url: str | None = None) 
     last_error = None
     for url in urls_to_try:
         try:
-            result = _get(url, token)
-            items = result if isinstance(result, list) else result.get("value", [])
+            items = _get_all(url, token)
             return [
                 {
                     "ID": item.get("id"),
@@ -512,8 +615,7 @@ def get_tags(project_id: str, token: str, base_url: str | None = None) -> list[d
     "Tshirt size:L"). Used to categorize tasks and requirements.
     """
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/tags"
-    result = _get(url, token)
-    items = result if isinstance(result, list) else result.get("value", [])
+    items = _get_all(url, token)
     return [
         {
             "ID": item.get("id"),
@@ -578,8 +680,7 @@ def get_project_users(project_id: str, token: str, base_url: str | None = None) 
     last_error = None
     for url in urls_to_try:
         try:
-            result = _get(url, token)
-            items = result if isinstance(result, list) else result.get("value", [])
+            items = _get_all(url, token)
             return [
                 {
                     "ID": item.get("id") or item.get("userId") or item.get("memberId"),
@@ -616,8 +717,7 @@ def get_features(project_id: str, token: str, base_url: str | None = None) -> li
     an empty 403, so we query the Features service and filter by project here.
     """
     url = f"{_base_url(base_url)}/api/calm-features/v1/Features"
-    result = _get(url, token)
-    items = result if isinstance(result, list) else result.get("value", [])
+    items = _get_all(url, token)
     mapped = [
         {
             "ID": item.get("id"),
@@ -812,8 +912,7 @@ def get_team_roles(team_id: str, token: str, base_url: str | None = None) -> lis
     answers "who is staffed as the <role> on this team".
     """
     url = f"{_base_url(base_url)}/api/calm-projects/v1/teams/{team_id}/roles"
-    result = _get(url, token)
-    items = result if isinstance(result, list) else result.get("value", [])
+    items = _get_all(url, token)
     return [
         {
             "Role ID": item.get("roleId"),
@@ -832,16 +931,14 @@ def get_team_roles(team_id: str, token: str, base_url: str | None = None) -> lis
 def get_feature_status(token: str, base_url: str | None = None) -> list[dict]:
     """Return the Feature status value help (code -> name), e.g. CREATED -> 'In Specification'."""
     url = f"{_base_url(base_url)}/api/calm-features/v1/FeatureStatus"
-    result = _get(url, token)
-    items = result.get("value", []) if isinstance(result, dict) else (result or [])
+    items = _get_all(url, token)
     return [{"Code": item.get("code"), "Name": item.get("name")} for item in items]
 
 
 def get_feature_priorities(token: str, base_url: str | None = None) -> list[dict]:
     """Return the Feature priority value help (code -> name), e.g. 10 -> 'Very High'."""
     url = f"{_base_url(base_url)}/api/calm-features/v1/FeaturePriorities"
-    result = _get(url, token)
-    items = result.get("value", []) if isinstance(result, dict) else (result or [])
+    items = _get_all(url, token)
     return [{"Code": item.get("code"), "Name": item.get("name")} for item in items]
 
 
