@@ -36,7 +36,7 @@ from fastmcp import FastMCP
 from starlette.middleware import Middleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from src.calm.toon_middleware import ToonOutputMiddleware
+from src.calm.toon_middleware import ToonOutputMiddleware, TruncationAlertMiddleware
 from src.calm.tools import (
     advanced_write,
     health,
@@ -185,6 +185,11 @@ mcp = FastMCP("sap-cloud-alm")
 # CALM_OUTPUT_FORMAT=json to revert per-agent with no redeploy. Structured
 # content on the wire stays JSON, so clients reading it are unaffected.
 mcp.add_middleware(ToonOutputMiddleware())
+
+# Alert the user whenever a paged list read is cut short by a safety ceiling
+# (never by the normal 100-per-page cap, which is fully paged). Applies to every
+# collection, since all list getters page through client._get_all.
+mcp.add_middleware(TruncationAlertMiddleware())
 
 # ============================================================================
 # PHASE 3 COMPLETE: Tool Consolidation

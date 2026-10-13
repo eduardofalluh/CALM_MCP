@@ -8,6 +8,7 @@ credentials are stored or fetched here.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import uuid
@@ -185,6 +186,72 @@ _PAGE_MAX_ROWS = 200_000
 _PAGE_PROBE_MIN = 50
 
 
+# --- Truncation alerting ----------------------------------------------------
+# A paged read is only ever cut short by the hard ceilings above (never by the
+# "100 per page" server cap — that is fully paged through). If a ceiling IS ever
+# hit, that is a silent partial result unless we shout about it. _get_all records
+# every such event into a per-request sink (a plain list) that the MCP middleware
+# installs before each tool call and reads back after, so the agent/user always
+# sees a clear "results were truncated" alert — for ANY collection (tasks, test
+# cases, features, …), not just one.
+#
+# Why a ContextVar holding a *mutable list* (and why _get_all only ever appends,
+# never .set()): FastMCP runs sync tool functions in a worker thread, which gets
+# a *copy* of the context. A fresh .set() inside the worker would not propagate
+# back to the middleware. But the copied context shares the *same list object*
+# the middleware set beforehand, so appending to it is visible on both sides.
+_truncation_sink: contextvars.ContextVar[list | None] = contextvars.ContextVar(
+    "calm_truncation_sink", default=None
+)
+
+
+def _resource_label(url: str) -> str:
+    """A short human label for a collection URL, for truncation messages."""
+    path = urlparse(url).path.rstrip("/")
+    return path.rsplit("/", 1)[-1] if path else url
+
+
+def _record_truncation(url: str, count: int, limit: str) -> None:
+    """Note that a paged read hit a safety ceiling and returned a partial result.
+
+    Always logs a warning (ops visibility). Also appends a structured notice to
+    the active per-request sink, if one is installed, so the MCP layer can alert
+    the end user. Never raises — alerting must not break a tool call.
+    """
+    label = _resource_label(url)
+    msg = (
+        f"'{label}' listing was TRUNCATED at {count} rows after hitting the "
+        f"{limit} safety ceiling — the result is PARTIAL. Narrow the query "
+        f"(filter by project/tag) or raise the ceiling in client.py."
+    )
+    log.warning("TRUNCATION: %s (url=%s)", msg, url)
+    try:
+        sink = _truncation_sink.get()
+        if sink is not None:
+            sink.append({"resource": label, "count": count, "limit": limit, "message": msg})
+    except Exception:  # pragma: no cover - alerting must never break a read
+        log.debug("could not record truncation notice", exc_info=True)
+
+
+def install_truncation_sink() -> tuple[list, Any]:
+    """Install a fresh truncation sink for the current context.
+
+    Returns ``(sink, token)``; pass ``token`` to :func:`reset_truncation_sink`.
+    Called by the MCP middleware before each tool invocation.
+    """
+    sink: list = []
+    token = _truncation_sink.set(sink)
+    return sink, token
+
+
+def reset_truncation_sink(token: Any) -> None:
+    """Restore the truncation sink to its previous value (see install_...)."""
+    try:
+        _truncation_sink.reset(token)
+    except Exception:  # pragma: no cover - defensive
+        log.debug("could not reset truncation sink", exc_info=True)
+
+
 def _row_id(row: Any) -> Any:
     """A stable identity for a collection row, for de-duping across pages.
 
@@ -254,8 +321,13 @@ def _get_all(url: str, token: str) -> list:
     # (a) Server-driven paging: follow @odata.nextLink to exhaustion.
     if next_link:
         requests_made = 1
-        while (next_link and requests_made < _PAGE_MAX_REQUESTS
-               and len(items) < _PAGE_MAX_ROWS):
+        while next_link:
+            if requests_made >= _PAGE_MAX_REQUESTS or len(items) >= _PAGE_MAX_ROWS:
+                # A ceiling stopped us while more pages remained -> partial result.
+                limit = ("max-requests" if requests_made >= _PAGE_MAX_REQUESTS
+                         else "max-rows")
+                _record_truncation(url, len(items), limit)
+                break
             link = next_link if next_link.startswith("http") else urljoin(url, next_link)
             page = _get(link, token)
             if not isinstance(page, dict):
@@ -273,7 +345,13 @@ def _get_all(url: str, token: str) -> list:
     seen = {_row_id(r) for r in items}
     skip = page_size
     requests_made = 1
-    while requests_made < _PAGE_MAX_REQUESTS and len(items) < _PAGE_MAX_ROWS:
+    while True:
+        if requests_made >= _PAGE_MAX_REQUESTS or len(items) >= _PAGE_MAX_ROWS:
+            # A ceiling stopped us -> the last batch was full, so more rows exist.
+            limit = ("max-requests" if requests_made >= _PAGE_MAX_REQUESTS
+                     else "max-rows")
+            _record_truncation(url, len(items), limit)
+            break
         try:
             page = _get(_with_skip(url, skip), token)
         except Exception as exc:

@@ -133,6 +133,134 @@ def test_with_skip_preserves_encoded_filter_verbatim():
 
 # ---- end-to-end: get_test_cases now pages --------------------------------
 
+# ---- truncation alerting: a ceiling-hit read is never silent -------------
+
+def _install_sink():
+    return client.install_truncation_sink()
+
+
+def test_skip_paging_records_truncation_when_request_ceiling_hit():
+    # Endless distinct full pages: only the request ceiling can stop paging.
+    def endless(url, token):
+        skip = 0
+        if "skip=" in url:
+            import re
+            m = re.search(r"skip=(\d+)", url)
+            skip = int(m.group(1)) if m else 0
+        return _page([{"id": skip + i} for i in range(100)])  # 100 fresh ids
+
+    sink, token = _install_sink()
+    orig = client._PAGE_MAX_REQUESTS
+    client._PAGE_MAX_REQUESTS = 3
+    try:
+        with patch("src.calm.client._get", endless):
+            rows = client._get_all("https://x.alm.cloud.sap/api/calm-tasks/v1/things", "tok")
+    finally:
+        client._PAGE_MAX_REQUESTS = orig
+        client.reset_truncation_sink(token)
+    assert len(rows) >= 100            # returned the rows it did fetch
+    assert len(sink) == 1              # and recorded exactly one truncation
+    assert sink[0]["limit"] == "max-requests"
+    assert sink[0]["resource"] == "things"
+    assert "TRUNCATED" in sink[0]["message"]
+
+
+def test_nextlink_paging_records_truncation_when_row_ceiling_hit():
+    def linked(url, token):
+        return _page([{"id": f"{url}-{i}"} for i in range(100)],
+                     next_link="https://x.alm.cloud.sap/next")
+
+    sink, token = _install_sink()
+    orig = client._PAGE_MAX_ROWS
+    client._PAGE_MAX_ROWS = 250
+    try:
+        with patch("src.calm.client._get", linked):
+            rows = client._get_all("https://x.alm.cloud.sap/api/calm-features/v1/Features", "tok")
+    finally:
+        client._PAGE_MAX_ROWS = orig
+        client.reset_truncation_sink(token)
+    assert len(sink) == 1
+    assert sink[0]["limit"] == "max-rows"
+    assert sink[0]["resource"] == "Features"
+
+
+def test_complete_paging_records_no_truncation():
+    # Two clean pages that end naturally -> no truncation notice at all.
+    full = [{"id": i} for i in range(100)]
+    rest = [{"id": i} for i in range(100, 140)]
+    sink, token = _install_sink()
+    try:
+        with patch("src.calm.client._get",
+                   lambda url, tok: _page(rest if "skip=100" in url else full)):
+            rows = client._get_all("https://x.alm.cloud.sap/c", "tok")
+    finally:
+        client.reset_truncation_sink(token)
+    assert len(rows) == 140
+    assert sink == []  # complete read -> silent, no false alarm
+
+
+def test_bare_list_records_no_truncation():
+    sink, token = _install_sink()
+    try:
+        with patch("src.calm.client._get", lambda url, tok: [{"id": i} for i in range(5000)]):
+            rows = client._get_all("https://x.alm.cloud.sap/api/calm-tasks/v1/tasks", "tok")
+    finally:
+        client.reset_truncation_sink(token)
+    assert len(rows) == 5000
+    assert sink == []  # bare lists are complete in one response
+
+
+def test_record_truncation_without_sink_only_logs(caplog):
+    # No sink installed (e.g. a direct unit call): must not raise, just warn.
+    client._record_truncation("https://x/api/calm-tasks/v1/tasks", 500, "max-rows")
+    # (no assertion on the log; the point is it does not raise)
+
+
+# ---- middleware surfaces the alert to the agent --------------------------
+
+class _FakeTextBlock:
+    def __init__(self, text):
+        self.type = "text"
+        self.text = text
+
+
+class _FakeResult:
+    def __init__(self, blocks):
+        self.content = blocks
+
+
+def test_middleware_prepends_alert_block_on_truncation():
+    import asyncio
+    from src.calm.toon_middleware import TruncationAlertMiddleware
+
+    mw = TruncationAlertMiddleware()
+
+    async def call_next(context):
+        # Simulate a tool whose paged read hit a ceiling mid-call.
+        client._record_truncation("https://x/api/calm-tasks/v1/tasks", 50_000, "max-requests")
+        return _FakeResult([_FakeTextBlock('[{"id":1}]')])
+
+    result = asyncio.run(mw.on_call_tool(context=None, call_next=call_next))
+    assert len(result.content) == 2                       # alert block prepended
+    assert result.content[0].text.startswith("⚠️ TRUNCATION ALERT")
+    assert "tasks" in result.content[0].text
+    assert result.content[1].text == '[{"id":1}]'         # original data untouched
+
+
+def test_middleware_adds_nothing_without_truncation():
+    import asyncio
+    from src.calm.toon_middleware import TruncationAlertMiddleware
+
+    mw = TruncationAlertMiddleware()
+
+    async def call_next(context):
+        return _FakeResult([_FakeTextBlock('[{"id":1}]')])
+
+    result = asyncio.run(mw.on_call_tool(context=None, call_next=call_next))
+    assert len(result.content) == 1                       # no spurious alert
+    assert result.content[0].text == '[{"id":1}]'
+
+
 def test_get_test_cases_pages_all_matches():
     p1 = _page([{"uuid": f"u{i}", "displayId": str(i),
                  "toTagAssignments": [{"label": "SIT"}]} for i in range(100)],

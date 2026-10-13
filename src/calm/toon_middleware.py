@@ -106,3 +106,64 @@ class ToonOutputMiddleware(Middleware):
         except Exception:  # pragma: no cover - belt and suspenders
             log.debug("TOON middleware skipped on error", exc_info=True)
             return result
+
+
+try:  # content-block class for the alert; degrade gracefully if unavailable
+    from mcp.types import TextContent as _TextContent
+except Exception:  # pragma: no cover
+    _TextContent = None  # type: ignore[assignment]
+
+
+def _attach_truncation_alert(result: Any, notices: list) -> None:
+    """Prepend a clear, human-readable truncation alert block to ``result``.
+
+    A separate text block (not a rewrite of the data block) so it survives TOON
+    encoding and any middleware ordering, and so structured-output clients still
+    get their untouched JSON payload. Never raises.
+    """
+    content = getattr(result, "content", None)
+    if content is None:
+        return
+    lines = ["⚠️ TRUNCATION ALERT — the results below are INCOMPLETE:"]
+    for n in notices:
+        lines.append(f"  • {n.get('message', 'a listing was truncated')}")
+    lines.append("Re-run with a narrower filter to get the full set.")
+    alert = "\n".join(lines)
+
+    block = None
+    for b in content:  # mirror an existing text block's class for wire-compat
+        if getattr(b, "type", None) == "text":
+            try:
+                block = type(b)(type="text", text=alert)
+            except Exception:
+                block = None
+            break
+    if block is None and _TextContent is not None:
+        block = _TextContent(type="text", text=alert)
+    if block is not None:
+        content.insert(0, block)
+
+
+class TruncationAlertMiddleware(Middleware):
+    """Alert the user whenever a paged read was cut short by a safety ceiling.
+
+    Installs a per-request truncation sink before each tool call; if the client's
+    paging helper recorded any truncation while serving the call, prepends a loud
+    alert block to the result. Applies to EVERY collection (tasks, test cases,
+    features, …) because all list getters page through ``client._get_all``.
+    """
+
+    async def on_call_tool(self, context, call_next):  # type: ignore[override]
+        from src.calm import client
+
+        sink, token = client.install_truncation_sink()
+        try:
+            result = await call_next(context)
+        finally:
+            client.reset_truncation_sink(token)
+        if sink:
+            try:
+                _attach_truncation_alert(result, sink)
+            except Exception:  # pragma: no cover - alerting must never break a call
+                log.debug("could not attach truncation alert", exc_info=True)
+        return result
