@@ -12,7 +12,7 @@ import json
 import logging
 import uuid
 from typing import Any
-from urllib.parse import parse_qsl, quote, urlencode, urljoin, urlparse, urlunparse
+from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import requests
 
@@ -201,12 +201,22 @@ def _row_id(row: Any) -> Any:
 
 
 def _with_skip(url: str, skip: int) -> str:
-    """Return ``url`` with ``$skip`` set to ``skip`` (replacing any existing one)."""
+    """Return ``url`` with ``$skip`` set to ``skip`` (replacing any existing one).
+
+    Only the ``$skip`` segment is touched. The rest of the query string is left
+    byte-for-byte intact: re-encoding it (via ``parse_qsl``/``urlencode``)
+    corrupts an already-percent-encoded ``$filter`` — e.g. ``projectId%20eq%20<guid>``
+    becomes ``projectId+eq+<guid>``, which CALM rejects with HTTP 400
+    "The types 'Edm.Boolean' and 'Edm.Guid' are not compatible", silently
+    capping a filtered listing at the first page.
+    """
     parts = urlparse(url)
-    params = [(k, v) for k, v in parse_qsl(parts.query, keep_blank_values=True)
-              if k != "$skip"]
-    params.append(("$skip", str(skip)))
-    return urlunparse(parts._replace(query=urlencode(params, safe="(),'/:")))
+    # Drop any existing $skip / %24skip segment, preserving every other segment
+    # exactly as received.
+    kept = [seg for seg in parts.query.split("&")
+            if seg and seg.split("=", 1)[0] not in ("$skip", "%24skip")]
+    kept.append(f"%24skip={skip}")
+    return urlunparse(parts._replace(query="&".join(kept)))
 
 
 def _get_all(url: str, token: str) -> list:

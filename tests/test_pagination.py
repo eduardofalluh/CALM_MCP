@@ -114,6 +114,23 @@ def test_with_skip_replaces_existing_skip():
     assert "skip=0" not in out
 
 
+def test_with_skip_preserves_encoded_filter_verbatim():
+    # Regression: a percent-encoded $filter (space -> %20, unquoted Edm.Guid)
+    # must survive _with_skip byte-for-byte. Re-encoding the whole query turned
+    # %20 into + and corrupted the GUID comparison, so CALM returned HTTP 400
+    # ("Edm.Boolean / Edm.Guid are not compatible") and filtered listings
+    # silently capped at the first 100 rows.
+    guid = "11111111-1111-1111-1111-111111111111"
+    url = ("https://h/api/calm-testmanagement/v1/ManualTestCases"
+           "?$expand=toTagAssignments"
+           f"&$filter=projectId%20eq%20{guid}")
+    out = client._with_skip(url, 100)
+    assert f"$filter=projectId%20eq%20{guid}" in out  # untouched, no '+' mangling
+    assert "projectId+eq" not in out
+    assert "$expand=toTagAssignments" in out
+    assert out.endswith("%24skip=100")
+
+
 # ---- end-to-end: get_test_cases now pages --------------------------------
 
 def test_get_test_cases_pages_all_matches():
