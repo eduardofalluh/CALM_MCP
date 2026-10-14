@@ -343,7 +343,14 @@ def register(mcp: FastMCP) -> None:
 
             # List test cases (each result includes a "Tags" list and "Display ID")
             calm_resource(resource="test_cases", operation="list")
-            # Filter test cases by CALM tag (exact, case-sensitive) and/or project
+            # Filter test cases by CALM tag. ALWAYS use this server-side tag filter
+            # when the user asks for the test cases of a tag (e.g. "all SIT test
+            # cases") — do NOT list every case and count tags yourself; that is
+            # slow and under-counts. The filter is applied in CALM, pages through
+            # every match (never truncates), and returns the WHOLE TAG FAMILY,
+            # case-sensitively: data={"tag": "SIT"} returns the exact "SIT" tag
+            # PLUS every sub-tag "SIT - <area>" (e.g. "SIT - Finance",
+            # "SIT - POS"), which is everything a user means by "the SIT tag".
             calm_resource(resource="test_cases", operation="list",
                           project_id="P001", data={"tag": "SIT"})
             # Or match a grouping that lives in the title (case-insensitive substring)
