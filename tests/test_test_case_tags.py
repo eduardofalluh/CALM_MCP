@@ -10,6 +10,8 @@ quoted string, and both combine with ``and``.
 
 from unittest.mock import patch
 
+import pytest
+
 from src.calm import client
 
 
@@ -88,6 +90,19 @@ def test_title_and_tag_combined():
     assert "%20and%20" in url
     assert "label%20eq%20%27SIT%27" in url
     assert "tolower%28title%29%2C%27login%27" in url
+
+
+@pytest.mark.parametrize("tag", ["OCM", "P2P", "Finance", "Data Migration", "UX/UI"])
+def test_any_tag_name_builds_family_filter(tag):
+    # The server-side filter is tag-agnostic: for ANY tag it emits the same
+    # exact-plus-family OData (exact eq + startswith space + startswith dash),
+    # with the label single-quote-escaped and percent-encoded. Not just "SIT".
+    from urllib.parse import quote
+    url, _ = _capture(tag=tag)
+    esc = tag.replace("'", "''")
+    assert quote(f"t/label eq '{esc}'", safe="") in url          # exact clause
+    assert quote(f"startswith(t/label,'{esc} ')", safe="") in url  # space family
+    assert quote(f"startswith(t/label,'{esc}-')", safe="") in url  # dash family
 
 
 def test_missing_tag_assignments_yields_empty_list():

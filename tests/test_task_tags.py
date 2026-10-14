@@ -93,6 +93,59 @@ def test_tag_in_family_helper(tags, tag, expected):
     assert client._tag_in_family(tags, tag) is expected
 
 
+@pytest.mark.parametrize(
+    "tag,label,should_match",
+    [
+        # The guarantee is "works for ANY tag", not just SIT. Arbitrary tag names
+        # — acronyms, multi-word, dashed, spaced — must all follow the same
+        # exact-plus-family rule with no tag hardcoded anywhere.
+        ("OCM", "OCM", True),
+        ("OCM", "OCM - Training", True),
+        ("OCM", "OCM-Comms", True),
+        ("OCM", "OCMX", False),                       # prefix decoy, no sep
+        ("P2P", "P2P", True),
+        ("P2P", "P2P - Invoicing", True),
+        ("P2P", "O2C", False),                        # different family
+        ("Finance", "Finance", True),
+        ("Finance", "Finance - AP", True),
+        ("Finance", "Finance Reporting", True),       # space sep (startswith "Finance ")
+        ("Finance", "Financial Close", False),        # "Financial " != "Finance "
+        ("Data Migration", "Data Migration", True),   # multi-word tag
+        ("Data Migration", "Data Migration - Load", True),
+        ("Data Migration", "Data Migrations", False),  # no space/dash after tag
+        ("UX/UI", "UX/UI - Mobile", True),            # slash in tag name
+    ],
+)
+def test_any_tag_name_follows_family_rule(tag, label, should_match):
+    assert client._tag_in_family([label], tag) is should_match
+
+
+@pytest.mark.parametrize("tag,expected_ids", [
+    ("SIT", {"t1", "t2", "t3"}),
+    ("OCM", {"t6"}),
+])
+def test_filter_end_to_end_for_arbitrary_tags(tag, expected_ids):
+    # Prove the whole get_tasks path (not just the helper) is tag-agnostic:
+    # different tags select their own family and never bleed into each other.
+    rows = _run(tag=tag)
+    assert {r["ID"] for r in rows} == expected_ids
+
+
+def test_families_do_not_bleed_into_each_other():
+    # Two sibling families under distinct roots must stay separate.
+    tasks = [
+        {"id": "x1", "tags": ["Finance - AP"]},
+        {"id": "x2", "tags": ["Finance - AR"]},
+        {"id": "x3", "tags": ["FinanceOps"]},        # not a Finance sub-tag
+        {"id": "x4", "tags": ["HR - Payroll"]},
+    ]
+    with patch("src.calm.client._get", lambda url, token: tasks):
+        fin = client.get_tasks("p", "tok", "https://x.alm.cloud.sap", tag="Finance")
+        hr = client.get_tasks("p", "tok", "https://x.alm.cloud.sap", tag="HR")
+    assert {r["ID"] for r in fin} == {"x1", "x2"}      # not x3 (no separator), not x4
+    assert {r["ID"] for r in hr} == {"x4"}
+
+
 def test_tag_and_type_filter_combine():
     tasks = [
         {"id": "a", "type": "CALMREQU", "tags": ["SIT"]},
