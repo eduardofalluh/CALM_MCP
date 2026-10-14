@@ -64,7 +64,7 @@ def test_unified_tool_tasks():
         mock_get_tasks.return_value = [{"ID": "T001", "Title": "Test Task"}]
         result = _tool_fn()(Ctx(), resource="tasks", operation="list", project_id="P001")
         assert result == [{"ID": "T001", "Title": "Test Task"}]
-        mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type=None)
+        mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type=None, tag=None)
         print("  ✓ Tasks list works")
 
 

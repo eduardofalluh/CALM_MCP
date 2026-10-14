@@ -217,6 +217,10 @@ def register(mcp: FastMCP) -> None:
                 → resource="projects", operation="list"
           - "tasks / user stories / to-dos in project X"
                 → resource="tasks", operation="list", project_id=X
+          - "tasks tagged <TAG> in project X" (ANY tag, e.g. SIT, OCM)
+                → resource="tasks", operation="list", project_id=X,
+                data={"tag":"<TAG>"}  (returns the whole tag FAMILY — the exact
+                tag PLUS every "<TAG> - <area>" sub-tag — and never truncates)
           - "requirements in project X"
                 → resource="requirements", operation="list", project_id=X
           - "teams / who is on project X"       → resource="teams"
@@ -325,8 +329,16 @@ def register(mcp: FastMCP) -> None:
             # List all projects
             calm_resource(resource="projects", operation="list")
 
-            # List tasks for a project
+            # List tasks for a project (each result includes a "Tags" list)
             calm_resource(resource="tasks", operation="list", project_id="P001")
+            # Filter tasks by CALM tag. ALWAYS use this when the user asks for the
+            # tasks of a tag (e.g. "all SIT tasks", "OCM tasks") — do NOT list
+            # every task and count tags yourself; that under-counts. Pages through
+            # every match (never truncates) and returns the WHOLE TAG FAMILY,
+            # case-sensitively: data={"tag": "SIT"} returns the exact "SIT" tag
+            # PLUS every sub-tag "SIT - <area>". Same semantics as test_cases.
+            calm_resource(resource="tasks", operation="list",
+                          project_id="P001", data={"tag": "SIT"})
 
             # Get requirements (tasks with type filter)
             calm_resource(resource="requirements", operation="list", project_id="P001")
@@ -486,7 +498,9 @@ def register(mcp: FastMCP) -> None:
             if operation == "list":
                 if not project_id:
                     raise ValueError("project_id is required for tasks")
-                return client.get_tasks(project_id, h.token, h.base_url, task_type=task_type)
+                return client.get_tasks(
+                    project_id, h.token, h.base_url, task_type=task_type, tag=d.get("tag")
+                )
             elif operation == "create":
                 ensure_writes_enabled()
                 if not project_id:

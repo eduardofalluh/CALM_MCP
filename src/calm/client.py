@@ -487,13 +487,46 @@ def _base_url(base_url: str | None = None) -> str:
 # CALM read functions
 # ---------------------------------------------------------------------------
 
+def _tag_in_family(tags: Any, tag: str) -> bool:
+    """True if any label in `tags` belongs to the `tag` FAMILY, case-sensitively.
+
+    Mirrors the server-side test-case tag filter exactly, but client-side for
+    endpoints (like calm-tasks) that carry tags as a plain inline list of label
+    strings and offer no server ``$filter``. A label matches when it is the exact
+    tag, or a sub-tag "<tag> - <area>" (startswith "<tag> ") or "<tag>-<area>"
+    (startswith "<tag>-"). The trailing space/dash keeps "SIT" from catching
+    unrelated tags that merely share the prefix (e.g. "SITE", "SITUATION").
+    """
+    if not tags:
+        return False
+    space_prefix = f"{tag} "
+    dash_prefix = f"{tag}-"
+    for label in tags:
+        if not isinstance(label, str):
+            continue
+        if label == tag or label.startswith(space_prefix) or label.startswith(dash_prefix):
+            return True
+    return False
+
+
 def get_tasks(
-    project_id: str, token: str, base_url: str | None = None, task_type: str | None = None
+    project_id: str,
+    token: str,
+    base_url: str | None = None,
+    task_type: str | None = None,
+    tag: str | None = None,
 ) -> list[dict]:
     """Return tasks for a project. `task_type` (human label or raw code) filters to
     one type — e.g. "Requirement" (CALMREQU) for requirements. The type is sent as a
     query param and also filtered client-side so the result is correct even if the
     API ignores the param.
+
+    `tag` filters to tasks carrying that CALM tag, matching the whole tag FAMILY
+    case-sensitively — the exact tag PLUS every "<tag> - <area>" sub-tag — the
+    same semantics as the test-case tag filter. Unlike test cases (an OData
+    service that filters server-side), the Tasks API is a bare-list endpoint with
+    no tag filter, so the match is applied client-side; this is lossless because
+    the task list is paged to completion first (no page cap drops matches).
     """
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks?projectId={project_id}"
     type_code: str | None = None
@@ -503,6 +536,8 @@ def get_tasks(
     items = _get_all(url, token)
     if type_code:
         items = [it for it in items if it.get("type") == type_code]
+    if tag:
+        items = [it for it in items if _tag_in_family(it.get("tags"), tag)]
     return [_format_task(item) for item in items]
 
 
@@ -1096,6 +1131,10 @@ def _format_task(item: dict) -> dict:
         "ApprovalState": TASK_APPROVAL_STATE_MAP.get(item.get("approvalState"), item.get("approvalState")),
         "Obsolete": item.get("obsolete"),
         "Effort": item.get("effort"),
+        # Tasks carry tags as a plain inline list of label strings (NOT the
+        # toTagAssignments navigation test cases use); surface them so callers
+        # can see and filter on them.
+        "Tags": item.get("tags") or [],
     }
 
 

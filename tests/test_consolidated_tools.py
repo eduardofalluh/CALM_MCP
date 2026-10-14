@@ -76,13 +76,13 @@ class TestUnifiedToolTasks:
         mock_get_tasks.return_value = [{"ID": "3-12345", "Title": "Test Task 1"}]
         result = _tool_fn()(mock_ctx, resource="tasks", operation="list", project_id="P001")
         assert len(result) == 1
-        mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type=None)
+        mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type=None, tag=None)
 
     @patch("src.calm.client.get_tasks")
     def test_list_tasks_with_type_filter(self, mock_get_tasks, mock_ctx):
         mock_get_tasks.return_value = []
         _tool_fn()(mock_ctx, resource="tasks", operation="list", project_id="P001", task_type="User Story")
-        mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type="User Story")
+        mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type="User Story", tag=None)
 
     def test_tasks_missing_project_id_raises_error(self, mock_ctx):
         with pytest.raises(ValueError, match="project_id is required"):
