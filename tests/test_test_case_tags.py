@@ -53,6 +53,19 @@ def test_tag_filter_label_quoted():
     assert "toTagAssignments" in url and "label%20eq%20%27SIT%27" in url
 
 
+def test_tag_filter_matches_whole_family():
+    # tag="SIT" must match the exact tag AND sub-tags "SIT - Finance", "SIT - POS"
+    # (CALM groups related tags as "<tag> - <area>"). The filter therefore pairs
+    # an exact-equality clause with startswith() prefix clauses. Live-verified on
+    # NEBCO: this returns the full 62-case SIT family, not just the 11 exact.
+    url, _ = _capture(tag="SIT")
+    assert "label%20eq%20%27SIT%27" in url          # exact clause present
+    assert "startswith" in url                       # family (prefix) clause present
+    assert "%20or%20" in url                          # exact OR prefix
+    # trailing space/dash on the prefix so it can't catch "SITE"/"SITUATION"
+    assert "%27SIT%20%27" in url or "%27SIT-%27" in url
+
+
 def test_combined_filter_uses_and():
     url, _ = _capture(project_id="g1", tag="SIT")
     assert "%20and%20" in url

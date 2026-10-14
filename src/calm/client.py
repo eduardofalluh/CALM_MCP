@@ -573,8 +573,12 @@ def get_test_cases(
     ``toTagAssignments``, e.g. "SIT", "P2P"). All filters are applied
     server-side and combined with ``and``:
 
-    - ``tag``: exact, case-sensitive match on a tag label (CALM stores tags
-      case-sensitively).
+    - ``tag``: matches the whole tag FAMILY, case-sensitively. CALM groups
+      related tags as "<tag> - <area>" (e.g. "SIT", "SIT - Finance",
+      "SIT - POS"), so ``tag="SIT"`` returns the exact "SIT" tag PLUS every
+      "SIT - *" sub-tag — everything a user means by "the SIT tag". A trailing
+      space/dash on the prefix match keeps it from catching unrelated tags that
+      merely share a prefix (e.g. "SITE", "SITUATION").
     - ``project_id``: restrict to one project.
     - ``title_contains``: case-insensitive substring match on the title
       (useful when a grouping like "SIT" lives in the title rather than a tag).
@@ -589,7 +593,14 @@ def get_test_cases(
     if tag:
         # Tag label is a string; escape embedded single quotes by doubling.
         esc = tag.replace("'", "''")
-        filters.append(f"toTagAssignments/any(t:t/label eq '{esc}')")
+        # Family match: exact tag OR any sub-tag "<tag> - <area>". Covers both
+        # "SIT - Finance" (space-separated) and a bare "SIT-Finance" just in case.
+        filters.append(
+            "toTagAssignments/any(t:"
+            f"t/label eq '{esc}' or "
+            f"startswith(t/label,'{esc} ') or "
+            f"startswith(t/label,'{esc}-'))"
+        )
     if title_contains:
         # Case-insensitive substring match via tolower() on both sides.
         esc = title_contains.replace("'", "''").lower()
