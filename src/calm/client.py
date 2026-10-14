@@ -1025,7 +1025,11 @@ def get_analytics(
         raw.extend(items)
         if len(items) < _ANALYTICS_PAGE:
             break  # last (partial) page
-        if top is not None and len(raw) >= top:
+        # Short-circuit on `top` ONLY when every raw row is a returned row. With a
+        # project_id filter the kept count isn't known until after unpivot+filter,
+        # so stopping at `top` RAW rows could miss project rows further down the
+        # DataSet and under-count — page fully (to the ceiling) in that case.
+        if top is not None and project_id is None and len(raw) >= top:
             break
         skip += _ANALYTICS_PAGE
     else:
@@ -1754,7 +1758,24 @@ def api_read(
         # CALM (HTTP 400) — the same mangle that once silently capped filtered
         # listings at 100 rows. Encode OData query strings the %20 way.
         url = f"{url}{sep}{urlencode(params, quote_via=quote)}"
-    return _get(url, token)
+
+    # The escape hatch obeys the SAME no-silent-truncation contract as every
+    # dedicated list tool. If the caller drives paging themselves ($top/$skip),
+    # honor that single page. Otherwise, when the response is an OData collection
+    # envelope ({"value":[...]}), page it to exhaustion via _get_all (which also
+    # raises the ⚠️ alert on a hard ceiling) and return the SAME envelope shape
+    # with its value fully populated. Single entities and bare lists (already
+    # complete, and $skip-rejecting) pass straight through unchanged.
+    lowered = url.lower()
+    caller_paging = "$top" in lowered or "%24top" in lowered or "$skip" in lowered or "%24skip" in lowered
+    first = _get(url, token)
+    if caller_paging or not isinstance(first, dict) or "value" not in first:
+        return first
+    rows = _get_all(url, token)  # one redundant first GET; correctness over a hot path
+    out = dict(first)
+    out["value"] = rows
+    out["@odata.count"] = len(rows)
+    return out
 
 
 def api_write(
