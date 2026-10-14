@@ -982,10 +982,10 @@ def get_analytics(
 
     raw: list[dict] = []
     skip = 0
+    url = f"{base}/api/calm-analytics/v1/odata/v4/analytics/DataSet"
     while skip < _ANALYTICS_MAX_ROWS:
         query = f"$filter={encoded}&$top={_ANALYTICS_PAGE}&$skip={skip}"
-        url = f"{base}/api/calm-analytics/v1/odata/v4/analytics/DataSet?{query}"
-        result = _get(url, token)
+        result = _get(f"{url}?{query}", token)
         items = result.get("value", []) if isinstance(result, dict) else (result or [])
         raw.extend(items)
         if len(items) < _ANALYTICS_PAGE:
@@ -993,6 +993,11 @@ def get_analytics(
         if top is not None and len(raw) >= top:
             break
         skip += _ANALYTICS_PAGE
+    else:
+        # Loop exited on the row ceiling while a full page was still arriving —
+        # more analytics rows exist than we fetched. Surface it like every other
+        # list, so the user is never silently given a partial breakdown.
+        _record_truncation(url, len(raw), "max-rows")
 
     rows = [_unpivot_analytics_row(r) for r in raw]
     if project_id:
@@ -1705,7 +1710,11 @@ def api_read(
         from urllib.parse import urlencode
 
         sep = "&" if "?" in url else "?"
-        url = f"{url}{sep}{urlencode(params)}"
+        # quote_via=quote (not the default quote_plus): spaces must encode as %20,
+        # not '+'. An OData $filter passed through params with '+' is rejected by
+        # CALM (HTTP 400) — the same mangle that once silently capped filtered
+        # listings at 100 rows. Encode OData query strings the %20 way.
+        url = f"{url}{sep}{urlencode(params, quote_via=quote)}"
     return _get(url, token)
 
 

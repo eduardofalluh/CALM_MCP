@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import requests
 
@@ -72,6 +72,16 @@ def _params_from_query(query: str | None) -> dict[str, str] | None:
     return dict(parse_qsl(query.lstrip("?"), keep_blank_values=True))
 
 
+def _odata_key(value: str) -> str:
+    """Escape a value for use inside an OData key, e.g. TestCases('<value>').
+
+    OData doubles an embedded single quote. Ids are normally GUIDs with no
+    special characters, but escaping is cheap and closes a breakage/injection
+    class if a non-GUID key ever flows through.
+    """
+    return str(value).replace("'", "''")
+
+
 def _normalize(payload: Any) -> Any:
     """Flatten the OData collection envelope into {items, count?, next_link?}."""
     if isinstance(payload, dict) and "value" in payload:
@@ -91,6 +101,73 @@ def _get(url: str, token: str, params: dict[str, str] | None = None) -> Any:
     if "xml" in (resp.headers.get("Content-Type") or "") or (resp.text or "").lstrip().startswith("<"):
         return {"metadata_xml": resp.text}
     return resp.json() if (resp.text or "").strip() else {}
+
+
+def _get_all(url: str, token: str, params: dict[str, str] | None = None) -> Any:
+    """Fetch a COMPLETE TM OData collection, following @odata.nextLink to the end.
+
+    The CAP OData V4 service pages large collections and signals continuation via
+    a relative ``@odata.nextLink``. The single-page ``_get`` surfaced that link but
+    never followed it, so any collection past one server page was silently cut off
+    — the same truncation class the CALM-native client already guards against.
+
+    Returns the same normalized envelope as ``_normalize`` (``{items, count?}``),
+    with every page concatenated and ``next_link`` dropped once exhausted. Rows are
+    de-duped defensively so an endpoint that loops a link cannot run away. On a hard
+    ceiling the shared truncation sink is fed via ``client._record_truncation`` so a
+    TM cut-off raises the same user-facing alert as every CALM list.
+
+    Only used when the caller drives no explicit ``$top``/``$skip`` — explicit paging
+    and delta-sync watermarks keep their single-page behavior through ``_get``.
+    """
+    # Reuse the CALM client's ceilings and shared truncation sink.
+    from src.calm import client as _calm
+
+    first = _get(url, token, params=params)
+    if not isinstance(first, dict) or "value" not in first:
+        # metadata_xml, a single entity, or an unexpected shape — nothing to page.
+        return _normalize(first)
+
+    items = list(first.get("value", []))
+    count = first.get("@odata.count")
+    next_link = first.get("@odata.nextLink")
+
+    def _row_id(r: Any) -> Any:
+        if isinstance(r, dict):
+            for k in ("ID", "id", "uuid", "test_case_id", "tr_id"):
+                if r.get(k) is not None:
+                    return (k, r[k])
+        return id(r)
+
+    seen = {_row_id(r) for r in items}
+    requests_made = 1
+    current = url
+    while next_link:
+        if requests_made >= _calm._PAGE_MAX_REQUESTS or len(items) >= _calm._PAGE_MAX_ROWS:
+            limit = ("max-requests" if requests_made >= _calm._PAGE_MAX_REQUESTS
+                     else "max-rows")
+            _calm._record_truncation(url, len(items), limit)
+            break
+        # Resolve a relative @odata.nextLink against the CURRENT request URL
+        # (urljoin keeps the service path, e.g. /odata/v4/..); absolute links pass
+        # through unchanged. Chaining against `current` keeps multi-page links correct.
+        current = urljoin(current, next_link)
+        page = _get(current, token)
+        if not isinstance(page, dict):
+            break
+        batch = page.get("value", [])
+        new = [r for r in batch if _row_id(r) not in seen]
+        if not new:  # link looped or no further data
+            break
+        items.extend(new)
+        seen.update(_row_id(r) for r in new)
+        next_link = page.get("@odata.nextLink")
+        requests_made += 1
+
+    out: dict[str, Any] = {"items": items}
+    if count is not None:
+        out["count"] = count
+    return out
 
 
 def _get_with_etag(url: str, token: str) -> tuple[Any, str | None]:
@@ -190,7 +267,13 @@ def odata_read(token: str, base_url: str, entity_set: str, query: str | None = N
             f"{', '.join(sorted(TM_ENTITY_SETS))} (or '$metadata')."
         )
     url = f"{base_url.rstrip('/')}/{entity_set}"
-    return _normalize(_get(url, token, params=_params_from_query(query)))
+    params = _params_from_query(query)
+    # Page a collection read to exhaustion; leave single-entity ('…'), $metadata,
+    # and caller-driven $top/$skip reads as a single request.
+    is_collection = root in TM_ENTITY_SETS and "(" not in entity_set
+    if is_collection and not (params and ("$top" in params or "$skip" in params)):
+        return _get_all(url, token, params=params or None)
+    return _normalize(_get(url, token, params=params))
 
 
 def get_statistics(token: str, base_url: str) -> Any:
@@ -236,13 +319,18 @@ def get_test_cases(
         params["$skip"] = str(skip)
     if count:
         params["$count"] = "true"
-    return _normalize(_get(f"{base_url.rstrip('/')}/TestCases", token, params=params or None))
+    tc_url = f"{base_url.rstrip('/')}/TestCases"
+    # No explicit $top/$skip → caller wants the whole set, so page to exhaustion.
+    # With either present the caller is driving paging (or delta-sync) themselves.
+    if top is None and skip is None:
+        return _get_all(tc_url, token, params=params or None)
+    return _normalize(_get(tc_url, token, params=params or None))
 
 
 def get_test_case_full(token: str, base_url: str, test_case_id: str) -> Any:
     """One request returns the complete test case tree: activities → actions →
     field entries, plus applications, references and task links."""
-    url = f"{base_url.rstrip('/')}/TestCases('{test_case_id}')"
+    url = f"{base_url.rstrip('/')}/TestCases('{_odata_key(test_case_id)}')"
     params = {"$expand": "activities($expand=actions($expand=fields),applications),refs,taskLinks"}
     return _get(url, token, params=params)
 
@@ -266,7 +354,11 @@ def get_requirements(
         params["$top"] = str(top)
     if count:
         params["$count"] = "true"
-    return _normalize(_get(f"{base_url.rstrip('/')}/Requirements", token, params=params or None))
+    req_url = f"{base_url.rstrip('/')}/Requirements"
+    # No explicit $top → page the full collection; an explicit $top is caller-driven.
+    if top is None:
+        return _get_all(req_url, token, params=params or None)
+    return _normalize(_get(req_url, token, params=params or None))
 
 
 # ---------------------------------------------------------------------------
@@ -285,20 +377,20 @@ def create_test_case(token: str, base_url: str, body: dict) -> Any:
 
 
 def update_test_case(token: str, base_url: str, test_case_id: str, fields: dict, if_match: str | None = None) -> Any:
-    url = f"{base_url.rstrip('/')}/TestCases('{test_case_id}')"
+    url = f"{base_url.rstrip('/')}/TestCases('{_odata_key(test_case_id)}')"
     etag = _resolve_etag(url, token, if_match)
     return _write("PATCH", url, token, fields, if_match=etag)
 
 
 def delete_requirement(token: str, base_url: str, requirement_id: str, if_match: str | None = None) -> dict:
-    url = f"{base_url.rstrip('/')}/Requirements('{requirement_id}')"
+    url = f"{base_url.rstrip('/')}/Requirements('{_odata_key(requirement_id)}')"
     etag = _resolve_etag(url, token, if_match)
     _delete(url, token, if_match=etag)
     return {"deleted": requirement_id, "cascade": "requirement's test cases, activities, actions and fields"}
 
 
 def delete_test_case(token: str, base_url: str, test_case_id: str, if_match: str | None = None) -> dict:
-    url = f"{base_url.rstrip('/')}/TestCases('{test_case_id}')"
+    url = f"{base_url.rstrip('/')}/TestCases('{_odata_key(test_case_id)}')"
     etag = _resolve_etag(url, token, if_match)
     _delete(url, token, if_match=etag)
     return {"deleted": test_case_id}
