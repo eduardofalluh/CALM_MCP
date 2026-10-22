@@ -1,10 +1,9 @@
 """Test-case → requirement linking tool for SAP Cloud ALM MCP server.
 
-Test plans are intentionally NOT modelled here: SAP Cloud ALM's public
-Test Management API (``calm-testmanagement/v1`` / ExternalTestCaseServiceAPI)
-exposes test *cases* only — there is no test-plan entity, no plan navigation
-property on test cases, and the ``/projects/{id}/testPlans`` path returns 404.
-Plan membership can therefore only be obtained from a CALM UI export.
+Test plans are not modelled here. SAP publishes scope calm-api.testplans.read
+("API Read access to test plans"); without it the ``/projects/{id}/testPlans``
+path returned 404. Plans are read via calm_resource(resource="test_plans"),
+which discovers the plan entity set from the Test Management service document.
 """
 
 from __future__ import annotations

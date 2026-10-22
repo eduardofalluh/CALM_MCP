@@ -9,8 +9,10 @@ credentials are stored or fetched here.
 from __future__ import annotations
 
 import contextvars
+import html
 import json
 import logging
+import re
 import uuid
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
@@ -649,6 +651,150 @@ def get_test_cases(
     return [_format_test_case(item) for item in _get_all(url, token)]
 
 
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+# One request returns the case, its tags and its full step tree. The navigation
+# names are the same ones the deep-insert create path writes (toActivities /
+# toActions), so read and write stay symmetric.
+_TEST_CASE_DETAIL_EXPAND = "$expand=toTagAssignments,toActivities($expand=toActions)"
+
+# Attached to every test-case detail so an agent never goes hunting for data the
+# public API does not carry. Run status lives in Analytics; testers' per-step
+# actual results are UI-only.
+TEST_EXECUTION_RESULTS_NOTE = (
+    "Test runs and actual results are not part of the test case. Pass/fail status "
+    "per test case: calm_resource(resource='analytics', data={'provider': 'DP_TESTS'}) "
+    "— needs scope calm-api.tests.read on the service key. The actual result a "
+    "tester records on each step is not exposed by any SAP Cloud ALM public API; it "
+    "is only visible in the Test Execution app (or an export)."
+)
+
+
+def _rich_text_to_plain(value: Any) -> Any:
+    """CALM step fields are rich text (HTML). Keep line structure, drop markup."""
+    if not isinstance(value, str) or not value:
+        return value
+    text = re.sub(r"(?i)<br\s*/?>", "\n", value)
+    text = re.sub(r"(?i)</(p|div|li|h[1-6]|tr)>", "\n", text)
+    text = re.sub(r"(?i)<li[^>]*>", "- ", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def _by_sequence(rows: Any) -> list[dict]:
+    items = [r for r in (rows or []) if isinstance(r, dict)]
+    # Rows without a sequence keep their API order, after the sequenced ones.
+    return sorted(items, key=lambda r: (r.get("sequence") is None, r.get("sequence") or 0))
+
+
+def _format_test_case_detail(item: dict) -> dict:
+    """The list formatter's fields, unchanged, plus the step tree.
+
+    Steps are numbered "<activity>.<action>" by position after sorting on
+    `sequence` — the same 1.1 / 1.2 numbering the CALM UI shows.
+    """
+    out = _format_test_case(item)
+    activities: list[dict] = []
+    steps: list[dict] = []
+    for a_no, activity in enumerate(_by_sequence(item.get("toActivities")), start=1):
+        actions = _by_sequence(activity.get("toActions"))
+        activities.append({
+            "Activity": a_no,
+            "ID": activity.get("uuid") or activity.get("id"),
+            "Title": activity.get("title"),
+            "In Scope": activity.get("isInScope"),
+            "Action Count": len(actions),
+        })
+        for s_no, action in enumerate(actions, start=1):
+            steps.append({
+                "Step": f"{a_no}.{s_no}",
+                "Activity": activity.get("title"),
+                "Action": action.get("title"),
+                "Instructions": _rich_text_to_plain(action.get("description")),
+                "Expected Result": _rich_text_to_plain(action.get("expectedResult")),
+                "Evidence Required": action.get("isEvidenceRequired"),
+                "Activity ID": activity.get("uuid") or activity.get("id"),
+                "Action ID": action.get("uuid") or action.get("id"),
+            })
+    out["Activities"] = activities
+    out["Steps"] = steps
+    out["Execution Results"] = TEST_EXECUTION_RESULTS_NOTE
+    return out
+
+
+def get_test_case(token: str, test_case_id: str, base_url: str | None = None) -> dict:
+    """Return ONE manual test case with its full step tree.
+
+    ``test_case_id`` is either the UUID or the display ID shown in the CALM UI
+    (e.g. "8-1-1380"). The result carries the list fields (ID, Display ID,
+    Title, Priority, Tags, …) plus ``Activities`` and ``Steps`` — each step
+    with its Instructions and Expected Result — and an ``Execution Results``
+    note explaining where run status / actual results can (and cannot) be read.
+    """
+    key = (test_case_id or "").strip()
+    if not key:
+        raise ValueError("test_case_id is required (UUID or display ID, e.g. '8-1-1380')")
+    root = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases"
+    if _UUID_RE.match(key):
+        return _format_test_case_detail(_get(f"{root}/{key}?{_TEST_CASE_DETAIL_EXPAND}", token))
+    esc = key.replace("'", "''")
+    flt = quote(f"displayId eq '{esc}'", safe="")
+    result = _get(f"{root}?{_TEST_CASE_DETAIL_EXPAND}&$filter={flt}", token)
+    items = result.get("value", []) if isinstance(result, dict) else (result or [])
+    if not items:
+        raise ValueError(
+            f"No test case with display ID '{key}'. Pass the test case UUID, or check "
+            "the display ID with calm_resource(resource='test_cases', operation='list')."
+        )
+    return _format_test_case_detail(items[0])
+
+
+_TM_SERVICE_ROOT = "api/calm-testmanagement/v1/"
+
+
+def get_test_plans(
+    token: str, base_url: str | None = None, project_id: str | None = None,
+) -> list[dict] | dict:
+    """List test plans from the Test Management service.
+
+    SAP publishes the scope (calm-api.testplans.read) but no machine-readable
+    entity name we could pin here, so the plan entity set is discovered from the
+    service document at call time. When the tenant's service exposes none, a
+    structured ``unavailable`` result says so instead of failing. ``project_id``
+    is applied client-side, since the plan schema is not pinned.
+    """
+    base = _base_url(base_url)
+    service = _get(f"{base}/{_TM_SERVICE_ROOT}", token)
+    entries = service.get("value", []) if isinstance(service, dict) else []
+    names = [e.get("url") or e.get("name") for e in entries if isinstance(e, dict)]
+    plan_sets = [n for n in names if n and "plan" in n.lower()]
+    if not plan_sets:
+        return {
+            "status": "unavailable",
+            "supported": False,
+            "resource": "test_plans",
+            "message": (
+                "The connected Test Management service exposes no test-plan entity set. "
+                "Test plans need scope calm-api.testplans.read on the service key; if it "
+                "is granted, the tenant's API version does not offer plans yet."
+            ),
+            "available_entity_sets": [n for n in names if n],
+        }
+    rows = [
+        {k: v for k, v in item.items() if not k.startswith("@") and not isinstance(v, (dict, list))}
+        for item in _get_all(f"{base}/{_TM_SERVICE_ROOT}{plan_sets[0]}", token)
+        if isinstance(item, dict)
+    ]
+    if project_id:
+        rows = [r for r in rows if r.get("projectId") in (None, project_id)]
+    return rows
+
+
 def get_timeboxes(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
     """Return timeboxes (sprints, iterations) for a project.
 
@@ -975,7 +1121,8 @@ def _unpivot_analytics_row(row: dict) -> dict:
 
 # Providers reachable with the standard implementation scopes. DP_REQUIREMENTS
 # and DP_TESTS are listed in SAP docs but 403 on tenants that do not grant the
-# matching scope, so they are not advertised as always-available here.
+# matching scope (DP_TESTS: calm-api.tests.read), so they are not advertised as
+# always-available here.
 ANALYTICS_PROVIDERS = ("DP_TASKS", "DP_PROJECTS", "DP_FEATURES")
 
 

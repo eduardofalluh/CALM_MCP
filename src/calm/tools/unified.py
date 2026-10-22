@@ -163,6 +163,7 @@ def register(mcp: FastMCP) -> None:
             "timeboxes",
             "scopes",
             "test_cases",
+            "test_plans",
             "tags",
             "features",
             "project_users",
@@ -229,6 +230,17 @@ def register(mcp: FastMCP) -> None:
           - "sprints / timeboxes in project X"  → resource="timeboxes", project_id=X
           - "scopes", "test cases", "features", "tags",
             "project members", "customization" → the matching `resource`
+          - "steps / instructions / expected result of test case <ID>",
+            "what does step 1.2 say"           → resource="test_cases",
+                operation="get", resource_id=<UUID or display ID, e.g. "8-1-1380">
+                (returns Steps numbered 1.1, 1.2, … with Instructions + Expected Result)
+          - "test execution status", "passed/failed tests", "test progress"
+                → resource="analytics", data={"provider":"DP_TESTS"}, project_id=X
+                (needs scope calm-api.tests.read on the service key)
+          - "test plans"                        → resource="test_plans", operation="list"
+                (needs scope calm-api.testplans.read)
+          - a tester's ACTUAL RESULT on a step is NOT exposed by any SAP Cloud ALM
+            public API — say so; it is only visible in the Test Execution app.
           - "readiness %", "status breakdown", "how many tasks done",
             "effort/story points rollup"       → resource="analytics",
                 data={"provider":"DP_TASKS"}, project_id=X  (group rows by
@@ -275,8 +287,15 @@ def register(mcp: FastMCP) -> None:
                     (Tasks API, works); create new tag definitions in the CALM UI.
                 - features: name (required), description, external_id, extra_fields
                 # --- read resources with optional data filters ---
+                - test_cases get: resource_id = UUID or display ID ("8-1-1380").
+                    Returns the list fields plus Activities, Steps (Step "1.2",
+                    Activity, Action, Instructions, Expected Result, Evidence
+                    Required) and an Execution Results note.
+                - test_plans: list only; pass project_id to narrow. Returns an
+                    'unavailable' explanation when the scope or entity is missing.
                 - analytics: list only. data={provider (DP_TASKS default,
-                    DP_PROJECTS, DP_FEATURES), top (cap rows; default = all pages),
+                    DP_PROJECTS, DP_FEATURES; DP_TESTS = test execution status,
+                    needs calm-api.tests.read), top (cap rows; default = all pages),
                     raw_filter (extra OData clause)}; pass project_id to filter to
                     one project. Rows are flattened dimensions (statusText, status,
                     phase, team, workstream, priority, dueDate, overdue, requirement,
@@ -947,9 +966,35 @@ def register(mcp: FastMCP) -> None:
                     user_email=acting_email,
                 )
             elif operation == "get":
-                raise ValueError("Use operation='list' to get all test_cases, then filter by ID")
+                if not resource_id:
+                    raise ValueError(
+                        "resource_id is required for get — the test case UUID or display ID (e.g. '8-1-1380')"
+                    )
+                return client.get_test_case(h.token, resource_id, h.base_url)
             else:
                 raise ValueError(f"Unknown operation '{operation}' for test_cases")
+
+        elif resource == "test_plans":
+            if operation == "list":
+                try:
+                    return client.get_test_plans(
+                        h.token, h.base_url, project_id=project_id or d.get("project_id"),
+                    )
+                except RuntimeError as exc:
+                    if _is_not_authorized(exc):
+                        return {
+                            "status": "unavailable",
+                            "supported": False,
+                            "resource": "test_plans",
+                            "message": (
+                                "Reading test plans needs scope calm-api.testplans.read, "
+                                "which the connected service key is not granted. Add it to "
+                                "the key's BTP service instance (authorities) and restart."
+                            ),
+                        }
+                    raise
+            else:
+                raise ValueError(f"Operation '{operation}' not supported for test_plans (use list)")
 
         elif resource == "tags":
             tag_alternative = (
@@ -1287,9 +1332,10 @@ def register(mcp: FastMCP) -> None:
                                 f"The analytics provider '{d.get('provider', 'DP_TASKS')}' "
                                 "requires a scope the connected service key is not granted. "
                                 "DP_TASKS, DP_PROJECTS and DP_FEATURES work with standard "
-                                "implementation scopes; others (e.g. DP_REQUIREMENTS, "
-                                "DP_TESTS) need the matching analytics scope added to the "
-                                "key's BTP service binding."
+                                "implementation scopes; others need the matching analytics "
+                                "scope added to the key's BTP service instance (DP_TESTS "
+                                "needs calm-api.tests.read; DP_REQUIREMENTS its own "
+                                "requirements scope)."
                             ),
                         }
                     raise

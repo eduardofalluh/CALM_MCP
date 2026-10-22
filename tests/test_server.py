@@ -159,6 +159,43 @@ def _fake_get(url, *a, **kw):
             {"id": "SP1", "name": "SD Sales", "description": "Sales"},
         ]}))
 
+    # --- Test case detail read (step tree) — BEFORE the single-entity route
+    if "ManualTestCases" in url and "toActivities" in url:
+        case = {
+            "uuid": "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", "displayId": "8-1-1380",
+            "projectId": "P001", "title": "FRICEW 112 boundary", "priorityCode": 30,
+            "isPrepared": True, "toTagAssignments": [{"label": "SIT"}],
+            "toActivities": [{
+                "uuid": "A1", "title": "Log on", "sequence": 1, "isInScope": True,
+                "toActions": [
+                    {"uuid": "X2", "title": "Open app", "sequence": 2,
+                     "description": "<p>Open <b>Manage License Numbers</b></p>",
+                     "expectedResult": "<p>App opens</p>"},
+                    {"uuid": "X1", "title": "Log on", "sequence": 1,
+                     "description": "Log on", "expectedResult": "Launchpad opens"},
+                ],
+            }],
+        }
+        if "displayId" in url:
+            return _FakeResp(json.dumps({"value": [case]}))
+        return _FakeResp(json.dumps(case))
+    # Test Management service document (test-plan discovery): no plan entity set.
+    if url.rstrip("/").endswith("/calm-testmanagement/v1"):
+        return _FakeResp(json.dumps({"value": [
+            {"name": "ManualTestCases", "url": "ManualTestCases"},
+            {"name": "Activities", "url": "Activities"},
+            {"name": "Actions", "url": "Actions"},
+        ]}))
+    # Analytics DataSet: DP_TESTS rows in CALM's pivoted dN/mN layout.
+    if "calm-analytics" in url and "DataSet" in url:
+        if "DP_TESTS" not in url:
+            return _FakeResp(json.dumps({"value": []}))
+        return _FakeResp(json.dumps({"value": [
+            {"provider": "DP_TESTS", "date": "2026-10-22", "d1k": "testcaseID", "d1v": "8-1-1380",
+             "d2k": "status", "d2v": "Failed", "d3k": "project", "d3v": "P001",
+             "m1k": "total", "m1v": 1},
+        ]}))
+
     # --- Single-entity GETs used for ETag auto-fetch on update/delete ------
     if "/ManualTestCases/" in url or "/Activities/" in url or "/Actions/" in url:
         return _FakeResp(json.dumps({"uuid": "TC-1", "title": "old", "modifiedAt": "2025-11-17T15:51:04Z"}))
@@ -366,6 +403,39 @@ async def main() -> int:
 
             cust = _payload(await _call(session, "customization", "get", project_id="P001"))
             check("customization get returns a dict", isinstance(cust, dict) and "Workstreams" in cust, f"got {cust}")
+
+            # Test-case detail: the steps an agent needs before raising a defect.
+            tc = _payload(await _call(session, "test_cases", "get", resource_id="8-1-1380"))
+            steps = tc.get("Steps") if isinstance(tc, dict) else None
+            check("test case get by display ID returns numbered steps",
+                  isinstance(steps, list) and [s.get("Step") for s in steps] == ["1.1", "1.2"],
+                  f"got {steps}")
+            check("step 1.2 instructions + expected result as plain text",
+                  bool(steps) and len(steps) == 2
+                  and steps[1].get("Instructions") == "Open Manage License Numbers"
+                  and steps[1].get("Expected Result") == "App opens",
+                  f"got {steps}")
+            check("test case get keeps the list field contract",
+                  isinstance(tc, dict) and tc.get("Display ID") == "8-1-1380"
+                  and tc.get("Tags") == ["SIT"] and "Execution Results" in tc,
+                  f"got {sorted(tc) if isinstance(tc, dict) else tc}")
+            tc_uuid = _payload(await _call(session, "test_cases", "get",
+                                           resource_id="3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"))
+            check("test case get by UUID returns the same steps",
+                  isinstance(tc_uuid, dict) and tc_uuid.get("Steps") == steps)
+
+            plans = _payload(await _call(session, "test_plans", "list"))
+            check("test_plans reports unavailable (no plan entity) instead of failing",
+                  isinstance(plans, dict) and plans.get("status") == "unavailable"
+                  and "calm-api.testplans.read" in plans.get("message", ""),
+                  f"got {plans}")
+
+            runs = _list(await _call(session, "analytics", "list", project_id="P001",
+                                     data={"provider": "DP_TESTS"}))
+            check("analytics DP_TESTS returns unpivoted execution status",
+                  len(runs) == 1 and runs[0].get("status") == "Failed"
+                  and runs[0].get("testcaseID") == "8-1-1380",
+                  f"got {runs}")
 
             # ---- Test 4: write guard blocks create when writes OFF --------
             print("\nTest 4: write guard blocks create when CALM_ENABLE_WRITES is off")
