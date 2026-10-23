@@ -98,7 +98,7 @@ def test_get_by_uuid_uses_key_path_and_full_expand():
     assert len(calls) == 1
     url = calls[0]
     assert url.startswith(f"{BASE_URL}/api/calm-testmanagement/v1/ManualTestCases/{TC_UUID}?")
-    assert "$expand=toTagAssignments,toActivities($expand=toActions)" in url
+    assert "$expand=toTagAssignments,toTaskAssignments,toActivities($expand=toActions)" in url
     assert "$filter" not in url
     assert out["Display ID"] == "8-1-1380"
 
@@ -107,7 +107,7 @@ def test_get_by_display_id_filters_server_side():
     calls, out = _get_case("8-1-1380", {"value": [_raw_case()]})
     url = calls[0]
     assert url.startswith(f"{BASE_URL}/api/calm-testmanagement/v1/ManualTestCases?")
-    assert "$expand=toTagAssignments,toActivities($expand=toActions)" in url
+    assert "$expand=toTagAssignments,toTaskAssignments,toActivities($expand=toActions)" in url
     assert "$filter=displayId%20eq%20%278-1-1380%27" in url
     assert out["ID"] == TC_UUID
 
@@ -172,7 +172,7 @@ def test_detail_keeps_every_list_field_identical():
     listed = client._format_test_case(raw)
     for key, value in listed.items():
         assert out[key] == value
-    assert set(out) == LIST_KEYS | {"Activities", "Steps", "Execution Results"}
+    assert set(out) == LIST_KEYS | {"Activities", "Steps", "Execution Results", "Linked Tasks"}
 
 
 def test_case_without_steps_returns_empty_tree():

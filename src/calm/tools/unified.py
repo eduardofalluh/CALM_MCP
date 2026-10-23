@@ -16,7 +16,7 @@ from typing import Any, Literal, Optional
 
 from fastmcp import Context, FastMCP
 
-from src.calm import client
+from src.calm import client, http_retry, odata_service
 from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
 from src.calm.tools.user_resolver import resolve_assignee
 
@@ -146,6 +146,46 @@ def _features_read(resource: str, read):
         }
 
 
+# OData services and the scope each kind of call needs. Writes read first (the
+# schema, the ETag), so they need the read scope as well.
+_ODATA_SCOPES = {
+    "documents": {"read": "calm-api.documents.read", "write": "calm-api.documents.write",
+                  "delete": "calm-api.documents.delete"},
+    "features": {"read": "calm-api.features.read", "write": "calm-api.features.write"},
+    "automated_test_cases": {"read": "calm-api.testcases.read"},
+}
+
+
+def _needed_scopes(resource: str, operation: str) -> list[str]:
+    scopes = _ODATA_SCOPES[resource]
+    kind = "read" if operation in ("list", "get") else ("delete" if operation == "delete" else "write")
+    return [scopes.get(kind, scopes["read"])] + ([scopes["read"]] if kind != "read" else [])
+
+
+def _odata_call(resource: str, operation: str, call):
+    """Run an OData-service call. A missing scope becomes a structured answer for
+    reads and a clear error for writes, naming the scope(s) to add."""
+    try:
+        return call()
+    except (odata_service.SchemaUnavailable, RuntimeError) as exc:
+        text = str(exc)
+        scope_problem = isinstance(exc, odata_service.SchemaUnavailable) or any(
+            code in text for code in ("HTTP 401", "HTTP 403"))
+        if not scope_problem or isinstance(exc, http_retry.WriteUnconfirmed):
+            raise
+        scopes = _needed_scopes(resource, operation)
+        message = (
+            f"{resource} {operation} needs scope(s) {', '.join(scopes)} on the SAP Cloud ALM "
+            f"service key, which this connection is not granted ({text}). Add them to the "
+            "key's BTP service instance (xs-security authorities, as "
+            "$XSMASTERAPPNAME.<scope>) and create a new key — see the connectivity guide."
+        )
+        if operation in ("list", "get"):
+            return {"status": "unavailable", "supported": False, "resource": resource,
+                    "operation": operation, "missing_scopes": scopes, "message": message}
+        raise ValueError(message) from exc
+
+
 def _capability_unavailable(resource: str, alternative: str | None = None) -> dict:
     """Return a structured, user-facing explanation for a capability SAP's public
     API does not expose. Not an error state in the MCP — the platform has no
@@ -265,6 +305,8 @@ def register(mcp: FastMCP) -> None:
             "team_roles",
             "feature_status",
             "feature_priorities",
+            "documents",
+            "automated_test_cases",
         ],
         operation: Literal["list", "get", "create", "update", "delete"] = "list",
         project_id: Optional[str] = None,
@@ -278,8 +320,9 @@ def register(mcp: FastMCP) -> None:
 
         USE THIS TOOL whenever the user asks about SAP Cloud ALM / Cloud ALM / CALM:
         projects, tasks, user stories, requirements, teams and team roles/staffing,
-        business or solution processes, timeboxes/sprints, scopes, test cases,
-        features, tags, project members, project customization, or project
+        business or solution processes, timeboxes/sprints, scopes, test cases
+        (manual and automated), documents (solution design / specs / decision
+        documents), features, tags, project members, project customization, or project
         analytics — including task readiness/completion %, status breakdowns, and
         effort/story-point rollups. It is the ONLY correct source for SAP Cloud ALM
         project data in this agent, and it is tenant-scoped to the credentials this
@@ -352,6 +395,24 @@ def register(mcp: FastMCP) -> None:
                 resource_id=<team_id from resource='teams'>
           - "feature status / priority value help" → resource="feature_status"
                 / "feature_priorities"
+          - "change a feature's status / title / priority"
+                → resource="features", operation="update", resource_id=<UUID or
+                display ID>, data={"status": "<code from feature_status>", ...}
+                (features get returns one feature in full; there is no delete)
+          - "documents / solution design document / spec / decision doc in
+            project X"                          → resource="documents",
+                operation="list", project_id=X, optional data={"search": "...",
+                "status": "<code>", "type": "<code>"}  (needs calm-api.documents.read)
+          - "read document 7-109", "what does the design doc say"
+                → resource="documents", operation="get", resource_id=<UUID or
+                display ID>, project_id=X  (returns the document text + references)
+          - "create / update / release / delete a document"
+                → resource="documents", operation="create" | "update" | "delete"
+                (needs calm-api.documents.write / .delete; writes must be enabled)
+          - "automated test cases"             → resource="automated_test_cases",
+                operation="list" | "get", project_id=X  (read-only)
+          - "which requirements / tasks does test case X cover"
+                → resource="test_cases", operation="get" — see "Linked Tasks"
           - "create / add / new …"              → operation="create" (+ data)
           - "update / change / set / rename …"  → operation="update" (+ resource_id, data)
           - "delete / remove …"                 → operation="delete" (+ resource_id)
@@ -389,7 +450,21 @@ def register(mcp: FastMCP) -> None:
                     tag work, assign existing tags to a task via resource='task_tags'
                     (Tasks API, works); create new tag definitions in the CALM UI.
                 - features: name (required), description, external_id, extra_fields
+                - features update: any feature field by name — status, name/title,
+                    description, priority (priorityCode), responsible_id, … — unknown
+                    fields are refused with the list of real ones
+                - documents create: title (required), content (the document text,
+                    HTML rich text), type / status codes, and any other document
+                    field; project_id comes from the argument. update: the fields to
+                    change. Field names come from the tenant's own Documents schema;
+                    an unknown field is refused with the list of valid ones.
                 # --- read resources with optional data filters ---
+                - documents / automated_test_cases list: data={search (title / ID /
+                    display ID, best first; 25 rows default), top, fields, or any
+                    field to match exactly, e.g. status / type / statusCode}. Rows:
+                    every field under a Title-Case label (ID, Display ID, Title,
+                    Status Code, Type Code, Version, Created, Last Changed, …); the
+                    long document text is only on get.
                 - tasks list: data={tag, timebox (sprint name/ID or list),
                     team (team name/ID or list), search (text: matches title,
                     ID, Display ID, External ID — best matches first, reworded
@@ -1242,12 +1317,104 @@ def register(mcp: FastMCP) -> None:
                     base_url=h.base_url,
                     user_email=acting_email,
                 )
-            elif operation in ["update", "delete"]:
-                raise ValueError(f"Operation '{operation}' not supported for features (read-only after creation)")
             elif operation == "get":
-                raise ValueError("Use operation='list' with project_id to get features, then filter by ID")
+                if not resource_id:
+                    raise ValueError("resource_id is required for get: the feature's ID (UUID) or display ID")
+                service, set_name = odata_service.FEATURES
+                return _odata_call("features", "get", lambda: odata_service.feature_row(
+                    odata_service.get_raw(service, set_name, h.token, resource_id, h.base_url,
+                                          project_id)[0], long_text=True))
+            elif operation == "update":
+                ensure_writes_enabled()
+                if not resource_id:
+                    raise ValueError("resource_id is required for update operation")
+                if not data:
+                    raise ValueError("data is required for update operation")
+                service, set_name = odata_service.FEATURES
+
+                def update_feature():
+                    es = odata_service.entity_set(service, set_name, h.token, h.base_url)
+                    fields = dict(d.get("extra_fields") or {})
+                    fields.update({k: v for k, v in d.items() if k not in ("extra_fields", "project_id")})
+                    body = odata_service.body_for(es, fields)
+                    return odata_service.feature_row(odata_service.update(
+                        service, set_name, h.token, resource_id, body, h.base_url, project_id,
+                        user_email=acting_email))
+                return _odata_call("features", "update", update_feature)
+            elif operation == "delete":
+                raise ValueError(
+                    "SAP's Features API has no delete — retire a feature by updating its "
+                    "status (data={'status': '<code from resource=feature_status>'})."
+                )
             else:
                 raise ValueError(f"Unknown operation '{operation}' for features")
+
+        elif resource == "documents":
+            service, set_name = odata_service.DOCUMENTS
+            if operation == "list":
+                return _odata_call("documents", "list", lambda: odata_service.list_rows(
+                    odata_service.DOCUMENTS, h.token, h.base_url, project_id=project_id, data=d))
+            if operation == "get":
+                if not resource_id:
+                    raise ValueError("resource_id is required for get: the document's ID (UUID) or display ID (e.g. '7-109')")
+                return _odata_call("documents", "get", lambda: odata_service.format_row(
+                    odata_service.get_raw(service, set_name, h.token, resource_id, h.base_url,
+                                          project_id)[0]))
+            if operation not in ("create", "update", "delete"):
+                raise ValueError(f"Unknown operation '{operation}' for documents")
+            ensure_writes_enabled()
+            if operation == "delete":
+                if not resource_id:
+                    raise ValueError("resource_id is required for delete operation")
+                return _odata_call("documents", "delete", lambda: odata_service.delete(
+                    service, set_name, h.token, resource_id, h.base_url, project_id,
+                    user_email=acting_email))
+            if not data:
+                raise ValueError(f"data is required for {operation} operation")
+            fields = dict(d.get("extra_fields") or {})
+            fields.update({k: v for k, v in d.items() if k not in ("extra_fields", "project_id")})
+
+            def write_document():
+                es = odata_service.entity_set(service, set_name, h.token, h.base_url)
+                if operation == "update":
+                    if not resource_id:
+                        raise ValueError("resource_id is required for update operation")
+                    body = odata_service.body_for(es, fields)
+                    return odata_service.format_row(odata_service.update(
+                        service, set_name, h.token, resource_id, body, h.base_url, project_id,
+                        user_email=acting_email))
+                pid = project_id or d.get("project_id")
+                if "projectId" in es["props"] and "projectId" not in fields and "project_id" not in fields:
+                    if not pid:
+                        raise ValueError("project_id is required to create a document")
+                    fields["projectId"] = pid
+                if not fields.get("title"):
+                    raise ValueError("data must include 'title' for create operation")
+                body = odata_service.body_for(es, fields)
+                raw, note = odata_service.create(service, set_name, h.token, body, h.base_url,
+                                                 user_email=acting_email)
+                row = odata_service.format_row(raw)
+                if note:
+                    row["Note"] = note
+                return row
+            return _odata_call("documents", operation, write_document)
+
+        elif resource == "automated_test_cases":
+            service, set_name = odata_service.AUTOMATED_TEST_CASES
+            if operation == "list":
+                return _odata_call("automated_test_cases", "list", lambda: odata_service.list_rows(
+                    odata_service.AUTOMATED_TEST_CASES, h.token, h.base_url, project_id=project_id,
+                    data=d, formatter=client.automated_test_case_row))
+            if operation == "get":
+                if not resource_id:
+                    raise ValueError("resource_id is required for get: the test case's ID (UUID) or display ID")
+                return _odata_call("automated_test_cases", "get", lambda: client.automated_test_case_row(
+                    odata_service.get_raw(service, set_name, h.token, resource_id, h.base_url,
+                                          project_id)[0], long_text=True))
+            raise ValueError(
+                f"Operation '{operation}' not supported for automated_test_cases (read-only: "
+                "automated test cases are created by the test automation tool)"
+            )
 
         elif resource == "project_users":
             if operation == "list":

@@ -792,7 +792,8 @@ def test_create_feature_posts_to_features_service_with_project_in_body():
         body = w.call_args.args[3]
         assert method == "POST"
         assert url == f"{BASE_URL}/api/calm-features/v1/Features"
-        assert body["projectId"] == "P1" and body["name"] == "New"
+        # SAP's Features API names it "title" (schema unreadable here -> documented field).
+        assert body["projectId"] == "P1" and body["title"] == "New" and "name" not in body
 
 
 def test_scopes_list_without_project_id_returns_all():

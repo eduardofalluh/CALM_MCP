@@ -597,9 +597,6 @@ def get_tasks(
     return [_format_task(item, team_names, timebox_names) for item in items]
 
 
-_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
-
-
 def get_task(
     token: str, task_id: str, base_url: str | None = None, project_id: str | None = None,
 ) -> dict:
@@ -611,7 +608,7 @@ def get_task(
     ident = str(task_id or "").strip()
     if not ident:
         raise ValueError("resource_id is required: the task's ID (UUID) or display ID")
-    if _UUID.match(ident):
+    if _UUID_RE.match(ident):
         item = _get(f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{ident}", token)
         if not isinstance(item, dict) or not item:
             raise ValueError(f"No task with ID {ident}")
@@ -782,7 +779,12 @@ def _words(text: Any) -> list[str]:
 
 
 def search_tasks(rows: list[dict], text: Any) -> list[dict]:
-    """Tasks matching ``text``, best match first, for lookups and duplicate checks.
+    """Tasks matching ``text``, best match first (see search_rows)."""
+    return search_rows(rows, text, ("ID", "Display ID", "External ID (FRICEF)"))
+
+
+def search_rows(rows: list[dict], text: Any, id_fields: tuple = ("ID", "Display ID")) -> list[dict]:
+    """Rows matching ``text``, best match first, for lookups and duplicate checks.
 
     Matches, in this order: the exact ID / Display ID / External ID; the search
     as a phrase inside the title (case, spacing and punctuation ignored); then
@@ -797,7 +799,7 @@ def search_tasks(rows: list[dict], text: Any) -> list[dict]:
     significant = [w for w in _words(query) if w not in _SEARCH_STOPWORDS] or _words(query)
     scored: list[tuple[float, int, dict]] = []
     for pos, r in enumerate(rows):
-        ids = (r.get("ID"), r.get("Display ID"), r.get("External ID (FRICEF)"))
+        ids = tuple(r.get(f) for f in id_fields)
         title_words = _words(r.get("Title") or "")
         if any(i is not None and str(i).strip().lower() == exact for i in ids):
             score = 3.0
@@ -1005,7 +1007,7 @@ _UUID_RE = re.compile(
 # One request returns the case, its tags and its full step tree. The navigation
 # names are the same ones the deep-insert create path writes (toActivities /
 # toActions), so read and write stay symmetric.
-_TEST_CASE_DETAIL_EXPAND = "$expand=toTagAssignments,toActivities($expand=toActions)"
+_TEST_CASE_DETAIL_EXPAND = "$expand=toTagAssignments,toTaskAssignments,toActivities($expand=toActions)"
 
 # Attached to every test-case detail so an agent never goes hunting for data the
 # public API does not carry. Run status lives in Analytics; testers' per-step
@@ -1083,7 +1085,25 @@ def _format_test_case_detail(item: dict) -> dict:
     out["Activities"] = activities
     out["Steps"] = steps
     out["Execution Results"] = TEST_EXECUTION_RESULTS_NOTE
+    # The requirements / tasks this test case covers (traceability).
+    out["Linked Tasks"] = [
+        {"Task ID": t.get("taskId"), "Task Display ID": t.get("taskDisplayId"), "Type": t.get("type")}
+        for t in (item.get("toTaskAssignments") or []) if isinstance(t, dict)
+    ]
     return out
+
+
+def automated_test_case_row(item: dict, long_text: bool = False) -> dict:
+    """An automated test case (Test Management ``AutomatedTestCases``): every
+    field under its label, plus the priority as the same label manual test
+    cases show."""
+    from . import odata_service
+
+    row = odata_service.format_row(item, long_text=long_text)
+    if "priorityCode" in item:
+        code = item.get("priorityCode")
+        row["Priority"] = TESTCASE_PRIORITY_MAP.get(str(code), code)
+    return row
 
 
 def get_test_case(token: str, test_case_id: str, base_url: str | None = None) -> dict:
@@ -1394,24 +1414,26 @@ def get_features(project_id: str, token: str, base_url: str | None = None) -> li
     Features are higher-level groupings used for transport tracking and
     release planning. Each feature can contain multiple requirements.
 
-    Features have their own dedicated service — ``/api/calm-features/v1/Features``
-    — which is what the ``features.read`` scope unlocks. The Projects-service
-    path (``/projects/{id}/features``) is NOT the real Features API and returns
-    an empty 403, so we query the Features service and filter by project here.
+    Features have their own OData service — ``/api/calm-features/v1/Features``
+    — which is what the ``features.read`` scope unlocks. Rows keep the columns
+    agents already use (ID, Project ID, Name, Description, Status, External ID)
+    read from SAP's real fields (uuid, title, statusCode, …), then every other
+    field (Display ID, Priority Code, Responsible ID, Tags, Last Changed, …).
     """
-    url = f"{_base_url(base_url)}/api/calm-features/v1/Features"
-    items = _get_all(url, token)
-    mapped = [
-        {
-            "ID": item.get("id"),
-            "Project ID": item.get("projectId") or item.get("project"),
-            "Name": item.get("name"),
-            "Description": item.get("description"),
-            "Status": item.get("status"),
-            "External ID": item.get("externalId"),
-        }
-        for item in items
-    ]
+    from . import odata_service
+
+    service, set_name = odata_service.FEATURES
+    try:
+        es = odata_service.entity_set(service, set_name, token, base_url)
+    except Exception as exc:  # noqa: BLE001 — no schema: use the documented fields
+        log.debug("features schema unavailable: %s", type(exc).__name__)
+        es = None
+    if es is not None:
+        filters = {"projectId": project_id} if project_id and "projectId" in es["props"] else None
+        items = odata_service.list_raw(service, set_name, token, base_url, filters)
+    else:
+        items = _get_all(f"{_base_url(base_url)}/api/calm-features/v1/Features", token)
+    mapped = [odata_service.feature_row(item) for item in items if isinstance(item, dict)]
     # Filter to the requested project. Guard against a field-name mismatch: if
     # no item carries a project id at all, return everything rather than hide
     # all results behind a wrong assumption about the field name.
@@ -1442,22 +1464,38 @@ def create_feature(
         external_id: Optional external system reference
         extra_fields: Additional API fields (status, etc.)
     """
-    body: dict[str, Any] = {
-        "projectId": project_id,
-        "name": name,
-    }
+    from . import odata_service
+
+    service, set_name = odata_service.FEATURES
+    try:
+        es = odata_service.entity_set(service, set_name, token, base_url)
+    except Exception as exc:  # noqa: BLE001 — no schema: use the documented fields
+        log.debug("features schema unavailable: %s", type(exc).__name__)
+        es = None
+    # SAP's Features API calls the name "title"; follow the tenant's schema when
+    # it can be read, else the documented field.
+    name_field = "name" if es is not None and "title" not in es["props"] and "name" in es["props"] else "title"
+    body: dict[str, Any] = {"projectId": project_id, name_field: name}
     if description is not None:
         body["description"] = description
     if external_id is not None:
         body["externalId"] = external_id
     if extra_fields:
         body.update(_api_field_names(extra_fields))
+    if es is not None:
+        body = odata_service.body_for(es, body)
 
     # Features have their own service; the Projects-service path is not the
     # real Features API (see get_features).
-    url = f"{_base_url(base_url)}/api/calm-features/v1/Features"
-    result = _write("POST", url, token, body, user_email=user_email)
-    return result if isinstance(result, dict) and result else {"submitted": body}
+    if es is not None:
+        result, note = odata_service.create(service, set_name, token, body, base_url,
+                                            user_email=user_email)
+    else:
+        url = f"{_base_url(base_url)}/api/calm-features/v1/Features"
+        result, note = _write("POST", url, token, body, user_email=user_email), None
+    if not (isinstance(result, dict) and result):
+        return {"submitted": body}
+    return _with_note(result, note) if note else result
 
 
 def link_test_case_to_requirement(

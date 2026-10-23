@@ -65,3 +65,20 @@ def pytest_configure(config):
         "markers",
         "allow_network: permit a test to open real outbound network connections.",
     )
+
+
+@pytest.fixture(autouse=True)
+def _no_live_odata_schema(monkeypatch):
+    """OData services (Documents, Features, automated test cases) read their
+    $metadata from the tenant. Unit tests get "schema unavailable" unless they
+    patch ``odata_service.schema`` with a fake one — never a live request (a
+    sandbox or corporate proxy on loopback would hide it from the socket guard)."""
+    from src.calm import odata_service
+
+    def no_schema(service, token, base_url=None):
+        raise odata_service.SchemaUnavailable(f"no live {service} $metadata in unit tests")
+
+    odata_service._SCHEMAS.clear()
+    monkeypatch.setattr(odata_service, "schema", no_schema)
+    yield
+    odata_service._SCHEMAS.clear()

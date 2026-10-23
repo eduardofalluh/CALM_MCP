@@ -76,7 +76,46 @@ _TEAMS = {
 }
 
 
+_CSDL = (
+    '<edmx:Edmx Version="4.0"><edmx:DataServices><Schema Namespace="api.v1.S">'
+    '<EntityContainer Name="C">'
+    '<EntitySet Name="Documents" EntityType="api.v1.S.Documents"/>'
+    '<EntitySet Name="AutomatedTestCases" EntityType="api.v1.S.AutomatedTestCases"/>'
+    '</EntityContainer>'
+    '<EntityType Name="Documents"><Key><PropertyRef Name="uuid"/></Key>'
+    '<Property Name="uuid" Type="Edm.Guid" Nullable="false"/>'
+    '<Property Name="displayId" Type="Edm.String"/><Property Name="title" Type="Edm.String"/>'
+    '<Property Name="content" Type="Edm.String"/><Property Name="projectId" Type="Edm.String"/>'
+    '<Property Name="statusCode" Type="Edm.String"/><Property Name="typeCode" Type="Edm.String"/>'
+    '<Property Name="createdAt" Type="Edm.DateTimeOffset"/>'
+    '</EntityType>'
+    '<EntityType Name="AutomatedTestCases"><Key><PropertyRef Name="uuid"/></Key>'
+    '<Property Name="uuid" Type="Edm.Guid" Nullable="false"/><Property Name="title" Type="Edm.String"/>'
+    '<Property Name="projectId" Type="Edm.String"/><Property Name="priorityCode" Type="Edm.Int32"/>'
+    '<Property Name="displayId" Type="Edm.String"/>'
+    '</EntityType></Schema></edmx:DataServices></edmx:Edmx>'
+)
+_DOC = {"uuid": "0b1c2d3e-4f50-4a61-8b72-9c83d4e5f601", "displayId": "7-101",
+        "title": "Solution design", "content": "<p>Design <b>text</b></p>", "projectId": "P001",
+        "statusCode": "IN_PROGRESS", "typeCode": "SDD"}
+
+
 def _fake_get(url, *a, **kw):
+    # --- OData $metadata (Documents / Test Management schemas) --------------
+    if url.endswith("/$metadata"):
+        if "calm-documents" in url or "calm-testmanagement" in url:
+            return _FakeResp(_CSDL, headers={"Content-Type": "application/xml"})
+        return _FakeResp("{}", status_code=403)
+    if "calm-documents/v1/Documents" in url:
+        if "/Documents/" in url:
+            return _FakeResp(json.dumps(_DOC), headers={"ETag": 'W/"d1"'})
+        return _FakeResp(json.dumps({"value": [_DOC, dict(_DOC, uuid="0b1c2d3e-4f50-4a61-8b72-9c83d4e5f602",
+                                                         displayId="7-102", title="Cutover plan")]}))
+    if "calm-testmanagement/v1/AutomatedTestCases" in url:
+        return _FakeResp(json.dumps({"value": [
+            {"uuid": "4f506172-8394-4ea5-b6c7-d8e9f0011223", "title": "O2C smoke", "projectId": "P001",
+             "priorityCode": 20, "displayId": "8-2-17"}]}))
+
     # --- BTP Test Management OData (tm_* tools) — check FIRST ---------------
     if url.rstrip("/").endswith("/health") and "test-management" not in url:
         return _FakeResp(json.dumps({"status": "UP", "db": "ok"}))
@@ -165,6 +204,7 @@ def _fake_get(url, *a, **kw):
             "uuid": "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d", "displayId": "8-1-1380",
             "projectId": "P001", "title": "FRICEW 112 boundary", "priorityCode": 30,
             "isPrepared": True, "toTagAssignments": [{"label": "SIT"}],
+            "toTaskAssignments": [{"uuid": "TA1", "taskId": "K1", "taskDisplayId": "3-1", "type": "CALMREQU"}],
             "toActivities": [{
                 "uuid": "A1", "title": "Log on", "sequence": 1, "isInScope": True,
                 "toActions": [
@@ -458,6 +498,30 @@ async def main() -> int:
                                            resource_id="3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"))
             check("test case get by UUID returns the same steps",
                   isinstance(tc_uuid, dict) and tc_uuid.get("Steps") == steps)
+            check("test case get lists the requirements/tasks it covers",
+                  tc_uuid.get("Linked Tasks") == [{"Task ID": "K1", "Task Display ID": "3-1",
+                                                   "Type": "CALMREQU"}], f"got {tc_uuid.get('Linked Tasks')}")
+
+            docs = _list(await _call(session, "documents", "list", project_id="P001"))
+            check("documents list returns rows from the Documents service",
+                  [d.get("Display ID") for d in docs] == ["7-101", "7-102"]
+                  and docs[0].get("Title") == "Solution design" and "Content" not in docs[0],
+                  f"got {docs}")
+            doc = _payload(await _call(session, "documents", "get", project_id="P001", resource_id="7-101"))
+            check("documents get by display ID returns the text as plain text",
+                  isinstance(doc, dict) and doc.get("Content") == "Design text"
+                  and doc.get("Status Code") == "IN_PROGRESS", f"got {doc}")
+            res = await _call(session, "documents", "list", project_id="P001", data={"colour": "red"})
+            check("documents list refuses an unknown field",
+                  res.is_error is True and "statusCode" in (res.content[0].text if res.content else ""))
+            atcs = _list(await _call(session, "automated_test_cases", "list", project_id="P001"))
+            check("automated test cases list with the priority label",
+                  len(atcs) == 1 and atcs[0].get("Priority") == "High" and atcs[0].get("Display ID") == "8-2-17",
+                  f"got {atcs}")
+            feats = _list(await _call(session, "features", "list", project_id="P001"))
+            check("features list still works when the Features schema can't be read",
+                  [f.get("ID") for f in feats] == ["F1", "F2"] and feats[0].get("Name") == "User Management",
+                  f"got {feats}")
 
             plans = _payload(await _call(session, "test_plans", "list"))
             check("test_plans reports unavailable (no plan entity) instead of failing",
@@ -570,6 +634,21 @@ async def main() -> int:
                               data={"name": "New Feature", "description": "d"})
             check("feature create ok", res.is_error is not True,
                   f"err {res.content[0].text if res.content else ''}")
+
+            res = await _call(session, "documents", "create", project_id="P001",
+                              data={"title": "New design", "type": "SDD", "content": "<p>Hi</p>"})
+            made = _payload(res)
+            check("document create ok (schema field names, project filled in)",
+                  res.is_error is not True and isinstance(made, dict) and made.get("Title") == "New design"
+                  and made.get("Type Code") == "SDD" and made.get("Project ID") == "P001", f"got {made}")
+            res = await _call(session, "documents", "update", project_id="P001", resource_id="7-101",
+                              data={"status": "IN_REVIEW"})
+            check("document update by display ID ok (ETag sent)", res.is_error is not True,
+                  f"err {res.content[0].text if res.content else ''}")
+            res = await _call(session, "documents", "delete",
+                              resource_id="0b1c2d3e-4f50-4a61-8b72-9c83d4e5f601")
+            check("document delete ok", res.is_error is not True and _payload(res) == {
+                "deleted": "0b1c2d3e-4f50-4a61-8b72-9c83d4e5f601"}, f"got {_payload(res)}")
 
             # ---- Test 6: escape hatch -------------------------------------
             print("\nTest 6: calm_api_write / calm_api_delete escape hatch")
