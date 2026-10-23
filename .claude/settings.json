@@ -1,0 +1,39 @@
+{
+  "enabledPlugins": {
+    "stx@syntax-rnd": true,
+    "glab@syntax-rnd": true,
+    "glab-glql@syntax-rnd": true,
+    "commit-messages@syntax-rnd": true,
+    "md-management@syntax-rnd": true,
+    "security-scan@syntax-rnd": true,
+    "hookify@syntax-rnd": true,
+    "context7@syntax-rnd": true,
+    "ponytail@syntax-rnd": true,
+    "stx-python@syntax-rnd": true,
+    "pyright-lsp@syntax-rnd": true
+  },
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "extraKnownMarketplaces": {
+    "syntax-rnd": {
+      "source": {
+        "source": "git",
+        "url": "git@gitlab.com:syntax-cloud/CloudAdmin/genai/tools/claude-code-plugins.git"
+      },
+      "autoUpdate": true
+    }
+  },
+  "permissions": {
+    "deny": [
+      "Read(**/.env)",
+      "Read(**/.env.*)",
+      "Read(!**/.env.example)",
+      "Read(!**/.env.sample)",
+      "Read(!**/.env.template)",
+      "Read(**/*.key)",
+      "Read(**/*.pfx)",
+      "Read(**/*.p12)",
+      "Read(**/*.tfstate)",
+      "Read(**/*.tfstate.backup)"
+    ]
+  }
+}

@@ -20,5 +20,10 @@ venv/
 # Test artifacts
 .test_shim/
 
-# Claude Code
-.claude/
+# Claude Code: local state stays out; the shared team settings are tracked
+.claude/*
+!.claude/settings.json
+
+# Claude Code: personal files, never committed
+.claude/settings.local.json
+CLAUDE.local.md
