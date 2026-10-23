@@ -19,6 +19,7 @@ from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import requests
 
+from . import http_retry
 from .config import build_base_url
 
 REQUEST_TIMEOUT = 30  # seconds
@@ -38,6 +39,23 @@ def _raise_for_status(resp: requests.Response, url: str) -> None:
             f"CALM API error: HTTP {resp.status_code} {resp.reason} at {url} — "
             f"response: {(resp.text or '')[:800]}"
         )
+
+
+def _camel(key: str) -> str:
+    head, *rest = key.split("_")
+    return head + "".join(part[:1].upper() + part[1:] for part in rest)
+
+
+def _api_field_names(fields: dict) -> dict:
+    """CALM's REST and OData fields are camelCase (scopeId, storyPoints,
+    customField1). Agents often pass snake_case in extra_fields (scope_id), which
+    CALM ignores or rejects — the item is then created without that field. Convert
+    those keys; an explicit camelCase key wins over its snake_case twin."""
+    out = {k: v for k, v in fields.items() if "_" not in k}
+    for k, v in fields.items():
+        if "_" in k:
+            out.setdefault(_camel(k), v)
+    return out
 
 # ---------------------------------------------------------------------------
 # Mappings (taken verbatim from the existing agent)
@@ -174,7 +192,10 @@ def resolve_testcase_priority(value: str) -> str:
 def _get(url: str, token: str) -> Any:
     headers = {"Authorization": f"Bearer {token}"}
     payload = json.dumps({"session_id": str(uuid.uuid4())})
-    resp = requests.get(url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT)
+    resp = http_retry.send(
+        lambda: requests.get(url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT),
+        "GET", url, repeatable=True,
+    )
     _raise_for_status(resp, url)
     return resp.json()
 
@@ -409,8 +430,10 @@ def _write(
         "CALM write: %s %s (Content-Type=%s, If-Match=%s)",
         method, url, content_type, headers.get("If-Match", "-"),
     )
-    resp = requests.request(
-        method, url, headers=headers, data=json.dumps(body), timeout=REQUEST_TIMEOUT
+    data = json.dumps(body)
+    resp = http_retry.send(
+        lambda: requests.request(method, url, headers=headers, data=data, timeout=REQUEST_TIMEOUT),
+        method, url, repeatable=False,
     )
     _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
@@ -427,7 +450,10 @@ def _delete(url: str, token: str, if_match: str | None = None, user_email: str |
         headers["X-User-Email"] = user_email
         headers["X-Forwarded-User"] = user_email
     log.debug("CALM delete: %s (If-Match=%s)", url, headers.get("If-Match", "-"))
-    resp = requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT)
+    resp = http_retry.send(
+        lambda: requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT),
+        "DELETE", url, repeatable=False,
+    )
     _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
         return {}
@@ -441,7 +467,10 @@ def _get_with_meta(url: str, token: str) -> tuple[Any, str | None]:
     If-Match token for OData updates when the caller did not supply one.
     """
     headers = {"Authorization": f"Bearer {token}"}
-    resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    resp = http_retry.send(
+        lambda: requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT),
+        "GET", url, repeatable=True,
+    )
     _raise_for_status(resp, url)
     data = resp.json() if (resp.text or "").strip() else {}
     try:
@@ -1055,7 +1084,7 @@ def create_feature(
     if external_id is not None:
         body["externalId"] = external_id
     if extra_fields:
-        body.update(extra_fields)
+        body.update(_api_field_names(extra_fields))
 
     # Features have their own service; the Projects-service path is not the
     # real Features API (see get_features).
@@ -1369,7 +1398,7 @@ def create_task(
     if parent_id is not None:
         body["parentId"] = parent_id
     if extra_fields:
-        body.update(extra_fields)
+        body.update(_api_field_names(extra_fields))
 
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks"
     result = _write("POST", url, token, body, user_email=user_email)
@@ -1439,7 +1468,7 @@ def update_task(
     if obsolete is not None:
         body["obsolete"] = obsolete
     if extra_fields:
-        body.update(extra_fields)
+        body.update(_api_field_names(extra_fields))
 
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
@@ -1482,7 +1511,7 @@ def create_project(
     if deployment_plan_id is not None:
         body["deploymentPlanId"] = deployment_plan_id
     if extra_fields:
-        body.update(extra_fields)
+        body.update(_api_field_names(extra_fields))
 
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects"
     result = _write("POST", url, token, body, user_email=user_email)
@@ -1514,7 +1543,7 @@ def update_project(
     if deployment_plan_id is not None:
         body["deploymentPlanId"] = deployment_plan_id
     if extra_fields:
-        body.update(extra_fields)
+        body.update(_api_field_names(extra_fields))
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
 
@@ -2016,7 +2045,7 @@ def create_task_comment(
     if text is not None:
         body["text"] = text
     if extra_fields:
-        body.update(extra_fields)
+        body.update(_api_field_names(extra_fields))
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}/comments"
     result = _write("POST", url, token, body, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "submitted": body}
@@ -2029,7 +2058,7 @@ def update_task_comment(
     if text is not None:
         body["text"] = text
     if extra_fields:
-        body.update(extra_fields)
+        body.update(_api_field_names(extra_fields))
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/comments/{comment_id}"
@@ -2068,7 +2097,7 @@ def create_timebox(
     if closed is not None:
         body["closed"] = closed
     if extra_fields:
-        body.update(extra_fields)
+        body.update(_api_field_names(extra_fields))
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects/{project_id}/timeboxes"
     result = _write("POST", url, token, body, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "submitted": body}
@@ -2094,7 +2123,7 @@ def update_timebox(
     if closed is not None:
         body["closed"] = closed
     if extra_fields:
-        body.update(extra_fields)
+        body.update(_api_field_names(extra_fields))
     if not body:
         raise ValueError("No fields to update — provide at least one field.")
     url = f"{_base_url(base_url)}/api/calm-projects/v1/timeboxes/{timebox_id}"

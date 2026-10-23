@@ -31,6 +31,8 @@ from urllib.parse import parse_qsl, urljoin, urlsplit
 
 import requests
 
+from . import http_retry
+
 log = logging.getLogger("calm-mcp.tm")
 
 REQUEST_TIMEOUT = 60  # seconds
@@ -96,7 +98,10 @@ def _normalize(payload: Any) -> Any:
 
 def _get(url: str, token: str, params: dict[str, str] | None = None) -> Any:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    resp = requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT)
+    resp = http_retry.send(
+        lambda: requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT),
+        "GET", url, repeatable=True,
+    )
     _raise_for_status(resp, url)
     if "xml" in (resp.headers.get("Content-Type") or "") or (resp.text or "").lstrip().startswith("<"):
         return {"metadata_xml": resp.text}
@@ -177,7 +182,10 @@ def _get_with_etag(url: str, token: str) -> tuple[Any, str | None]:
     '@odata.etag' body annotation that CAP includes on single-entity reads.
     """
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    resp = requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT)
+    resp = http_retry.send(
+        lambda: requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT),
+        "GET", url, repeatable=True,
+    )
     _raise_for_status(resp, url)
     data = resp.json() if (resp.text or "").strip() else {}
     etag = None
@@ -215,7 +223,11 @@ def _write(method: str, url: str, token: str, body: dict, if_match: str | None =
         headers["If-Match"] = if_match
     # DEBUG only; never logs Authorization or the request body.
     log.debug("TM write: %s %s (If-Match=%s)", method, url, headers.get("If-Match", "-"))
-    resp = requests.request(method, url, headers=headers, data=json.dumps(body), timeout=REQUEST_TIMEOUT)
+    data = json.dumps(body)
+    resp = http_retry.send(
+        lambda: requests.request(method, url, headers=headers, data=data, timeout=REQUEST_TIMEOUT),
+        method, url, repeatable=False,
+    )
     _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
         return {}
@@ -227,7 +239,10 @@ def _delete(url: str, token: str, if_match: str | None = None) -> dict:
     if if_match:
         headers["If-Match"] = if_match
     log.debug("TM delete: %s (If-Match=%s)", url, headers.get("If-Match", "-"))
-    resp = requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT)
+    resp = http_retry.send(
+        lambda: requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT),
+        "DELETE", url, repeatable=False,
+    )
     _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
         return {}
@@ -248,7 +263,9 @@ def service_health(base_url: str) -> Any:
     """GET /health on the service host root. Unauthenticated liveness probe;
     also reports whether the service can reach its PostgreSQL database."""
     url = f"{_host_root(base_url)}/health"
-    resp = requests.get(url, timeout=REQUEST_TIMEOUT)
+    resp = http_retry.send(
+        lambda: requests.get(url, timeout=REQUEST_TIMEOUT), "GET", url, repeatable=True,
+    )
     _raise_for_status(resp, url)
     return resp.json() if (resp.text or "").strip() else {}
 

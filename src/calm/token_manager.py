@@ -31,6 +31,7 @@ import time
 
 import requests
 
+from . import http_retry
 from .config import build_auth_url
 
 log = logging.getLogger("calm-mcp.token")
@@ -103,12 +104,15 @@ class TokenManager:
         if self._client_cert:
             # mTLS (x509): the client certificate authenticates the client, so
             # there is no Basic header; client_id travels in the body.
-            resp = requests.post(
-                self._auth_url,
-                data={"grant_type": "client_credentials", "client_id": self._client_id},
-                headers={"Accept": "application/json"},
-                cert=self._client_cert,
-                timeout=30,
+            resp = http_retry.send(
+                lambda: requests.post(
+                    self._auth_url,
+                    data={"grant_type": "client_credentials", "client_id": self._client_id},
+                    headers={"Accept": "application/json"},
+                    cert=self._client_cert,
+                    timeout=30,
+                ),
+                "POST", self._auth_url, repeatable=True,
             )
             mode = "x509/mTLS"
         else:
@@ -118,14 +122,17 @@ class TokenManager:
                 "XSUAA token POST (client_secret): auth_url=%s client_id=%s %s",
                 self._auth_url, self._client_id, _secret_diag(self._client_secret),
             )
-            resp = requests.post(
-                self._auth_url,
-                data={"grant_type": "client_credentials"},
-                headers={
-                    "Authorization": f"Basic {basic}",
-                    "Accept": "application/json",
-                },
-                timeout=30,
+            resp = http_retry.send(
+                lambda: requests.post(
+                    self._auth_url,
+                    data={"grant_type": "client_credentials"},
+                    headers={
+                        "Authorization": f"Basic {basic}",
+                        "Accept": "application/json",
+                    },
+                    timeout=30,
+                ),
+                "POST", self._auth_url, repeatable=True,
             )
             mode = "client_secret"
 
