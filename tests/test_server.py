@@ -379,6 +379,18 @@ async def main() -> int:
             r1 = next((t for t in tasks if t.get("ID") == "R1"), {})
             check("task without team/sprint stays unassigned",
                   r1.get("Responsible Team") is None and r1.get("Timebox") is None, f"got {r1}")
+            summary = _payload(await _call(session, "tasks", "list", project_id="P001",
+                                           data={"summarize_by": ["Timebox", "Responsible Team"]}))
+            check("tasks summarize_by returns the exact per-sprint/per-team table",
+                  isinstance(summary, dict) and summary.get("Total Tasks") == 2
+                  and summary.get("Total Effort") == 8.0
+                  and {"Timebox": "Sprint 1", "Responsible Team": "Development Team", "Tasks": 1,
+                       "Effort": 8.0, "Tasks Without Effort": 0} in summary.get("Groups", []),
+                  f"got {summary}")
+            one_sprint = _list(await _call(session, "tasks", "list", project_id="P001",
+                                           data={"timebox": "sprint 1"}))
+            check("tasks timebox filter keeps only that sprint",
+                  [t.get("ID") for t in one_sprint] == ["K1"], f"got {one_sprint}")
 
             reqs = _list(await _call(session, "requirements", "list", project_id="P001"))
             check("requirements read returns a list", isinstance(reqs, list))

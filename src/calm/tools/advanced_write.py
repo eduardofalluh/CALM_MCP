@@ -36,6 +36,12 @@ def register(mcp: FastMCP) -> None:
         project UUID in the path — list projects here first to find it. This hits
         the SAP Cloud ALM tenant only; do not use it for non-CALM systems.
 
+        Do NOT use it to list, filter, count or sum tasks: the Tasks API
+        (api/calm-tasks/v1/tasks) is plain REST, not OData — it takes projectId as
+        a query parameter and rejects $filter / $select. Use
+        calm_resource(resource="tasks", operation="list", project_id=...,
+        data={"timebox": ..., "team": ..., "summarize_by": [...]}) instead.
+
         Args:
             path: API-relative path from the tenant base URL, e.g.
                 "api/calm-projects/v1/projects" (list projects → get project UUIDs),
@@ -48,7 +54,17 @@ def register(mcp: FastMCP) -> None:
         if not path:
             raise ValueError("path is required")
         h = get_calm_headers(ctx)
-        return client.api_read(token=h.token, path=path, params=params, base_url=h.base_url)
+        try:
+            return client.api_read(token=h.token, path=path, params=params, base_url=h.base_url)
+        except RuntimeError as exc:
+            if "calm-tasks" in path and "Required request parameter 'projectId'" in str(exc):
+                raise RuntimeError(
+                    f"{exc}\nHint: the Tasks API is plain REST, not OData — it does not accept "
+                    "$filter or $select. Use calm_resource(resource='tasks', operation='list', "
+                    "project_id=<uuid>, data={'timebox': ..., 'team': ..., 'summarize_by': "
+                    "['Timebox', 'Responsible Team']}) for filtered lists and totals."
+                ) from exc
+            raise
 
     @mcp.tool()
     def calm_api_write(

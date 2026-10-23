@@ -579,6 +579,99 @@ def get_tasks(
     return [_format_task(item, team_names, timebox_names) for item in items]
 
 
+# Formatted task fields a summary may group by.
+TASK_SUMMARY_FIELDS = ("Timebox", "Responsible Team", "Type", "Status", "AssigneeName")
+
+
+def _norm(value: Any) -> str:
+    # CALM names can carry stray double spaces ("Consulting  - ABAP").
+    return " ".join(str(value).split()).lower()
+
+
+def _as_list(value: Any) -> list:
+    if value is None or value == "":
+        return []
+    return [value] if isinstance(value, (str, int)) else list(value)
+
+
+def filter_tasks(rows: list[dict], timebox: Any = None, team: Any = None) -> list[dict]:
+    """Keep tasks in the given timebox(es) / responsible team(s).
+
+    Each filter takes a name (case- and spacing-insensitive) or an ID, or a list
+    of them. With neither filter the rows are returned unchanged.
+    """
+    for wanted, name_key, id_key in (
+        (_as_list(timebox), "Timebox", "Timebox ID"),
+        (_as_list(team), "Responsible Team", "Responsible Team ID"),
+    ):
+        if wanted:
+            want = {_norm(w) for w in wanted}
+            rows = [
+                r for r in rows
+                if (r.get(name_key) is not None and _norm(r[name_key]) in want)
+                or (r.get(id_key) is not None and _norm(r[id_key]) in want)
+            ]
+    return rows
+
+
+def _effort(value: Any) -> float | None:
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _natural(value: Any) -> tuple:
+    # "Sprint 2" before "Sprint 10"; unassigned (None) last.
+    if value is None:
+        return (1, ())
+    parts = re.split(r"(\d+)", str(value).lower())
+    return (0, tuple(int(p) if p.isdigit() else p for p in parts))
+
+
+def summarize_tasks(rows: list[dict], by: Any) -> dict:
+    """Group tasks and return exact counts and effort sums per group.
+
+    A whole project's task list is often too large for an agent's context, and
+    summing it by hand is error-prone; this returns the finished table instead.
+    """
+    fields = _as_list(by)
+    bad = [f for f in fields if f not in TASK_SUMMARY_FIELDS]
+    if not fields or bad:
+        raise ValueError(
+            f"summarize_by must be one or more of {', '.join(TASK_SUMMARY_FIELDS)} "
+            f"(got {bad or fields})"
+        )
+    groups: dict[tuple, list] = {}
+    for r in rows:
+        g = groups.setdefault(tuple(r.get(f) for f in fields), [0, 0.0, 0])
+        g[0] += 1
+        effort = _effort(r.get("Effort"))
+        if effort is None:
+            g[2] += 1
+        else:
+            g[1] += effort
+    out = []
+    for key in sorted(groups, key=lambda k: tuple(_natural(v) for v in k)):
+        count, effort, no_effort = groups[key]
+        row: dict[str, Any] = {f: ("(none)" if v is None else v) for f, v in zip(fields, key)}
+        row.update({"Tasks": count, "Effort": round(effort, 2), "Tasks Without Effort": no_effort})
+        out.append(row)
+    return {
+        "Grouped By": fields,
+        "Groups": out,
+        "Total Tasks": len(rows),
+        "Total Effort": round(sum(g[1] for g in groups.values()), 2),
+        "Tasks Without Effort": sum(g[2] for g in groups.values()),
+        "Note": (
+            "Computed by the MCP server from every matching task. Effort is summed as "
+            "stored in SAP Cloud ALM; '(none)' means not assigned."
+        ),
+    }
+
+
 def get_projects(token: str, base_url: str | None = None) -> list[dict]:
     url = f"{_base_url(base_url)}/api/calm-projects/v1/projects"
     return [

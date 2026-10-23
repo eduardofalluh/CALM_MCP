@@ -222,11 +222,16 @@ def register(mcp: FastMCP) -> None:
                 → resource="tasks", operation="list", project_id=X,
                 data={"tag":"<TAG>"}  (returns the whole tag FAMILY — the exact
                 tag PLUS every "<TAG> - <area>" sub-tag — and never truncates)
-          - "task counts / effort per sprint and per team", "sprint planning"
-                → resource="tasks", operation="list", project_id=X (optionally
-                task_type="Project Task"); each row carries "Timebox" (sprint
-                name) and "Responsible Team" (+ their IDs) and "Effort" — group
-                and sum those. Rows with no team or no sprint are unassigned.
+          - "task counts / effort per sprint and per team", "sprint planning",
+            any count or effort total over tasks
+                → resource="tasks", operation="list", project_id=X,
+                task_type="Project Task" (optional),
+                data={"summarize_by": ["Timebox", "Responsible Team"],
+                      "timebox": ["Sprint 1", "Sprint 2", "Sprint 3"]}
+                Returns the finished table (Tasks, Effort per group + totals),
+                computed exactly by the server — small enough to always fit.
+                ALWAYS use summarize_by for counts/sums; never add rows up by
+                hand and never use calm_api_read for this.
           - "requirements in project X"
                 → resource="requirements", operation="list", project_id=X
           - "teams / who is on project X"       → resource="teams"
@@ -292,6 +297,11 @@ def register(mcp: FastMCP) -> None:
                     (Tasks API, works); create new tag definitions in the CALM UI.
                 - features: name (required), description, external_id, extra_fields
                 # --- read resources with optional data filters ---
+                - tasks list: data={tag, timebox (sprint name/ID or list),
+                    team (team name/ID or list), summarize_by (one or more of
+                    Timebox, Responsible Team, Type, Status, AssigneeName)}.
+                    With summarize_by the result is {Groups: [{<fields>, Tasks,
+                    Effort, Tasks Without Effort}], Total Tasks, Total Effort}.
                 - test_cases get: resource_id = UUID or display ID ("8-1-1380").
                     Returns the list fields plus Activities, Steps (Step "1.2",
                     Activity, Action, Instructions, Expected Result, Evidence
@@ -522,9 +532,13 @@ def register(mcp: FastMCP) -> None:
             if operation == "list":
                 if not project_id:
                     raise ValueError("project_id is required for tasks")
-                return client.get_tasks(
+                rows = client.get_tasks(
                     project_id, h.token, h.base_url, task_type=task_type, tag=d.get("tag")
                 )
+                rows = client.filter_tasks(rows, timebox=d.get("timebox"), team=d.get("team"))
+                if d.get("summarize_by"):
+                    return client.summarize_tasks(rows, d["summarize_by"])
+                return rows
             elif operation == "create":
                 ensure_writes_enabled()
                 if not project_id:
