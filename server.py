@@ -99,6 +99,19 @@ def _maybe_init_token_manager() -> bool:
     if not client_id:
         return False
 
+    from src.calm.config import TenantNotConfiguredError
+
+    try:
+        return _init_env_token_manager(client_id)
+    except TenantNotConfiguredError as exc:
+        # There is no built-in tenant, so the env credential can't be used until
+        # one is configured. Keep serving: requests that carry their own x-calm-*
+        # tenant headers still work, and env-credential requests get this error.
+        log.error("CALM_CLIENT_ID is set but the env credential is disabled. %s", exc)
+        return False
+
+
+def _init_env_token_manager(client_id: str) -> bool:
     from src.calm.token_manager import init_token_manager
 
     client_cert = _resolve_client_cert()
@@ -302,8 +315,8 @@ def main() -> None:
     using_managed_tokens = _maybe_init_token_manager()
     if not using_managed_tokens:
         log.info(
-            "CALM_CLIENT_ID/CALM_CLIENT_SECRET not set — "
-            "falling back to Authorization header or CALM_TOKEN env var."
+            "No usable server env credential — requests use x-calm-* headers, "
+            "the Authorization header or the CALM_TOKEN env var."
         )
     else:
         _startup_auth_check()

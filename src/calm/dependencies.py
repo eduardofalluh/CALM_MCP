@@ -235,6 +235,10 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
                 "x-calm-client-secret headers. The server env credential belongs to a single tenant "
                 "and will not be used, to avoid serving the wrong tenant's data."
             )
+        if tenant_error and os.getenv("CALM_CLIENT_ID"):
+            # Env credentials exist but can't be used without a tenant; name
+            # that cause instead of a generic "missing token".
+            raise tenant_error
         raise ValueError(
             "Missing CALM token. Options:\n"
             "  HTTP headers: x-calm-client-id + x-calm-client-secret (+ optional x-calm-identity-zone, x-calm-region-zone)\n"
