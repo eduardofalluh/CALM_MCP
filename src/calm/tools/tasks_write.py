@@ -57,7 +57,7 @@ def register(mcp: FastMCP) -> None:
             external_id: Optional free-text external reference.
             parent_id: Optional parent task ID (required for sub-tasks).
             extra_fields: Optional dict of any other documented task fields to send
-                verbatim (e.g. {"scopeId": "...", "storyPoints": 5, "effort": 8.5,
+                (snake_case keys are sent as camelCase) (e.g. {"scopeId": "...", "storyPoints": 5, "effort": 8.5,
                 "workstream": "WS001,WS002", "classificationId": "US_GAP"}).
             acting_user_email: Email of the user performing this action (for CALM audit
                 logs). STRONGLY RECOMMENDED - without it, logs show "API" instead of
@@ -152,7 +152,7 @@ def register(mcp: FastMCP) -> None:
             external_id: Optional free-text external reference.
             obsolete: Optional boolean to archive/unarchive the task.
             extra_fields: Optional dict of any other documented task fields to send
-                verbatim (e.g. subStatus, scopeId, storyPoints, effort, workstream).
+                (snake_case keys are sent as camelCase; e.g. subStatus, scopeId, storyPoints, effort, workstream).
             acting_user_email: Optional email of the user performing this action
                 (for CALM audit logs). The agent should pass the current user's email.
 

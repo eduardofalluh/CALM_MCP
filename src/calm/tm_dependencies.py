@@ -123,6 +123,17 @@ def get_tm_headers(ctx: Context) -> TMHeaders:
         token = mgr.get_token()
         token_source = "tm client_credentials (header)"
 
+    # The server's own TM credential is only ever sent to the server's own TM
+    # host: a caller that names another host must bring its own credential.
+    env_base = (os.getenv("TM_BASE_URL") or "").strip().rstrip("/")
+    header_base = (hdr["base_url"] or "").rstrip("/")
+    if not token and header_base and header_base != env_base:
+        raise ValueError(
+            "x-tm-base-url names a Test Management host other than the server's own, so "
+            "the server's credential is not used for it. Send x-tm-client-id + "
+            "x-tm-client-secret (and x-tm-token-url) for that tenant with the request."
+        )
+
     # --- 2. Server env vars (client credentials) ---
     if not token:
         client_id = (os.getenv("TM_CLIENT_ID") or "").strip()

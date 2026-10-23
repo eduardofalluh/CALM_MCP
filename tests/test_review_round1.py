@@ -190,29 +190,42 @@ def test_unmatched_filter_values_are_reported():
     assert client.unmatched_filters(rows, timebox="sprint 1", team="consulting - finance") == {}
 
 
+SPRINTS = [{"ID": "tb1", "Name": "Sprint 1"}, {"ID": "tb2", "Name": "Sprint 2"}, {"ID": "tb3", "Name": "Sprint 3"}]
+
+
 def test_summary_includes_filter_values_with_no_tasks(calm):
     rows = [_row(1, team="Consulting - Finance", team_id="tf", sprint="Sprint 1", sprint_id="tb1")]
-    with patch("src.calm.client.get_tasks", return_value=rows):
+    with patch("src.calm.client.get_tasks", return_value=rows), \
+         patch("src.calm.client.get_timeboxes", return_value=SPRINTS):
         out = calm(Ctx(), resource="tasks", operation="list", project_id="p1",
                    data={"timebox": ["Sprint 1", "Sprint 3"], "summarize_by": ["Timebox"]})
     assert out["Total Tasks"] == 1
     assert out["Filter Values With No Tasks"]["timebox"]["no tasks for"] == ["Sprint 3"]
+    # Sprint 3 is a real sprint with no tasks yet, not a typo.
+    assert out["Filter Values With No Tasks"]["timebox"]["exist but have no tasks"] == ["Sprint 3"]
 
 
 def test_list_with_a_typo_is_an_error_naming_the_real_values(calm):
     rows = [_row(1, team="Consulting - Finance", team_id="tf", sprint="Sprint 1", sprint_id="tb1")]
-    with patch("src.calm.client.get_tasks", return_value=rows):
+    with patch("src.calm.client.get_tasks", return_value=rows), \
+         patch("src.calm.client.get_timeboxes", return_value=SPRINTS):
         with pytest.raises(ValueError) as err:
             calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"timebox": "Sprnt 1"})
     assert "Sprnt 1" in str(err.value) and "Sprint 1" in str(err.value)
+    assert "not found in the project" in str(err.value)
 
 
 def test_list_filter_with_some_matches_returns_them(calm):
     rows = [_row(1, sprint="Sprint 1", sprint_id="tb1"), _row(2, sprint="Sprint 2", sprint_id="tb2")]
-    with patch("src.calm.client.get_tasks", return_value=rows):
+    with patch("src.calm.client.get_tasks", return_value=rows), \
+         patch("src.calm.client.get_timeboxes", return_value=SPRINTS):
         out = calm(Ctx(), resource="tasks", operation="list", project_id="p1",
                    data={"timebox": ["Sprint 2", "Sprint 9"]})
-    assert [r["ID"] for r in out] == ["t2"]
+    # The matching rows come back, and the value that matched nothing is named
+    # instead of being dropped silently (round-2 review).
+    assert [r["ID"] for r in out["Tasks"]] == ["t2"]
+    assert out["Total Matching"] == 1
+    assert out["Filter Values With No Tasks"]["timebox"]["not found in the project"] == ["Sprint 9"]
 
 
 @pytest.mark.parametrize("bad", [[], ["Title"], "Sprint"])

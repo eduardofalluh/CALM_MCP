@@ -61,6 +61,72 @@ def _is_not_authorized(exc: Exception) -> bool:
     return any(code in msg for code in ("HTTP 403", "HTTP 401", "HTTP 404"))
 
 
+# data keys tasks list understands; anything else is refused, never ignored: an
+# ignored filter silently returns the whole project (thousands of rows).
+_TASK_LIST_OPTIONS = ("tag", "timebox", "team", "search", "top", "fields", "summarize_by")
+_TASK_LIST_ALIASES = {"query": "search", "title": "search", "limit": "top", "sprint": "timebox"}
+TASK_SEARCH_DEFAULT_TOP = 25
+
+
+def _task_list_options(d: dict, project_id: str | None, task_type: str | None):
+    """Validate tasks-list ``data`` -> (options, project_id, task_type)."""
+    opts: dict = {}
+    unknown = []
+    for key, value in d.items():
+        if value is None:
+            continue
+        if key in ("project_id", "task_type"):  # top-level arguments, passed in data
+            current = project_id if key == "project_id" else task_type
+            if current and str(current) != str(value):
+                raise ValueError(f"data.{key} ({value!r}) differs from the {key} argument ({current!r})")
+            if key == "project_id":
+                project_id = value
+            else:
+                task_type = value
+            continue
+        name = _TASK_LIST_ALIASES.get(key, key)
+        if name not in _TASK_LIST_OPTIONS:
+            unknown.append(key)
+        elif name in opts and opts[name] != value:
+            raise ValueError(f"data has both '{name}' and its alias '{key}' with different values")
+        else:
+            opts[name] = value
+    if unknown:
+        raise ValueError(
+            f"tasks list does not support data key(s) {unknown}. Supported: tag, timebox, "
+            "team, search (text matched against title / ID / display ID / external ID, best "
+            "matches first — use it for lookups and duplicate checks), top (max rows to "
+            "return), fields (row fields to return), summarize_by. Pass the task type as the "
+            "task_type argument."
+        )
+    if "top" in opts:
+        top = opts["top"]
+        if isinstance(top, float) and top.is_integer():
+            top = int(top)
+        if isinstance(top, str) and top.strip().isdigit():
+            top = int(top)
+        if isinstance(top, bool) or not isinstance(top, int) or top < 1:
+            raise ValueError(f"top must be a whole number of at least 1 (got {opts['top']!r})")
+        opts["top"] = top
+    if "search" in opts:
+        search = opts["search"]
+        if isinstance(search, bool) or not isinstance(search, (str, int, float)) or not str(search).strip():
+            raise ValueError("search must be non-empty text (a title, or part of one, or an ID)")
+        opts["search"] = " ".join(str(search).split())
+    return opts, project_id, task_type
+
+
+def _filter_report(unmatched: dict) -> str:
+    parts = []
+    for k, v in unmatched.items():
+        part = f"{k}: no tasks for {v['no tasks for']} — values present: {v['values present']}"
+        if v.get("not found in the project"):
+            part += (f"; not found in the project: {v['not found in the project']} — names "
+                     f"in the project: {v.get('all names in the project', [])}")
+        parts.append(part)
+    return "; ".join(parts)
+
+
 def _features_read(resource: str, read):
     """Run a Features API read; a missing scope becomes a structured answer."""
     try:
@@ -237,6 +303,13 @@ def register(mcp: FastMCP) -> None:
                 → resource="projects", operation="list"
           - "tasks / user stories / to-dos in project X"
                 → resource="tasks", operation="list", project_id=X
+          - "is there already a task for X", duplicate checks before creating,
+            "find the task called X"
+                → resource="tasks", operation="list", project_id=X,
+                data={"search": "<title, part of it, or an ID>",
+                      "fields": ["Title", "Status", "AssigneeName"]}
+                (best matches first, at most 25 rows, reworded titles included;
+                one call per item — never list the whole project to compare)
           - "tasks tagged <TAG> in project X" (ANY tag, e.g. SIT, OCM)
                 → resource="tasks", operation="list", project_id=X,
                 data={"tag":"<TAG>"}  (returns the whole tag FAMILY — the exact
@@ -318,7 +391,11 @@ def register(mcp: FastMCP) -> None:
                 - features: name (required), description, external_id, extra_fields
                 # --- read resources with optional data filters ---
                 - tasks list: data={tag, timebox (sprint name/ID or list),
-                    team (team name/ID or list), summarize_by (one or more of
+                    team (team name/ID or list), search (text: matches title,
+                    ID, Display ID, External ID — best matches first, reworded
+                    titles included; USE IT for lookups and duplicate checks
+                    instead of listing every task), top (max rows; default 25
+                    with search), summarize_by (one or more of
                     Timebox, Responsible Team, Type, Status, AssigneeName,
                     Priority, Scope, Workstream, Assigned Role), fields (only
                     return these row fields, e.g. ["Title", "Status", "Priority"]
@@ -333,7 +410,10 @@ def register(mcp: FastMCP) -> None:
                     Effort, Tasks Without Effort, Note} plus "Warning" (names that
                     could not be resolved) and "Filter Values With No Tasks"
                     (a filter value that matched nothing, with the values present)
-                    when they apply.
+                    when they apply. With search or top, or when a filter value
+                    matched nothing, rows come as {Total Matching, Returned,
+                    Search, Note, Filter Values With No Tasks, Tasks: [rows]}.
+                    Any other data key is refused with the supported list.
                 - test_cases get: resource_id = UUID or display ID ("8-1-1380").
                     Returns the list fields plus Activities, Steps (Step "1.2",
                     Activity, Action, Instructions, Expected Result, Evidence
@@ -562,35 +642,73 @@ def register(mcp: FastMCP) -> None:
 
         elif resource == "tasks":
             if operation == "list":
+                # Validate every option before paying for the read.
+                opts, project_id, task_type = _task_list_options(d, project_id, task_type)
                 if not project_id:
                     raise ValueError("project_id is required for tasks")
-                # Validate the shaping options before paying for the read.
-                summarize = d.get("summarize_by") is not None
+                summarize = opts.get("summarize_by") is not None
                 if summarize:
-                    client.check_summary_fields(d["summarize_by"])
-                if d.get("fields") is not None:
-                    client.select_task_fields([], d["fields"])
+                    client.check_summary_fields(opts["summarize_by"])
+                    if "top" in opts:
+                        raise ValueError("top does not apply to summarize_by (a summary is "
+                                         "already small) — drop top")
+                if opts.get("fields") is not None:
+                    client.select_task_fields([], opts["fields"])
                 all_rows = client.get_tasks(
-                    project_id, h.token, h.base_url, task_type=task_type, tag=d.get("tag")
+                    project_id, h.token, h.base_url, task_type=task_type, tag=opts.get("tag")
                 )
-                rows = client.filter_tasks(all_rows, timebox=d.get("timebox"), team=d.get("team"))
-                unmatched = client.unmatched_filters(all_rows, timebox=d.get("timebox"), team=d.get("team"))
+                timebox, team = opts.get("timebox"), opts.get("team")
+                cannot = client.unresolved_filters(all_rows, timebox=timebox, team=team)
+                if cannot:
+                    raise ValueError(
+                        "The sprint/team names could not be looked up just now (SAP did not "
+                        "answer the name lookup), so these name filters cannot be matched: "
+                        + "; ".join(f"{k}: {v['cannot match']} (IDs present: {v['IDs present']})"
+                                    for k, v in cannot.items())
+                        + ". Try again in a moment, or filter by ID."
+                    )
+                rows = client.filter_tasks(all_rows, timebox=timebox, team=team)
+                unmatched = client.unmatched_filters(all_rows, timebox=timebox, team=team)
+                if unmatched:
+                    client.classify_unmatched(unmatched, project_id, h.token, h.base_url)
+                search = opts.get("search")
+                if search is not None:
+                    rows = client.search_tasks(rows, search)
                 if summarize:
-                    result = client.summarize_tasks(rows, d["summarize_by"])
+                    result = client.summarize_tasks(rows, opts["summarize_by"])
+                    if search is not None:
+                        result["Search"] = search
                     if unmatched:
                         result["Filter Values With No Tasks"] = unmatched
                     return result
-                if unmatched and not rows:
-                    raise ValueError(
-                        "No tasks match the timebox/team filter. "
-                        + "; ".join(
-                            f"{k}: no tasks for {v['no tasks for']} — values present: {v['values present']}"
-                            for k, v in unmatched.items()
-                        )
+                if unmatched and not rows and client.unknown_filter_values(unmatched):
+                    raise ValueError("No tasks match the timebox/team filter. " + _filter_report(unmatched))
+                top = opts.get("top")
+                if top is None and search is not None:
+                    top = TASK_SEARCH_DEFAULT_TOP
+                total = len(rows)
+                if top is not None:
+                    rows = rows[:top]
+                if opts.get("fields") is not None:
+                    rows = client.select_task_fields(rows, opts["fields"])
+                if top is None and not unmatched:
+                    return rows
+                # Shaped answer: say how much there is, not just what fits.
+                result = {"Total Matching": total, "Returned": len(rows)}
+                if search is not None:
+                    result["Search"] = search
+                if len(rows) < total:
+                    result["Note"] = (
+                        f"Showing the first {len(rows)} of {total} matching tasks"
+                        + (" (best matches first)" if search is not None else "")
+                        + ". Raise top or narrow the filters to see more."
                     )
-                if d.get("fields") is not None:
-                    return client.select_task_fields(rows, d["fields"])
-                return rows
+                elif search is not None and not total:
+                    result["Note"] = "No task in this project matches the search."
+                if unmatched:
+                    result["Filter Values With No Tasks"] = unmatched
+                result["Tasks"] = rows
+                return result
             elif operation == "create":
                 ensure_writes_enabled()
                 if not project_id:

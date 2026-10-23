@@ -13,7 +13,9 @@ import html
 import json
 import logging
 import re
+import time
 import uuid
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
@@ -627,6 +629,13 @@ def _label(row: dict, field: str) -> Any:
 
 
 _FILTERS = (("timebox", "Timebox", "Timebox ID"), ("team", "Responsible Team", "Responsible Team ID"))
+_UNRESOLVED = re.compile(r"^\(unresolved: (.+)\)$")
+
+
+def _unwrap_unresolved(value: Any) -> Any:
+    """'(unresolved: <id>)' -> '<id>', so a label the server printed filters by ID."""
+    match = _UNRESOLVED.match(str(value).strip())
+    return match.group(1) if match else value
 
 
 def filter_tasks(rows: list[dict], timebox: Any = None, team: Any = None) -> list[dict]:
@@ -637,7 +646,7 @@ def filter_tasks(rows: list[dict], timebox: Any = None, team: Any = None) -> lis
     """
     for (_, name_key, id_key), wanted in zip(_FILTERS, (_as_list(timebox), _as_list(team))):
         if wanted:
-            want = {_norm(w) for w in wanted}
+            want = {_norm(_unwrap_unresolved(w)) for w in wanted}
             rows = [
                 r for r in rows
                 if (r.get(name_key) is not None and _norm(r[name_key]) in want)
@@ -660,6 +669,102 @@ def unmatched_filters(rows: list[dict], timebox: Any = None, team: Any = None) -
             report[arg] = {"no tasks for": missing,
                            "values present": sorted(present, key=_natural)}
     return report
+
+
+def classify_unmatched(report: dict, project_id: str, token: str, base_url: str | None = None) -> dict:
+    """Tell an existing sprint / team that has no tasks yet from a typo.
+
+    For each filter in ``report`` (from unmatched_filters) the project's sprint or
+    team list is read once and every unmatched value is put under "exist but have
+    no tasks" or "not found in the project", plus "all names in the project".
+    When the list can't be read the entry is left as it was. Mutates and returns
+    ``report``.
+    """
+    for arg, entry in report.items():
+        fetch = get_timeboxes if arg == "timebox" else get_project_teams
+        try:
+            with http_retry.best_effort():
+                catalog = [c for c in fetch(project_id, token, base_url) if isinstance(c, dict)]
+        except Exception as exc:  # noqa: BLE001 — the plain report still stands
+            log.debug("%s list for filter check skipped: %s", arg, type(exc).__name__)
+            continue
+        known = {_norm(c[k]) for c in catalog for k in ("ID", "Name") if c.get(k)}
+        values = entry["no tasks for"]
+        entry["exist but have no tasks"] = [v for v in values if _norm(_unwrap_unresolved(v)) in known]
+        entry["not found in the project"] = [v for v in values if _norm(_unwrap_unresolved(v)) not in known]
+        entry["all names in the project"] = sorted(
+            {c["Name"] for c in catalog if c.get("Name")}, key=_natural)[:100]
+    return report
+
+
+def unknown_filter_values(report: dict) -> list:
+    """Unmatched values not known to exist (all of them when unchecked)."""
+    return [v for e in report.values() for v in e.get("not found in the project", e["no tasks for"])]
+
+
+def unresolved_filters(rows: list[dict], timebox: Any = None, team: Any = None) -> dict:
+    """Name filters that cannot be checked because the name lookup failed.
+
+    When SAP did not answer the team / sprint name lookup, rows carry only the
+    IDs, so a filter by name would wrongly look like "no tasks". Returns
+    {filter: {"cannot match": [values], "IDs present": [ids]}}; empty when every
+    value matched or the names are known.
+    """
+    report: dict[str, Any] = {}
+    for (arg, name_key, id_key), wanted in zip(_FILTERS, (_as_list(timebox), _as_list(team))):
+        if not wanted or not any(r.get(id_key) and r.get(name_key) is None for r in rows):
+            continue
+        missing = [w for w in wanted if not filter_tasks(rows, **{arg: w})]
+        if missing:
+            ids = sorted({r[id_key] for r in rows if r.get(id_key) and r.get(name_key) is None})
+            report[arg] = {"cannot match": missing, "IDs present": ids[:30]}
+    return report
+
+
+# Words too common to tell two task titles apart.
+_SEARCH_STOPWORDS = frozenset(
+    "a an and are as at be by can could for from has have how if in into is it of "
+    "on or our should that the their this to was we what when whether which will "
+    "with".split()
+)
+SEARCH_MIN_OVERLAP = 0.6  # share of the search's words a title must contain
+
+
+def _words(text: Any) -> list[str]:
+    return re.findall(r"[a-z0-9]+", str(text).lower())
+
+
+def search_tasks(rows: list[dict], text: Any) -> list[dict]:
+    """Tasks matching ``text``, best match first, for lookups and duplicate checks.
+
+    Matches, in this order: the exact ID / Display ID / External ID; the search
+    as a phrase inside the title (case, spacing and punctuation ignored); then
+    titles containing at least SEARCH_MIN_OVERLAP of the search's significant
+    words, so a reworded title still turns up as a possible duplicate.
+    """
+    query = " ".join(str(text).split())
+    if not query:
+        return list(rows)
+    exact = query.lower()
+    phrase = " ".join(_words(query))
+    significant = [w for w in _words(query) if w not in _SEARCH_STOPWORDS] or _words(query)
+    scored: list[tuple[float, int, dict]] = []
+    for pos, r in enumerate(rows):
+        ids = (r.get("ID"), r.get("Display ID"), r.get("External ID (FRICEF)"))
+        title_words = _words(r.get("Title") or "")
+        if any(i is not None and str(i).strip().lower() == exact for i in ids):
+            score = 3.0
+        elif phrase and f" {phrase} " in f" {' '.join(title_words)} ":
+            score = 2.0
+        elif significant:
+            have = set(title_words)
+            score = sum(w in have for w in significant) / len(significant)
+            if score < SEARCH_MIN_OVERLAP:
+                continue
+        else:
+            continue
+        scored.append((-score, pos, r))
+    return [r for *_, r in sorted(scored, key=lambda t: t[:2])]
 
 
 def _effort(value: Any) -> float | None:
@@ -867,10 +972,13 @@ TEST_EXECUTION_RESULTS_NOTE = (
 )
 
 
+# Rich-text editors emit lower-case tags whose attributes are name=value pairs.
+# Anything else in angle brackets — "<Company Code>", "<Code>", "<Table Name>",
+# "<HR Manager>", "<S/4HANA system>" — is a placeholder in the step text.
 _HTML_TAG = re.compile(
     r"</?(?:p|br|b|i|u|s|em|strong|span|div|font|a|ul|ol|li|h[1-6]|table|thead|tbody|"
-    r"tr|td|th|sub|sup|code|pre|blockquote|hr|img|strike|del|ins|mark|small|big)\b[^>]*>",
-    re.IGNORECASE,
+    r"tr|td|th|sub|sup|code|pre|blockquote|hr|img|strike|del|ins|mark|small|big)"
+    r"""(?:\s+[a-z][a-z0-9:-]*\s*=\s*(?:"[^"]*"|'[^']*'|[^\s"'>]+))*\s*/?>"""
 )
 
 
@@ -878,9 +986,9 @@ def _rich_text_to_plain(value: Any) -> Any:
     """CALM step fields are rich text (HTML). Keep line structure, drop markup."""
     if not isinstance(value, str) or not value:
         return value
-    text = re.sub(r"(?i)<br\s*/?>", "\n", value)
-    text = re.sub(r"(?i)</(p|div|li|h[1-6]|tr)>", "\n", text)
-    text = re.sub(r"(?i)<li[^>]*>", "- ", text)
+    text = re.sub(r"<br\s*/?>", "\n", value)
+    text = re.sub(r"</(p|div|li|h[1-6]|tr)>", "\n", text)
+    text = re.sub(r"<li(?:\s[^>]*)?>", "- ", text)
     # Only real HTML tags: plain-text steps use angle brackets for placeholders
     # ("Enter <Company Code>") and those must survive.
     text = _HTML_TAG.sub("", text)
@@ -963,6 +1071,7 @@ _TM_SERVICE_ROOT = "api/calm-testmanagement/v1/"
 # Entity-set names per tenant base URL: static per tenant, so the service
 # document is read once per process, not on every test_plans call.
 _TM_ENTITY_SETS: dict[str, list[str]] = {}
+_TM_ENTITY_SETS_MAX = 64  # the key comes from the caller, so bound the memory
 
 # Known plan fields -> the Title-Case names every other read uses; any field not
 # listed is passed through under its CALM name (the plan schema isn't pinned).
@@ -981,6 +1090,8 @@ def _tm_entity_sets(base: str, token: str) -> list[str]:
         names = [n for n in names if n]
         if not names:
             return names  # don't cache an empty/odd answer
+        while len(_TM_ENTITY_SETS) >= _TM_ENTITY_SETS_MAX:
+            _TM_ENTITY_SETS.pop(next(iter(_TM_ENTITY_SETS)))  # drop the oldest
         _TM_ENTITY_SETS[base] = names
     return _TM_ENTITY_SETS[base]
 
@@ -1010,6 +1121,7 @@ def get_test_plans(
     names = _tm_entity_sets(base, token)
     plan_sets = [n for n in names if "plan" in n.lower()]
     if not plan_sets:
+        _TM_ENTITY_SETS.pop(base, None)  # re-check next call, e.g. once the scope is granted
         return {
             "status": "unavailable",
             "supported": False,
@@ -1584,6 +1696,229 @@ def _id_name_map(fetch, what: str) -> dict:
         return {}
 
 
+# --- Recovering a task write SAP did not confirm ----------------------------
+# A dropped connection leaves a write unconfirmed ("may or may not have been
+# applied"). For tasks the outcome can be checked, so instead of handing that
+# doubt to the agent: read the result back, and send the write once more only
+# when it is certainly not there. An update sets fixed values, so sending it
+# again is harmless; a create is re-sent only after a complete read of the
+# project shows no such task.
+WRITE_SETTLE = 2.0           # let SAP finish a dropped write before checking
+WRITE_RESEND_WITHIN = 15.0   # resend only when the first attempt failed this fast
+_CREATE_LOOKBACK = 300.0     # seconds of clock skew allowed on createdTimestamp
+_TIMESTAMP = re.compile(
+    r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$"
+)
+# Fields SAP may store in another form than sent (rich text, email -> user ID):
+# a difference there can't prove the write is missing.
+_UNCOMPARABLE = frozenset({"description", "assigneeId"})
+
+
+def _ts_epoch(value: Any) -> float | None:
+    """CALM timestamp ("2026-04-22T12:18:26.311368800Z") -> epoch seconds."""
+    match = _TIMESTAMP.match(str(value or "").strip())
+    if not match:
+        return None
+    *parts, zone = match.groups()
+    tz = timezone.utc
+    if zone and zone != "Z":
+        sign = -1 if zone[0] == "-" else 1
+        hours, minutes = int(zone[1:3]), int(zone[-2:])
+        tz = timezone(sign * timedelta(hours=hours, minutes=minutes))
+    try:
+        return datetime(*map(int, parts), tzinfo=tz).timestamp()
+    except ValueError:
+        return None
+
+
+def _same(sent: Any, stored: Any, key: str) -> bool:
+    if key in ("startDate", "dueDate") and isinstance(sent, str) and isinstance(stored, str):
+        return sent[:10] == stored[:10]
+    if isinstance(sent, bool) or isinstance(stored, bool):
+        return sent is stored
+    if isinstance(sent, (int, float)) or isinstance(stored, (int, float)):
+        try:
+            return float(sent) == float(stored)
+        except (TypeError, ValueError):
+            return False
+    if isinstance(sent, str) and isinstance(stored, str):
+        return sent.strip() == stored.strip()
+    return sent == stored
+
+
+def _task_has(stored: dict, body: dict) -> bool | None:
+    """True: every sent field is on the task. False: a field certainly differs.
+    None: only fields SAP may reshape differ, so it can't be told."""
+    unsure = False
+    for key, value in body.items():
+        if _same(value, stored.get(key), key):
+            continue
+        if key in _UNCOMPARABLE or key not in stored:
+            unsure = True
+        else:
+            return False
+    return None if unsure else True
+
+
+def _with_note(result: Any, note: str) -> Any:
+    if isinstance(result, dict):
+        result = dict(result)
+        result["Note"] = note
+    return result
+
+
+def _read_task_back(url: str, token: str) -> dict | None:
+    try:
+        data, _ = _get_with_meta(url, token)
+    except Exception as exc:  # noqa: BLE001 — "could not check" is a valid outcome
+        log.warning("reading task back after an unconfirmed write failed: %s", type(exc).__name__)
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _recover_task_update(
+    url: str, token: str, body: dict, task_id: str, user_email: str | None,
+    first: http_retry.WriteUnconfirmed, started: float,
+) -> dict:
+    applied_note = ("SAP dropped the connection, but reading the task back shows the "
+                    "update was applied.")
+
+    def check() -> tuple[dict | None, bool | None]:
+        http_retry._sleep(WRITE_SETTLE)
+        stored = _read_task_back(url, token)
+        return stored, (_task_has(stored, body) if stored is not None else None)
+
+    def failed(cause: http_retry.WriteUnconfirmed, state: bool | None, resent: bool) -> RuntimeError:
+        tries = "both attempts" if resent else "the request"
+        if state is False:
+            outcome = "reading the task back shows the change was NOT applied"
+        else:
+            outcome = "the task could not be read back to confirm the change"
+        return RuntimeError(
+            f"SAP Cloud ALM dropped the connection on {tries} to update task {task_id} "
+            f"({cause.reason or 'no response'}), and {outcome}. Retrying is safe: an update "
+            "only sets the same values again and cannot create duplicates. Reads work, so "
+            "SAP is failing write requests on this tenant right now, not rejecting this "
+            "request; try again in a few minutes, and if it keeps happening ask the "
+            "tenant's SAP Cloud ALM administrator to check the service."
+        )
+
+    stored, state = check()
+    if state is True:
+        return _with_note(_format_task(stored), applied_note)
+    if http_retry._clock() - started > WRITE_RESEND_WITHIN:
+        raise failed(first, state, resent=False) from first
+    log.warning("task update %s unconfirmed (%s); sending the same update again",
+                task_id, first.reason)
+    try:
+        result = _write("PATCH", url, token, body, user_email=user_email)
+    except http_retry.WriteUnconfirmed as again:
+        stored, state = check()
+        if state is True:
+            return _with_note(_format_task(stored), applied_note)
+        raise failed(again, state, resent=True) from again
+    except Exception:
+        # SAP answered the second attempt with an error; if the first one had
+        # landed after all, the update is done.
+        stored, state = check()
+        if state is True:
+            return _with_note(_format_task(stored), applied_note)
+        raise
+    out = _format_task(result) if isinstance(result, dict) and result else {"updated": task_id, "fields": body}
+    return _with_note(out, "SAP dropped the first attempt; the same update was sent again and succeeded.")
+
+
+def _new_tasks_like(base: str, token: str, body: dict, since: float) -> tuple[list[dict], bool] | None:
+    """Tasks in the project with the sent title/type/parent created since ``since``.
+
+    Returns (matches, conclusive) — conclusive means the listing was complete and
+    every same-titled task had a readable timestamp, so an empty match proves the
+    task does not exist — or None when the project could not be read.
+    """
+    url = f"{base}/api/calm-tasks/v1/tasks?projectId={body['projectId']}&type={body['type']}"
+    sink, sink_token = install_truncation_sink()  # a partial read is ours to judge, not an alert
+    try:
+        items = _get_all(url, token)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("reading tasks back after an unconfirmed create failed: %s", type(exc).__name__)
+        return None
+    finally:
+        reset_truncation_sink(sink_token)
+    title = " ".join(str(body.get("title") or "").split())
+    matches, conclusive = [], not sink
+    for it in items:
+        if not isinstance(it, dict) or " ".join(str(it.get("title") or "").split()) != title:
+            continue
+        if it.get("type") not in (None, body["type"]):
+            continue
+        if body.get("parentId") and it.get("parentId") != body["parentId"]:
+            continue
+        created = _ts_epoch(it.get("createdTimestamp"))
+        if created is None:
+            conclusive = False
+        elif created >= since - _CREATE_LOOKBACK:
+            matches.append(it)
+    return matches, conclusive
+
+
+def _recover_task_create(
+    base: str, url: str, token: str, body: dict, user_email: str | None,
+    first: http_retry.WriteUnconfirmed, started: float, since: float,
+) -> dict:
+    title = body.get("title")
+
+    def check() -> tuple[list[dict], bool] | None:
+        http_retry._sleep(WRITE_SETTLE)
+        return _new_tasks_like(base, token, body, since)
+
+    def created(matches: list[dict], how: str) -> dict:
+        if len(matches) > 1:
+            raise RuntimeError(
+                f"SAP Cloud ALM did not confirm the create of task '{title}', and the project "
+                f"now has {len(matches)} tasks with that title created in the last few minutes "
+                f"(IDs: {', '.join(str(m.get('id')) for m in matches)}). Check them before "
+                "creating it again, and delete any duplicate."
+            )
+        return _with_note(_format_task(matches[0]), how)
+
+    found = check()
+    if found is None:
+        raise first  # could not check: the original "may or may not" message stands
+    matches, conclusive = found
+    if matches:
+        return created(matches, "SAP dropped the connection, but the task was created — "
+                                "confirmed by reading the project back.")
+    if not conclusive:
+        raise first
+    if http_retry._clock() - started > WRITE_RESEND_WITHIN:
+        raise RuntimeError(
+            f"SAP Cloud ALM did not answer the create of task '{title}' in time "
+            f"({first.reason or 'no response'}). Reading the project back shows it was NOT "
+            "created, so it is safe to create it again now."
+        ) from first
+    log.warning("task create unconfirmed (%s) and not found; sending it again", first.reason)
+    try:
+        result = _write("POST", url, token, body, user_email=user_email)
+    except http_retry.WriteUnconfirmed as again:
+        found = check()
+        if found is not None and found[0]:
+            return created(found[0], "SAP dropped the connection, but the task was created — "
+                                     "confirmed by reading the project back.")
+        if found is not None and found[1]:
+            raise RuntimeError(
+                f"SAP Cloud ALM dropped the connection on both attempts to create task "
+                f"'{title}' ({again.reason or 'no response'}), and reading the project back "
+                "shows it was NOT created. Reads work, so SAP is failing write requests on "
+                "this tenant right now, not rejecting this request. It is safe to create it "
+                "again in a few minutes; if it keeps happening, ask the tenant's SAP Cloud ALM "
+                "administrator to check the service."
+            ) from again
+        raise
+    out = _format_task(result) if isinstance(result, dict) and result else {"submitted": body}
+    return _with_note(out, "SAP dropped the first attempt (nothing was created); the task "
+                           "was sent again and created once.")
+
+
 def create_task(
     token: str,
     project_id: str,
@@ -1604,10 +1939,10 @@ def create_task(
 
     `assignee_id` is the assignee's email address. `priority_id` is numeric
     (10/20/30/40 = Very High/High/Medium/Low). `parent_id` links a sub-task to
-    its parent. `extra_fields` merges any other documented task field verbatim
+    its parent. `extra_fields` merges any other documented task field
     (e.g. subStatus, scopeId, storyPoints, effort, workstream, involvedParties,
     classificationId, customField1..20) — used for the long tail not exposed as
-    named args.
+    named args. snake_case keys are sent as camelCase (scope_id -> scopeId).
     """
     type_code = resolve_task_type_code(task_type)
     body: dict[str, Any] = {
@@ -1634,8 +1969,13 @@ def create_task(
     if extra_fields:
         body.update(_api_field_names(extra_fields))
 
-    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks"
-    result = _write("POST", url, token, body, user_email=user_email)
+    base = _base_url(base_url)
+    url = f"{base}/api/calm-tasks/v1/tasks"
+    started, since = http_retry._clock(), time.time()
+    try:
+        result = _write("POST", url, token, body, user_email=user_email)
+    except http_retry.WriteUnconfirmed as exc:
+        return _recover_task_create(base, url, token, body, user_email, exc, started, since)
     return _format_task(result) if isinstance(result, dict) and result else {"submitted": body}
 
 
@@ -1660,7 +2000,7 @@ def update_task(
     `status` needs the task type to resolve a human label to a code; pass
     `task_type` alongside a human status, or pass a raw CALM status code.
     Tasks are a plain REST API — no If-Match/ETag needed. `extra_fields` merges
-    any other documented task field verbatim.
+    any other documented task field; snake_case keys are sent as camelCase.
     """
     body: dict[str, Any] = {}
     if title is not None:
@@ -1708,7 +2048,11 @@ def update_task(
         raise ValueError("No fields to update — provide at least one field.")
 
     url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}"
-    result = _write("PATCH", url, token, body, user_email=user_email)
+    started = http_retry._clock()
+    try:
+        result = _write("PATCH", url, token, body, user_email=user_email)
+    except http_retry.WriteUnconfirmed as exc:
+        return _recover_task_update(url, token, body, task_id, user_email, exc, started)
     return _format_task(result) if isinstance(result, dict) and result else {"updated": task_id, "fields": body}
 
 

@@ -15,14 +15,18 @@ Policy:
   A dropped connection or a 502/503/504 gateway answer on a write is raised with
   a message telling the agent to check whether the write was applied before
   retrying.
-- TLS / certificate failures are never retried: they are configuration
-  problems (trust store, TLS-inspecting proxy), not blips.
+- A TLS handshake the far end cut off (EOF / reset) is handled like a dropped
+  connection. Every other TLS failure — certificate verification, a rejected
+  client certificate, a protocol mismatch — is a configuration problem (trust
+  store, TLS-inspecting proxy, mTLS) and is never retried.
 - The whole call stays within ``DEADLINE`` seconds after its first attempt: a
   retry only starts if there is time left for it, and its timeout is cut to fit.
 - Optional lookups run inside ``best_effort()``: one attempt, short timeout.
 
-Failures are raised as RuntimeError with a readable message. Other status
-responses are returned unchanged so the callers' HTTP-error handling still runs.
+Failures are raised as RuntimeError with a readable message; a write that may
+have been applied raises WriteUnconfirmed (a RuntimeError) so callers that can
+check the outcome can tell it apart. Other status responses are returned
+unchanged so the callers' HTTP-error handling still runs.
 """
 
 from __future__ import annotations
@@ -48,6 +52,17 @@ DEADLINE = 45.0
 MIN_ATTEMPT = 5.0  # don't start a retry with less time than this left
 MAX_RETRY_AFTER = 10.0
 BEST_EFFORT_TIMEOUT = 10.0
+
+class WriteUnconfirmed(RuntimeError):
+    """A write may have reached SAP, but no answer confirmed whether it was applied.
+
+    ``reason`` is the short cause ("SAP closed the connection without a response").
+    """
+
+    def __init__(self, message: str, reason: str = "") -> None:
+        super().__init__(message)
+        self.reason = reason
+
 
 _TRANSPORT_ERRORS = (
     requests.exceptions.ConnectionError,
@@ -85,8 +100,21 @@ def _never_connected(exc: Exception) -> bool:
     return isinstance(reason, (NewConnectionError, ConnectTimeoutError))
 
 
+_TLS_TRANSIENT = ("eof occurred", "unexpected_eof", "unexpected eof", "eof in violation",
+                  "connection reset", "connection aborted", "timed out", "zero_return",
+                  "sslzeroreturnerror", "sslsyscallerror")
+
+
+def _tls_transient(exc: Exception) -> bool:
+    """True when the handshake was merely cut off, not refused for a reason."""
+    text = repr(exc).lower()
+    return "certificate" not in text and any(k in text for k in _TLS_TRANSIENT)
+
+
 def _reason(exc: Exception) -> str:
     text = repr(exc)
+    if isinstance(exc, requests.exceptions.SSLError):
+        return "the TLS handshake was cut off"
     if isinstance(exc, requests.exceptions.ConnectTimeout):
         return "could not connect (connect timeout)"
     if isinstance(exc, requests.exceptions.ReadTimeout):
@@ -101,8 +129,12 @@ def _reason(exc: Exception) -> str:
 
 
 def _tls_reason(exc: Exception) -> str:
-    match = re.search(r"certificate verify failed: ([^)'\"]+)", repr(exc))
-    return f"certificate verify failed: {match.group(1).strip()}" if match else type(exc).__name__
+    text = repr(exc)
+    match = re.search(r"certificate verify failed: ([^)'\"]+)", text)
+    if match:
+        return f"certificate verify failed: {match.group(1).strip()}"
+    code = re.search(r"\[SSL: ([A-Z0-9_]+)\]", text)  # e.g. TLSV13_ALERT_CERTIFICATE_REQUIRED
+    return f"{type(exc).__name__} ({code.group(1)})" if code else type(exc).__name__
 
 
 def _delay(attempt: int, resp: requests.Response | None) -> float:
@@ -115,6 +147,14 @@ def _delay(attempt: int, resp: requests.Response | None) -> float:
         if math.isfinite(asked) and asked >= 0:
             delay = min(asked, MAX_RETRY_AFTER)
     return delay
+
+
+def _unconfirmed(method: str, path: str, reason: str) -> str:
+    return (
+        f"SAP Cloud ALM did not confirm {method} {path}: {reason}. The change may or "
+        "may not have been applied. Before retrying, read the item back (e.g. list or "
+        "search for its title) so no duplicate is created."
+    )
 
 
 def send(
@@ -149,10 +189,27 @@ def send(
         try:
             resp = do_request(this_timeout)
         except requests.exceptions.SSLError as exc:
+            if _tls_transient(exc):
+                # A handshake the gateway dropped: as transient as a dropped
+                # connection, and handled exactly like one below.
+                if repeatable:
+                    nxt = next_timeout(None)
+                    if nxt is not None:
+                        log.warning("TLS handshake failed on %s %s (attempt %d) — retrying",
+                                    method, path, attempt)
+                        this_timeout = nxt
+                        continue
+                    raise RuntimeError(
+                        f"SAP Cloud ALM did not respond to {method} {path}: {_reason(exc)} "
+                        f"(tried {attempt} times). This is a temporary network or SAP-side "
+                        "problem and nothing was changed — try again in a moment."
+                    ) from exc
+                raise WriteUnconfirmed(_unconfirmed(method, path, _reason(exc)), _reason(exc)) from exc
             raise RuntimeError(
                 f"TLS error talking to SAP Cloud ALM on {method} {path}: {_tls_reason(exc)}. "
                 "This is a configuration problem, not a temporary one: check the server's "
-                "CA trust store (certifi / REQUESTS_CA_BUNDLE) and any TLS-inspecting proxy."
+                "CA trust store (certifi / REQUESTS_CA_BUNDLE), any TLS-inspecting proxy and "
+                "any client certificate the endpoint requires."
             ) from exc
         except _TRANSPORT_ERRORS as exc:
             nothing_sent = _never_connected(exc)
@@ -169,12 +226,7 @@ def send(
                     "problem and nothing was changed — try again in a moment."
                 )
             else:
-                msg = (
-                    f"SAP Cloud ALM did not confirm {method} {path}: {_reason(exc)}. The "
-                    "change may or may not have been applied. Before retrying, read the "
-                    "item back (e.g. list or search for its title) so no duplicate is "
-                    "created."
-                )
+                raise WriteUnconfirmed(_unconfirmed(method, path, _reason(exc)), _reason(exc)) from exc
             raise RuntimeError(msg) from exc
 
         status = resp.status_code
@@ -186,9 +238,10 @@ def send(
                 continue
             return resp
         if not repeatable and status in RETRY_STATUS:
-            raise RuntimeError(
+            raise WriteUnconfirmed(
                 f"SAP Cloud ALM answered {method} {path} with HTTP {status} (a gateway error). "
                 "The change may or may not have been applied. Before retrying, read the item "
-                "back (e.g. list or search for its title) so no duplicate is created."
+                "back (e.g. list or search for its title) so no duplicate is created.",
+                f"HTTP {status} from the gateway",
             )
         return resp

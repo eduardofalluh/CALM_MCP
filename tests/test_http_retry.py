@@ -322,7 +322,10 @@ def test_trace_replay_through_calm_resource(monkeypatch):
         bodies.append(kw.get("data"))
         return posts()
 
+    # The read-back check (round 2) can't reach the project here, so the create
+    # stays unconfirmed and is not re-sent; test_review_round2 covers the rest.
     with patch("src.calm.client.requests.request", request), \
+         patch("src.calm.client._get_all", side_effect=RuntimeError("HTTP 503")), \
          patch("src.calm.tools.unified.resolve_assignee", lambda **kw: "user-uuid"):
         with pytest.raises(RuntimeError) as err:
             fn(Ctx(), resource="tasks", operation="create", project_id="p1", data={
