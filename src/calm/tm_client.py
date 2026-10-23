@@ -99,8 +99,8 @@ def _normalize(payload: Any) -> Any:
 def _get(url: str, token: str, params: dict[str, str] | None = None) -> Any:
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     resp = http_retry.send(
-        lambda: requests.get(url, headers=headers, params=params, timeout=REQUEST_TIMEOUT),
-        "GET", url, repeatable=True,
+        lambda t: requests.get(url, headers=headers, params=params, timeout=t),
+        "GET", url, repeatable=True, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
     if "xml" in (resp.headers.get("Content-Type") or "") or (resp.text or "").lstrip().startswith("<"):
@@ -183,8 +183,8 @@ def _get_with_etag(url: str, token: str) -> tuple[Any, str | None]:
     """
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     resp = http_retry.send(
-        lambda: requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT),
-        "GET", url, repeatable=True,
+        lambda t: requests.get(url, headers=headers, timeout=t),
+        "GET", url, repeatable=True, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
     data = resp.json() if (resp.text or "").strip() else {}
@@ -225,8 +225,8 @@ def _write(method: str, url: str, token: str, body: dict, if_match: str | None =
     log.debug("TM write: %s %s (If-Match=%s)", method, url, headers.get("If-Match", "-"))
     data = json.dumps(body)
     resp = http_retry.send(
-        lambda: requests.request(method, url, headers=headers, data=data, timeout=REQUEST_TIMEOUT),
-        method, url, repeatable=False,
+        lambda t: requests.request(method, url, headers=headers, data=data, timeout=t),
+        method, url, repeatable=False, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
@@ -240,8 +240,8 @@ def _delete(url: str, token: str, if_match: str | None = None) -> dict:
         headers["If-Match"] = if_match
     log.debug("TM delete: %s (If-Match=%s)", url, headers.get("If-Match", "-"))
     resp = http_retry.send(
-        lambda: requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT),
-        "DELETE", url, repeatable=False,
+        lambda t: requests.request("DELETE", url, headers=headers, timeout=t),
+        "DELETE", url, repeatable=False, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
@@ -264,7 +264,7 @@ def service_health(base_url: str) -> Any:
     also reports whether the service can reach its PostgreSQL database."""
     url = f"{_host_root(base_url)}/health"
     resp = http_retry.send(
-        lambda: requests.get(url, timeout=REQUEST_TIMEOUT), "GET", url, repeatable=True,
+        lambda t: requests.get(url, timeout=t), "GET", url, repeatable=True, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
     return resp.json() if (resp.text or "").strip() else {}

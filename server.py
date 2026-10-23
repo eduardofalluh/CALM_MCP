@@ -319,7 +319,11 @@ def main() -> None:
             "the Authorization header or the CALM_TOKEN env var."
         )
     else:
-        _startup_auth_check()
+        # In the background: the check only logs, so a slow XSUAA must never
+        # delay the server from accepting requests.
+        import threading
+
+        threading.Thread(target=_startup_auth_check, name="calm-startup-auth-check", daemon=True).start()
 
     if args.http:
         log.info("Starting CALM MCP on http://%s:%s", args.host, args.port)

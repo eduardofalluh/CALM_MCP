@@ -1,6 +1,6 @@
 """Tests for the analytics, team_roles, and feature reference-data resources.
 
-Verified live against a real tenant (Ebsco): analytics DataSet rows are a
+Verified live against a real tenant: analytics DataSet rows are a
 pivoted key/value grid (d1k/d1v..d30k/d30v + m1k/m1v..m15k/m15v) and the server
 caps each page at 1000 rows with no @odata.nextLink, so completeness requires
 $skip paging. These tests pin the unpivoting, the paging loop, the client-side

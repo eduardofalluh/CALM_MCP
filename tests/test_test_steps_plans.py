@@ -33,7 +33,7 @@ TC_UUID = "3f2b1c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
 
 LIST_KEYS = {
     "ID", "Display ID", "Project ID", "Scope ID", "Solution Process ID",
-    "Title", "Prepared", "Priority", "Tags",
+    "Title", "Prepared", "Priority", "Tags", "Last Changed",
 }
 
 
@@ -245,29 +245,57 @@ def test_test_plans_unavailable_when_service_has_no_plan_set():
     assert out["available_entity_sets"] == ["ManualTestCases", "Activities", "Actions"]
 
 
-def test_test_plans_discovered_and_flattened():
-    doc = {"value": SERVICE_DOC_NO_PLANS["value"] + [{"name": "TestPlans", "url": "TestPlans"}]}
+@pytest.fixture(autouse=True)
+def fresh_entity_set_cache():
+    client._TM_ENTITY_SETS.clear()
+    yield
+    client._TM_ENTITY_SETS.clear()
+
+
+def _plans(doc, rows, **kw):
     paged = []
 
     def fake_get_all(url, token):
         paged.append(url)
-        return [
-            {"@odata.etag": "W/1", "uuid": "tp1", "title": "SIT Cycle 1", "projectId": "p1",
-             "toTestCases": [{"uuid": "x"}], "details": {"a": 1}},
-            {"uuid": "tp2", "title": "UAT", "projectId": "p2"},
-            {"uuid": "tp3", "title": "No project field"},
-        ]
+        return rows
 
-    with patch("src.calm.client._get", return_value=doc), \
+    with patch("src.calm.client._get", return_value=doc) as g, \
          patch("src.calm.client._get_all", fake_get_all):
-        all_plans = client.get_test_plans(TOKEN, BASE_URL)
-        p1_plans = client.get_test_plans(TOKEN, BASE_URL, project_id="p1")
+        out = client.get_test_plans(TOKEN, BASE_URL, **kw)
+    return out, paged, g
+
+
+PLAN_DOC = {"value": SERVICE_DOC_NO_PLANS["value"] + [{"name": "TestPlans", "url": "TestPlans"}]}
+PLAN_ROWS = [
+    {"@odata.etag": "W/1", "uuid": "tp1", "title": "SIT Cycle 1", "projectId": "p1",
+     "toTestCases": [{"uuid": "x"}], "details": {"a": 1}, "planType": "SIT"},
+    {"uuid": "tp2", "title": "UAT", "projectId": "p2"},
+]
+
+
+def test_test_plans_discovered_and_formatted_like_other_reads():
+    out, paged, _ = _plans(PLAN_DOC, PLAN_ROWS)
     assert paged[0] == f"{BASE_URL}/api/calm-testmanagement/v1/TestPlans"
-    # Scalars kept; @odata annotations and nested navigation/objects dropped.
-    assert all_plans[0] == {"uuid": "tp1", "title": "SIT Cycle 1", "projectId": "p1"}
-    assert len(all_plans) == 3
-    # Project filter keeps matching rows and rows that carry no projectId at all.
-    assert [p["uuid"] for p in p1_plans] == ["tp1", "tp3"]
+    # Known fields use the Title-Case contract; unknown scalars pass through;
+    # @odata annotations and nested navigation/objects are dropped.
+    assert out[0] == {"ID": "tp1", "Title": "SIT Cycle 1", "Project ID": "p1", "planType": "SIT"}
+    assert len(out) == 2
+
+
+def test_test_plans_project_filter_is_exact():
+    out, *_ = _plans(PLAN_DOC, PLAN_ROWS, project_id="p1")
+    assert [p["ID"] for p in out] == ["tp1"]
+
+
+def test_test_plans_without_project_field_say_they_are_unfiltered():
+    out, *_ = _plans(PLAN_DOC, [{"uuid": "tp9", "title": "No project field"}], project_id="p1")
+    assert "Warning" in out and out["Test Plans"] == [{"ID": "tp9", "Title": "No project field"}]
+
+
+def test_test_plans_service_document_read_once_per_tenant():
+    _, _, g1 = _plans(PLAN_DOC, PLAN_ROWS)
+    _, _, g2 = _plans(PLAN_DOC, PLAN_ROWS)
+    assert g1.call_count == 1 and g2.call_count == 0  # second call served from the cache
 
 
 def test_test_plans_propagates_http_errors_to_caller():

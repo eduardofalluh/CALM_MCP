@@ -203,7 +203,10 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
         token_source = "Authorization header"
 
     # --- 4. CALM_TOKEN env var (stdio / local dev) ---
-    if not token:
+    # Same guard as the env credential: a request carrying its own tenant
+    # routing (e.g. x-calm-base-url) must never receive the server's token,
+    # or a caller could send it to a host of their choosing.
+    if not token and env_fallback_allowed:
         env_token = os.getenv("CALM_TOKEN")
         if env_token:
             token = env_token.strip()

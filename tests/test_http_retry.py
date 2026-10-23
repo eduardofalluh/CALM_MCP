@@ -336,3 +336,110 @@ def test_trace_replay_through_calm_resource(monkeypatch):
     assert '"scopeId": "0f0e0d0c-0000-4000-8000-000000000001"' in bodies[0]
     assert '"scope_id"' not in bodies[0]
     assert "may or may not have been applied" in str(err.value)
+
+
+# --------------------------------------------------------------------------- #
+# Review round 1 (stx deep review) fixes
+# --------------------------------------------------------------------------- #
+
+def tls_error():
+    return requests.exceptions.SSLError(
+        "HTTPSConnectionPool(host='x', port=443): Max retries exceeded (Caused by SSLError("
+        "SSLCertVerificationError(1, '[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed: "
+        "unable to get local issuer certificate (_ssl.c:1006)')))")
+
+
+def test_tls_failure_is_not_retried_and_names_the_cause(no_sleep):
+    s = Script(tls_error(), Resp())
+    with patch("src.calm.client.requests.get", s):
+        with pytest.raises(RuntimeError) as err:
+            client._get(f"{BASE}/api/x", "tok")
+    msg = str(err.value)
+    assert s.calls == 1 and no_sleep == []
+    assert "TLS error" in msg and "unable to get local issuer certificate" in msg
+    assert "temporary" not in msg.replace("not a temporary one", "")
+
+
+@pytest.mark.parametrize("status", [502, 503, 504])
+def test_write_gateway_error_warns_it_may_have_been_applied(status):
+    s = Script(Resp(status, "gateway"))
+    with patch("src.calm.client.requests.request", s):
+        with pytest.raises(RuntimeError) as err:
+            client._write("POST", f"{BASE}/api/calm-tasks/v1/tasks", "tok", {"title": "x"})
+    assert s.calls == 1
+    assert f"HTTP {status}" in str(err.value) and "may or may not have been applied" in str(err.value)
+
+
+@pytest.mark.parametrize("header", ["-5", "nan", "inf", "Wed, 21 Oct 2026 07:28:00 GMT", ""])
+def test_bad_retry_after_values_never_crash(header, no_sleep):
+    s = Script(Resp(429, "", {"Retry-After": header}), Resp(text='{"ok": 1}'))
+    with patch("src.calm.client.requests.get", s):
+        assert client._get(f"{BASE}/api/x", "tok") == {"ok": 1}
+    assert no_sleep and all(0 <= d <= http_retry.MAX_RETRY_AFTER for d in no_sleep)
+
+
+def test_deadline_is_enforced_with_slow_attempts():
+    """Each attempt burns its full timeout: the call must still end near DEADLINE."""
+    now = [0.0]
+    timeouts = []
+
+    def slow(*a, timeout=None, **kw):
+        timeouts.append(timeout)
+        now[0] += timeout  # the attempt uses its whole timeout, then fails
+        raise requests.exceptions.ReadTimeout("slow")
+
+    with patch.object(http_retry, "_clock", lambda: now[0]), \
+         patch.object(http_retry, "_sleep", lambda d: now.__setitem__(0, now[0] + d)), \
+         patch("src.calm.client.requests.get", slow):
+        with pytest.raises(RuntimeError, match="tried 2 times"):
+            client._get(f"{BASE}/api/x", "tok")
+    assert timeouts[0] == client.REQUEST_TIMEOUT
+    assert timeouts[1] <= http_retry.DEADLINE - client.REQUEST_TIMEOUT - http_retry.BACKOFF[0]
+    assert now[0] <= http_retry.DEADLINE + 1
+
+
+def test_no_retry_starts_without_enough_time_left():
+    now = [0.0]
+
+    def slow(*a, timeout=None, **kw):
+        now[0] += 41  # leaves 45 - 41 - 1 = 3s < MIN_ATTEMPT
+        raise requests.exceptions.ReadTimeout("slow")
+
+    with patch.object(http_retry, "_clock", lambda: now[0]), \
+         patch.object(http_retry, "_sleep", lambda d: None), \
+         patch("src.calm.client.requests.get", slow) as _:
+        with pytest.raises(RuntimeError, match="tried 1 times"):
+            client._get(f"{BASE}/api/x", "tok")
+
+
+def test_best_effort_is_one_short_attempt(no_sleep):
+    seen = []
+
+    def drop(*a, timeout=None, **kw):
+        seen.append(timeout)
+        raise dropped()
+
+    with patch("src.calm.client.requests.get", drop):
+        with http_retry.best_effort():
+            with pytest.raises(RuntimeError, match="tried 1 times"):
+                client._get(f"{BASE}/api/x", "tok")
+        # outside the block the normal policy is back
+        with pytest.raises(RuntimeError, match="tried 3 times"):
+            client._get(f"{BASE}/api/x", "tok")
+    assert seen[0] == http_retry.BEST_EFFORT_TIMEOUT and len(seen) == 4
+
+
+def test_tm_client_calls_are_bounded_too():
+    now = [0.0]
+
+    def slow(*a, timeout=None, **kw):
+        now[0] += timeout
+        raise requests.exceptions.ReadTimeout("slow")
+
+    with patch.object(http_retry, "_clock", lambda: now[0]), \
+         patch.object(http_retry, "_sleep", lambda d: now.__setitem__(0, now[0] + d)), \
+         patch("src.calm.tm_client.requests.get", slow):
+        with pytest.raises(RuntimeError):
+            tm_client.odata_read("tok", "https://tm.example.com/odata/v4/test-management", "TestCases")
+    # TM's own 60 s timeout: one attempt, no second one started past the deadline.
+    assert now[0] <= max(tm_client.REQUEST_TIMEOUT, http_retry.DEADLINE) + 1

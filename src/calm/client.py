@@ -103,6 +103,9 @@ TESTCASE_PRIORITY_MAP = {
     "40": "Low",
 }
 
+# Tasks use the same priorityId scale (10/20/30/40) as test cases.
+TASK_PRIORITY_MAP = TESTCASE_PRIORITY_MAP
+
 # ---------------------------------------------------------------------------
 # Reverse mappings for writes (human label -> CALM code)
 #
@@ -193,8 +196,8 @@ def _get(url: str, token: str) -> Any:
     headers = {"Authorization": f"Bearer {token}"}
     payload = json.dumps({"session_id": str(uuid.uuid4())})
     resp = http_retry.send(
-        lambda: requests.get(url, headers=headers, data=payload, timeout=REQUEST_TIMEOUT),
-        "GET", url, repeatable=True,
+        lambda t: requests.get(url, headers=headers, data=payload, timeout=t),
+        "GET", url, repeatable=True, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
     return resp.json()
@@ -234,19 +237,26 @@ def _resource_label(url: str) -> str:
     return path.rsplit("/", 1)[-1] if path else url
 
 
-def _record_truncation(url: str, count: int, limit: str) -> None:
-    """Note that a paged read hit a safety ceiling and returned a partial result.
+def _record_truncation(url: str, count: int, limit: str, reason: str | None = None) -> None:
+    """Note that a paged read stopped early and returned a partial result: it hit
+    a safety ceiling (``limit``), or a later page failed (``reason``).
 
     Always logs a warning (ops visibility). Also appends a structured notice to
     the active per-request sink, if one is installed, so the MCP layer can alert
     the end user. Never raises — alerting must not break a tool call.
     """
     label = _resource_label(url)
-    msg = (
-        f"'{label}' listing was TRUNCATED at {count} rows after hitting the "
-        f"{limit} safety ceiling — the result is PARTIAL. Narrow the query "
-        f"(filter by project/tag) or raise the ceiling in client.py."
-    )
+    if reason:
+        msg = (
+            f"'{label}' listing was TRUNCATED at {count} rows because {reason} — the "
+            f"result is PARTIAL. Try again in a moment."
+        )
+    else:
+        msg = (
+            f"'{label}' listing was TRUNCATED at {count} rows after hitting the "
+            f"{limit} safety ceiling — the result is PARTIAL. Narrow the query "
+            f"(filter by project/tag) or raise the ceiling in client.py."
+        )
     log.warning("TRUNCATION: %s (url=%s)", msg, url)
     try:
         sink = _truncation_sink.get()
@@ -312,7 +322,7 @@ def _with_skip(url: str, skip: int) -> str:
 def _get_all(url: str, token: str) -> list:
     """Fetch a COMPLETE OData collection, never a single truncated page.
 
-    Verified live against a real tenant (Ebsco, us10): CALM's two collection
+    Verified live against a real customer tenant (us10): CALM's two collection
     shapes page differently, and this handles both without ever truncating:
 
     * **OData envelope** (``{"value": [...]}`` — Test Management, Features):
@@ -378,9 +388,15 @@ def _get_all(url: str, token: str) -> list:
         try:
             page = _get(_with_skip(url, skip), token)
         except Exception as exc:
-            # Endpoint doesn't support $skip (HTTP 400) or a transient failure:
-            # page one is our best complete answer — don't make listing worse.
-            log.debug("stopping $skip paging at skip=%s: %s", skip, exc)
+            if "HTTP 400" in str(exc):
+                # The endpoint doesn't support $skip: page one is the complete
+                # answer it can give — don't make listing worse.
+                log.debug("stopping $skip paging at skip=%s: %s", skip, exc)
+            else:
+                # A later page failed even after retries: rows exist that we
+                # don't have, so say the result is partial instead of complete.
+                _record_truncation(url, len(items), "page-error",
+                                   reason=f"fetching the next page failed ({type(exc).__name__})")
             break
         batch = page.get("value", []) if isinstance(page, dict) else (page or [])
         if not batch:
@@ -432,8 +448,8 @@ def _write(
     )
     data = json.dumps(body)
     resp = http_retry.send(
-        lambda: requests.request(method, url, headers=headers, data=data, timeout=REQUEST_TIMEOUT),
-        method, url, repeatable=False,
+        lambda t: requests.request(method, url, headers=headers, data=data, timeout=t),
+        method, url, repeatable=False, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
@@ -451,8 +467,8 @@ def _delete(url: str, token: str, if_match: str | None = None, user_email: str |
         headers["X-Forwarded-User"] = user_email
     log.debug("CALM delete: %s (If-Match=%s)", url, headers.get("If-Match", "-"))
     resp = http_retry.send(
-        lambda: requests.request("DELETE", url, headers=headers, timeout=REQUEST_TIMEOUT),
-        "DELETE", url, repeatable=False,
+        lambda t: requests.request("DELETE", url, headers=headers, timeout=t),
+        "DELETE", url, repeatable=False, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
     if resp.status_code == 204 or not (resp.text or "").strip():
@@ -468,8 +484,8 @@ def _get_with_meta(url: str, token: str) -> tuple[Any, str | None]:
     """
     headers = {"Authorization": f"Bearer {token}"}
     resp = http_retry.send(
-        lambda: requests.get(url, headers=headers, timeout=REQUEST_TIMEOUT),
-        "GET", url, repeatable=True,
+        lambda t: requests.get(url, headers=headers, timeout=t),
+        "GET", url, repeatable=True, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
     data = resp.json() if (resp.text or "").strip() else {}
@@ -580,7 +596,14 @@ def get_tasks(
 
 
 # Formatted task fields a summary may group by.
-TASK_SUMMARY_FIELDS = ("Timebox", "Responsible Team", "Type", "Status", "AssigneeName")
+TASK_SUMMARY_FIELDS = (
+    "Timebox", "Responsible Team", "Type", "Status", "AssigneeName",
+    "Priority", "Scope", "Workstream", "Assigned Role",
+)
+
+# Named fields whose ID is also on the row: a name missing while the ID is set
+# means the name lookup failed, which is not the same as "not assigned".
+_NAME_ID = {"Timebox": "Timebox ID", "Responsible Team": "Responsible Team ID", "Scope": "Scope ID"}
 
 
 def _norm(value: Any) -> str:
@@ -594,16 +617,25 @@ def _as_list(value: Any) -> list:
     return [value] if isinstance(value, (str, int)) else list(value)
 
 
+def _label(row: dict, field: str) -> Any:
+    """A row's value for grouping/listing: the name, "(unresolved: <id>)" when
+    only the ID is known, or None when nothing is assigned."""
+    value = row.get(field)
+    if value is None and row.get(_NAME_ID.get(field, "")):
+        return f"(unresolved: {row[_NAME_ID[field]]})"
+    return value
+
+
+_FILTERS = (("timebox", "Timebox", "Timebox ID"), ("team", "Responsible Team", "Responsible Team ID"))
+
+
 def filter_tasks(rows: list[dict], timebox: Any = None, team: Any = None) -> list[dict]:
     """Keep tasks in the given timebox(es) / responsible team(s).
 
     Each filter takes a name (case- and spacing-insensitive) or an ID, or a list
     of them. With neither filter the rows are returned unchanged.
     """
-    for wanted, name_key, id_key in (
-        (_as_list(timebox), "Timebox", "Timebox ID"),
-        (_as_list(team), "Responsible Team", "Responsible Team ID"),
-    ):
+    for (_, name_key, id_key), wanted in zip(_FILTERS, (_as_list(timebox), _as_list(team))):
         if wanted:
             want = {_norm(w) for w in wanted}
             rows = [
@@ -612,6 +644,22 @@ def filter_tasks(rows: list[dict], timebox: Any = None, team: Any = None) -> lis
                 or (r.get(id_key) is not None and _norm(r[id_key]) in want)
             ]
     return rows
+
+
+def unmatched_filters(rows: list[dict], timebox: Any = None, team: Any = None) -> dict:
+    """Filter values that match no task in ``rows``, with the values that do exist.
+
+    Lets the caller tell a typo ("Sprnt 1") from a genuinely empty sprint, and
+    shows the names to use instead. Empty dict when every value matched.
+    """
+    report: dict[str, Any] = {}
+    for (arg, name_key, id_key), wanted in zip(_FILTERS, (_as_list(timebox), _as_list(team))):
+        missing = [w for w in wanted if not filter_tasks(rows, **{arg: w})]
+        if missing:
+            present = {_label(r, name_key) for r in rows if _label(r, name_key) is not None}
+            report[arg] = {"no tasks for": missing,
+                           "values present": sorted(present, key=_natural)}
+    return report
 
 
 def _effort(value: Any) -> float | None:
@@ -631,12 +679,7 @@ def _natural(value: Any) -> tuple:
     return (0, tuple(int(p) if p.isdigit() else p for p in parts))
 
 
-def summarize_tasks(rows: list[dict], by: Any) -> dict:
-    """Group tasks and return exact counts and effort sums per group.
-
-    A whole project's task list is often too large for an agent's context, and
-    summing it by hand is error-prone; this returns the finished table instead.
-    """
+def check_summary_fields(by: Any) -> list:
     fields = _as_list(by)
     bad = [f for f in fields if f not in TASK_SUMMARY_FIELDS]
     if not fields or bad:
@@ -644,9 +687,22 @@ def summarize_tasks(rows: list[dict], by: Any) -> dict:
             f"summarize_by must be one or more of {', '.join(TASK_SUMMARY_FIELDS)} "
             f"(got {bad or fields})"
         )
+    return fields
+
+
+def summarize_tasks(rows: list[dict], by: Any) -> dict:
+    """Group tasks and return exact counts and effort sums per group.
+
+    A whole project's task list is often too large for an agent's context, and
+    summing it by hand is error-prone; this returns the finished table instead.
+    """
+    fields = check_summary_fields(by)
     groups: dict[tuple, list] = {}
+    unresolved = 0
     for r in rows:
-        g = groups.setdefault(tuple(r.get(f) for f in fields), [0, 0.0, 0])
+        key = tuple(_label(r, f) for f in fields)
+        unresolved += any(isinstance(v, str) and v.startswith("(unresolved: ") for v in key)
+        g = groups.setdefault(key, [0, 0.0, 0])
         g[0] += 1
         effort = _effort(r.get("Effort"))
         if effort is None:
@@ -659,7 +715,7 @@ def summarize_tasks(rows: list[dict], by: Any) -> dict:
         row: dict[str, Any] = {f: ("(none)" if v is None else v) for f, v in zip(fields, key)}
         row.update({"Tasks": count, "Effort": round(effort, 2), "Tasks Without Effort": no_effort})
         out.append(row)
-    return {
+    result: dict[str, Any] = {
         "Grouped By": fields,
         "Groups": out,
         "Total Tasks": len(rows),
@@ -670,6 +726,13 @@ def summarize_tasks(rows: list[dict], by: Any) -> dict:
             "stored in SAP Cloud ALM; '(none)' means not assigned."
         ),
     }
+    if unresolved:
+        result["Warning"] = (
+            f"{unresolved} task(s) are grouped as '(unresolved: <id>)': their team or "
+            "sprint name could not be looked up just now, so they are shown by ID. "
+            "Counts and effort are still exact."
+        )
+    return result
 
 
 def get_projects(token: str, base_url: str | None = None) -> list[dict]:
@@ -708,6 +771,9 @@ def get_solution_processes(token: str, base_url: str | None = None) -> list[dict
             "Status": item.get("status"),
             "Countries": item.get("countries"),
             "State": item.get("state"),
+            # Parent link (CALM returns only {id, uri}); join with business_processes.
+            "Business Process ID": (item.get("businessProcess") or {}).get("id")
+            if isinstance(item.get("businessProcess"), dict) else None,
         }
         for item in _get_all(url, token)
     ]
@@ -801,6 +867,13 @@ TEST_EXECUTION_RESULTS_NOTE = (
 )
 
 
+_HTML_TAG = re.compile(
+    r"</?(?:p|br|b|i|u|s|em|strong|span|div|font|a|ul|ol|li|h[1-6]|table|thead|tbody|"
+    r"tr|td|th|sub|sup|code|pre|blockquote|hr|img|strike|del|ins|mark|small|big)\b[^>]*>",
+    re.IGNORECASE,
+)
+
+
 def _rich_text_to_plain(value: Any) -> Any:
     """CALM step fields are rich text (HTML). Keep line structure, drop markup."""
     if not isinstance(value, str) or not value:
@@ -808,7 +881,9 @@ def _rich_text_to_plain(value: Any) -> Any:
     text = re.sub(r"(?i)<br\s*/?>", "\n", value)
     text = re.sub(r"(?i)</(p|div|li|h[1-6]|tr)>", "\n", text)
     text = re.sub(r"(?i)<li[^>]*>", "- ", text)
-    text = re.sub(r"<[^>]+>", "", text)
+    # Only real HTML tags: plain-text steps use angle brackets for placeholders
+    # ("Enter <Company Code>") and those must survive.
+    text = _HTML_TAG.sub("", text)
     text = html.unescape(text)
     text = re.sub(r"[ \t]+\n", "\n", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
@@ -885,6 +960,39 @@ def get_test_case(token: str, test_case_id: str, base_url: str | None = None) ->
 
 _TM_SERVICE_ROOT = "api/calm-testmanagement/v1/"
 
+# Entity-set names per tenant base URL: static per tenant, so the service
+# document is read once per process, not on every test_plans call.
+_TM_ENTITY_SETS: dict[str, list[str]] = {}
+
+# Known plan fields -> the Title-Case names every other read uses; any field not
+# listed is passed through under its CALM name (the plan schema isn't pinned).
+_PLAN_FIELDS = {
+    "uuid": "ID", "id": "ID", "displayId": "Display ID", "title": "Title", "name": "Name",
+    "description": "Description", "projectId": "Project ID", "status": "Status",
+    "statusCode": "Status", "startDate": "Start Date", "endDate": "End Date",
+}
+
+
+def _tm_entity_sets(base: str, token: str) -> list[str]:
+    if base not in _TM_ENTITY_SETS:
+        service = _get(f"{base}/{_TM_SERVICE_ROOT}", token)
+        entries = service.get("value", []) if isinstance(service, dict) else []
+        names = [e.get("url") or e.get("name") for e in entries if isinstance(e, dict)]
+        names = [n for n in names if n]
+        if not names:
+            return names  # don't cache an empty/odd answer
+        _TM_ENTITY_SETS[base] = names
+    return _TM_ENTITY_SETS[base]
+
+
+def _format_plan(item: dict) -> dict:
+    out: dict[str, Any] = {}
+    for k, v in item.items():
+        if k.startswith("@") or isinstance(v, (dict, list)):
+            continue
+        out.setdefault(_PLAN_FIELDS.get(k, k), v)
+    return out
+
 
 def get_test_plans(
     token: str, base_url: str | None = None, project_id: str | None = None,
@@ -893,15 +1001,14 @@ def get_test_plans(
 
     SAP publishes the scope (calm-api.testplans.read) but no machine-readable
     entity name we could pin here, so the plan entity set is discovered from the
-    service document at call time. When the tenant's service exposes none, a
+    service document (once per tenant). When the tenant's service exposes none, a
     structured ``unavailable`` result says so instead of failing. ``project_id``
-    is applied client-side, since the plan schema is not pinned.
+    is applied client-side; if the plans carry no project field at all, the rows
+    come back unfiltered with a "Warning" saying so.
     """
     base = _base_url(base_url)
-    service = _get(f"{base}/{_TM_SERVICE_ROOT}", token)
-    entries = service.get("value", []) if isinstance(service, dict) else []
-    names = [e.get("url") or e.get("name") for e in entries if isinstance(e, dict)]
-    plan_sets = [n for n in names if n and "plan" in n.lower()]
+    names = _tm_entity_sets(base, token)
+    plan_sets = [n for n in names if "plan" in n.lower()]
     if not plan_sets:
         return {
             "status": "unavailable",
@@ -912,15 +1019,23 @@ def get_test_plans(
                 "Test plans need scope calm-api.testplans.read on the service key; if it "
                 "is granted, the tenant's API version does not offer plans yet."
             ),
-            "available_entity_sets": [n for n in names if n],
+            "available_entity_sets": names,
         }
     rows = [
-        {k: v for k, v in item.items() if not k.startswith("@") and not isinstance(v, (dict, list))}
+        _format_plan(item)
         for item in _get_all(f"{base}/{_TM_SERVICE_ROOT}{plan_sets[0]}", token)
         if isinstance(item, dict)
     ]
     if project_id:
-        rows = [r for r in rows if r.get("projectId") in (None, project_id)]
+        if rows and not any("Project ID" in r for r in rows):
+            return {
+                "Warning": (
+                    "These test plans carry no project field, so they could not be "
+                    "filtered by project; all plans are listed."
+                ),
+                "Test Plans": rows,
+            }
+        rows = [r for r in rows if r.get("Project ID") == project_id]
     return rows
 
 
@@ -1430,14 +1545,40 @@ def _format_task(
         "Responsible Team": (team_names or {}).get(item.get("responsibleTeamId")),
         "Timebox ID": item.get("timeboxId"),
         "Timebox": (timebox_names or {}).get(item.get("timeboxId")),
+        # Filled on (almost) every task but previously dropped, so agents could
+        # not report by priority, scope, workstream or recent change.
+        "Priority": TASK_PRIORITY_MAP.get(str(item.get("priorityId")), item.get("priorityId")),
+        "Scope ID": item.get("scopeId"),
+        "Scope": item.get("scopeName"),
+        # A customization code (e.g. "WS006"); its names aren't in the public API.
+        "Workstream": item.get("workstream"),
+        "Assigned Role": item.get("assignedRoleName"),
+        "Created": item.get("createdTimestamp"),
+        "Last Changed": item.get("lastChangedTimestamp"),
     }
+
+
+TASK_FIELDS = tuple(_format_task({}))
+
+
+def select_task_fields(rows: list[dict], fields: Any) -> list[dict]:
+    """Keep only the named fields (plus "ID") on each row, to shrink large lists."""
+    wanted = _as_list(fields)
+    bad = [f for f in wanted if f not in TASK_FIELDS]
+    if not wanted or bad:
+        raise ValueError(f"fields must be one or more of {', '.join(TASK_FIELDS)} (got {bad or wanted})")
+    keep = ["ID"] + [f for f in wanted if f != "ID"]
+    return [{k: r.get(k) for k in keep} for r in rows]
 
 
 def _id_name_map(fetch, what: str) -> dict:
     """{ID: Name} from a formatted list, or {} if the lookup fails — a missing
-    name must never fail the task read itself."""
+    name must never fail the task read itself. One short attempt only, so a
+    slow lookup can't hold up the task list it decorates."""
     try:
-        return {r["ID"]: r.get("Name") for r in fetch() if isinstance(r, dict) and r.get("ID")}
+        with http_retry.best_effort():
+            rows = fetch()
+        return {r["ID"]: r.get("Name") for r in rows if isinstance(r, dict) and r.get("ID")}
     except Exception as exc:  # noqa: BLE001 — best-effort enrichment
         log.debug("task %s name lookup skipped: %s", what, type(exc).__name__)
         return {}
@@ -1873,6 +2014,7 @@ def _format_test_case(item: dict) -> dict:
         "Prepared": item.get("isPrepared"),
         "Priority": TESTCASE_PRIORITY_MAP.get(priority_code, priority_code),
         "Tags": tags,
+        "Last Changed": item.get("modifiedAt"),
     }
 
 

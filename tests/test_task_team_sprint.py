@@ -40,9 +40,13 @@ def _raw(**over):
 # _format_task
 # --------------------------------------------------------------------------- #
 
+LATER_KEYS = ["Priority", "Scope ID", "Scope", "Workstream", "Assigned Role", "Created", "Last Changed"]
+
+
 def test_existing_fields_unchanged_and_new_fields_appended():
     out = client._format_task(_raw())
-    assert list(out) == EXISTING_KEYS + NEW_KEYS
+    # The original fields stay first and in order; additions only ever append.
+    assert list(out) == EXISTING_KEYS + NEW_KEYS + LATER_KEYS
 
 
 def test_ids_always_surfaced_names_none_without_maps():

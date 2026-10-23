@@ -105,14 +105,14 @@ class TokenManager:
             # mTLS (x509): the client certificate authenticates the client, so
             # there is no Basic header; client_id travels in the body.
             resp = http_retry.send(
-                lambda: requests.post(
+                lambda t: requests.post(
                     self._auth_url,
                     data={"grant_type": "client_credentials", "client_id": self._client_id},
                     headers={"Accept": "application/json"},
                     cert=self._client_cert,
-                    timeout=30,
+                    timeout=t,
                 ),
-                "POST", self._auth_url, repeatable=True,
+                "POST", self._auth_url, repeatable=True, timeout=30,
             )
             mode = "x509/mTLS"
         else:
@@ -123,23 +123,23 @@ class TokenManager:
                 self._auth_url, self._client_id, _secret_diag(self._client_secret),
             )
             resp = http_retry.send(
-                lambda: requests.post(
+                lambda t: requests.post(
                     self._auth_url,
                     data={"grant_type": "client_credentials"},
                     headers={
                         "Authorization": f"Basic {basic}",
                         "Accept": "application/json",
                     },
-                    timeout=30,
+                    timeout=t,
                 ),
-                "POST", self._auth_url, repeatable=True,
+                "POST", self._auth_url, repeatable=True, timeout=30,
             )
             mode = "client_secret"
 
         if resp.status_code != 200:
             # Build a non-reversible credential diagnostic so the failure itself
             # says WHICH credential was used — compare secret_fp/len against the
-            # known-good Ebsco secret to tell "wrong/mangled secret forwarded"
+            # known-good secret to tell "wrong/mangled secret forwarded"
             # (config) apart from a genuine XSUAA problem. Never the secret itself.
             diag = (
                 f" [client_id={self._client_id} {_secret_diag(self._client_secret)}]"

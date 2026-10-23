@@ -61,6 +61,25 @@ def _is_not_authorized(exc: Exception) -> bool:
     return any(code in msg for code in ("HTTP 403", "HTTP 401", "HTTP 404"))
 
 
+def _features_read(resource: str, read):
+    """Run a Features API read; a missing scope becomes a structured answer."""
+    try:
+        return read()
+    except RuntimeError as exc:
+        if not _is_not_authorized(exc):
+            raise
+        return {
+            "status": "unavailable",
+            "supported": False,
+            "resource": resource,
+            "message": (
+                "Reading features needs scope calm-api.features.read, which the connected "
+                "service key is not granted. Add it to the key's BTP service instance "
+                "(authorities) and restart."
+            ),
+        }
+
+
 def _capability_unavailable(resource: str, alternative: str | None = None) -> dict:
     """Return a structured, user-facing explanation for a capability SAP's public
     API does not expose. Not an error state in the MCP — the platform has no
@@ -254,7 +273,8 @@ def register(mcp: FastMCP) -> None:
           - "readiness %", "status breakdown", "how many tasks done",
             "effort/story points rollup"       → resource="analytics",
                 data={"provider":"DP_TASKS"}, project_id=X  (group rows by
-                "statusText"; providers: DP_TASKS, DP_PROJECTS, DP_FEATURES)
+                "statusText"; providers: DP_TASKS, DP_PROJECTS; DP_FEATURES needs
+                calm-api.features.read)
           - "who is staffed / roles on a team"  → resource="team_roles",
                 resource_id=<team_id from resource='teams'>
           - "feature status / priority value help" → resource="feature_status"
@@ -299,9 +319,21 @@ def register(mcp: FastMCP) -> None:
                 # --- read resources with optional data filters ---
                 - tasks list: data={tag, timebox (sprint name/ID or list),
                     team (team name/ID or list), summarize_by (one or more of
-                    Timebox, Responsible Team, Type, Status, AssigneeName)}.
-                    With summarize_by the result is {Groups: [{<fields>, Tasks,
-                    Effort, Tasks Without Effort}], Total Tasks, Total Effort}.
+                    Timebox, Responsible Team, Type, Status, AssigneeName,
+                    Priority, Scope, Workstream, Assigned Role), fields (only
+                    return these row fields, e.g. ["Title", "Status", "Priority"]
+                    — use it whenever you need rows, to keep the result small)}.
+                    Rows carry: ID, Display ID, External ID (FRICEF), Title, Type,
+                    Status, Parent ID, StartDate, DueDate, AssigneeName,
+                    AssigneeID, ApprovalState, Obsolete, Effort, Tags,
+                    Responsible Team (+ID), Timebox (+ID), Priority, Scope (+ID),
+                    Workstream (a code), Assigned Role, Created, Last Changed.
+                    With summarize_by the result is {Grouped By, Groups: [{<fields>,
+                    Tasks, Effort, Tasks Without Effort}], Total Tasks, Total
+                    Effort, Tasks Without Effort, Note} plus "Warning" (names that
+                    could not be resolved) and "Filter Values With No Tasks"
+                    (a filter value that matched nothing, with the values present)
+                    when they apply.
                 - test_cases get: resource_id = UUID or display ID ("8-1-1380").
                     Returns the list fields plus Activities, Steps (Step "1.2",
                     Activity, Action, Instructions, Expected Result, Evidence
@@ -532,12 +564,32 @@ def register(mcp: FastMCP) -> None:
             if operation == "list":
                 if not project_id:
                     raise ValueError("project_id is required for tasks")
-                rows = client.get_tasks(
+                # Validate the shaping options before paying for the read.
+                summarize = d.get("summarize_by") is not None
+                if summarize:
+                    client.check_summary_fields(d["summarize_by"])
+                if d.get("fields") is not None:
+                    client.select_task_fields([], d["fields"])
+                all_rows = client.get_tasks(
                     project_id, h.token, h.base_url, task_type=task_type, tag=d.get("tag")
                 )
-                rows = client.filter_tasks(rows, timebox=d.get("timebox"), team=d.get("team"))
-                if d.get("summarize_by"):
-                    return client.summarize_tasks(rows, d["summarize_by"])
+                rows = client.filter_tasks(all_rows, timebox=d.get("timebox"), team=d.get("team"))
+                unmatched = client.unmatched_filters(all_rows, timebox=d.get("timebox"), team=d.get("team"))
+                if summarize:
+                    result = client.summarize_tasks(rows, d["summarize_by"])
+                    if unmatched:
+                        result["Filter Values With No Tasks"] = unmatched
+                    return result
+                if unmatched and not rows:
+                    raise ValueError(
+                        "No tasks match the timebox/team filter. "
+                        + "; ".join(
+                            f"{k}: no tasks for {v['no tasks for']} — values present: {v['values present']}"
+                            for k, v in unmatched.items()
+                        )
+                    )
+                if d.get("fields") is not None:
+                    return client.select_task_fields(rows, d["fields"])
                 return rows
             elif operation == "create":
                 ensure_writes_enabled()
@@ -1048,7 +1100,7 @@ def register(mcp: FastMCP) -> None:
             if operation == "list":
                 if not project_id:
                     raise ValueError("project_id is required for features")
-                return client.get_features(project_id, h.token, h.base_url)
+                return _features_read("features", lambda: client.get_features(project_id, h.token, h.base_url))
             elif operation == "create":
                 ensure_writes_enabled()
                 f_project_id = project_id or d.get("project_id")
@@ -1350,11 +1402,11 @@ def register(mcp: FastMCP) -> None:
                             "message": (
                                 f"The analytics provider '{d.get('provider', 'DP_TASKS')}' "
                                 "requires a scope the connected service key is not granted. "
-                                "DP_TASKS, DP_PROJECTS and DP_FEATURES work with standard "
-                                "implementation scopes; others need the matching analytics "
-                                "scope added to the key's BTP service instance (DP_TESTS "
-                                "needs calm-api.tests.read; DP_REQUIREMENTS its own "
-                                "requirements scope)."
+                                "DP_TASKS and DP_PROJECTS work with the standard analytics "
+                                "scopes; the others need their own scope on the key's BTP "
+                                "service instance: DP_FEATURES calm-api.features.read, "
+                                "DP_TESTS calm-api.tests.read, DP_REQUIREMENTS the "
+                                "requirements scope."
                             ),
                         }
                     raise
@@ -1373,13 +1425,13 @@ def register(mcp: FastMCP) -> None:
 
         elif resource == "feature_status":
             if operation == "list":
-                return client.get_feature_status(h.token, h.base_url)
+                return _features_read("feature_status", lambda: client.get_feature_status(h.token, h.base_url))
             else:
                 raise ValueError(f"Operation '{operation}' not supported for feature_status (use list)")
 
         elif resource == "feature_priorities":
             if operation == "list":
-                return client.get_feature_priorities(h.token, h.base_url)
+                return _features_read("feature_priorities", lambda: client.get_feature_priorities(h.token, h.base_url))
             else:
                 raise ValueError(f"Operation '{operation}' not supported for feature_priorities (use list)")
 
