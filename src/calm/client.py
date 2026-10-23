@@ -597,6 +597,53 @@ def get_tasks(
     return [_format_task(item, team_names, timebox_names) for item in items]
 
 
+_UUID = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
+
+
+def get_task(
+    token: str, task_id: str, base_url: str | None = None, project_id: str | None = None,
+) -> dict:
+    """One task by UUID, or by Display ID / External ID within ``project_id``.
+
+    Same row as tasks list (team / sprint names resolved). Lets an agent read a
+    task back — e.g. to check a write — without listing the whole project.
+    """
+    ident = str(task_id or "").strip()
+    if not ident:
+        raise ValueError("resource_id is required: the task's ID (UUID) or display ID")
+    if _UUID.match(ident):
+        item = _get(f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{ident}", token)
+        if not isinstance(item, dict) or not item:
+            raise ValueError(f"No task with ID {ident}")
+        project = item.get("projectId") or project_id
+        team_names = timebox_names = None
+        if project and item.get("responsibleTeamId"):
+            team_names = _id_name_map(lambda: get_project_teams(project, token, base_url), "team")
+        if project and item.get("timeboxId"):
+            timebox_names = _id_name_map(lambda: get_timeboxes(project, token, base_url), "timebox")
+        return _format_task(item, team_names, timebox_names)
+    if not project_id:
+        raise ValueError(
+            f"'{ident}' is not a task UUID; to look a task up by its display ID or "
+            "external ID, pass project_id as well."
+        )
+    want = ident.lower()
+    hits = [
+        r for r in get_tasks(project_id, token, base_url)
+        if any(str(r.get(k) or "").strip().lower() == want
+               for k in ("Display ID", "External ID (FRICEF)"))
+    ]
+    if not hits:
+        raise ValueError(f"No task with display ID or external ID '{ident}' in project {project_id}")
+    if len(hits) > 1:
+        raise ValueError(
+            f"{len(hits)} tasks have display/external ID '{ident}': "
+            + ", ".join(f"{r['ID']} ({r.get('Title')})" for r in hits[:10])
+            + " — use the task's ID (UUID)."
+        )
+    return hits[0]
+
+
 # Formatted task fields a summary may group by.
 TASK_SUMMARY_FIELDS = (
     "Timebox", "Responsible Team", "Type", "Status", "AssigneeName",
@@ -1702,9 +1749,17 @@ def _id_name_map(fetch, what: str) -> dict:
 # doubt to the agent: read the result back, and send the write once more only
 # when it is certainly not there. An update sets fixed values, so sending it
 # again is harmless; a create is re-sent only after a complete read of the
-# project shows no such task.
-WRITE_SETTLE = 2.0           # let SAP finish a dropped write before checking
-WRITE_RESEND_WITHIN = 15.0   # resend only when the first attempt failed this fast
+# project shows no such task AND SAP dropped it quickly.
+#
+# A SLOW drop is different: SAP held the request for many seconds, then its
+# gateway gave up while the backend was still working (seen in production: a
+# create dropped after 18s, an update after 31s). Such a write may still land
+# after we look, so a create is never re-sent then and "not there" is reported
+# as "not there yet", not "not created".
+WRITE_SETTLE = 2.0           # let SAP finish a fast-dropped write before checking
+SLOW_WRITE_SETTLE = 5.0      # more time when SAP was slow to begin with
+SLOW_WRITE = 5.0             # a drop after this many seconds may still be in progress
+UPDATE_RESEND_WITHIN = 15.0  # an update (idempotent) is re-sent if dropped this fast
 _CREATE_LOOKBACK = 300.0     # seconds of clock skew allowed on createdTimestamp
 _TIMESTAMP = re.compile(
     r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$"
@@ -1782,15 +1837,21 @@ def _recover_task_update(
 ) -> dict:
     applied_note = ("SAP dropped the connection, but reading the task back shows the "
                     "update was applied.")
+    took = http_retry._clock() - started
 
-    def check() -> tuple[dict | None, bool | None]:
-        http_retry._sleep(WRITE_SETTLE)
+    def check(slow: bool) -> tuple[dict | None, bool | None]:
+        http_retry._sleep(SLOW_WRITE_SETTLE if slow else WRITE_SETTLE)
         stored = _read_task_back(url, token)
         return stored, (_task_has(stored, body) if stored is not None else None)
 
-    def failed(cause: http_retry.WriteUnconfirmed, state: bool | None, resent: bool) -> RuntimeError:
+    def failed(cause: http_retry.WriteUnconfirmed, state: bool | None, resent: bool,
+               seconds: float) -> RuntimeError:
         tries = "both attempts" if resent else "the request"
-        if state is False:
+        if state is False and seconds > SLOW_WRITE:
+            outcome = (f"the change is not on the task yet — SAP took {seconds:.0f}s before "
+                       "dropping it, so it may still be finishing; read the task again in a "
+                       "minute")
+        elif state is False:
             outcome = "reading the task back shows the change was NOT applied"
         else:
             outcome = "the task could not be read back to confirm the change"
@@ -1798,29 +1859,31 @@ def _recover_task_update(
             f"SAP Cloud ALM dropped the connection on {tries} to update task {task_id} "
             f"({cause.reason or 'no response'}), and {outcome}. Retrying is safe: an update "
             "only sets the same values again and cannot create duplicates. Reads work, so "
-            "SAP is failing write requests on this tenant right now, not rejecting this "
-            "request; try again in a few minutes, and if it keeps happening ask the "
-            "tenant's SAP Cloud ALM administrator to check the service."
+            "SAP is failing or timing out on write requests on this tenant right now, not "
+            "rejecting this request; if it keeps happening, ask the tenant's SAP Cloud ALM "
+            "administrator to check the service."
         )
 
-    stored, state = check()
+    stored, state = check(took > SLOW_WRITE)
     if state is True:
         return _with_note(_format_task(stored), applied_note)
-    if http_retry._clock() - started > WRITE_RESEND_WITHIN:
-        raise failed(first, state, resent=False) from first
+    if took > UPDATE_RESEND_WITHIN:
+        raise failed(first, state, resent=False, seconds=took) from first
     log.warning("task update %s unconfirmed (%s); sending the same update again",
                 task_id, first.reason)
+    again_started = http_retry._clock()
     try:
         result = _write("PATCH", url, token, body, user_email=user_email)
     except http_retry.WriteUnconfirmed as again:
-        stored, state = check()
+        again_took = http_retry._clock() - again_started
+        stored, state = check(again_took > SLOW_WRITE)
         if state is True:
             return _with_note(_format_task(stored), applied_note)
-        raise failed(again, state, resent=True) from again
+        raise failed(again, state, resent=True, seconds=again_took) from again
     except Exception:
         # SAP answered the second attempt with an error; if the first one had
         # landed after all, the update is done.
-        stored, state = check()
+        stored, state = check(False)
         if state is True:
             return _with_note(_format_task(stored), applied_note)
         raise
@@ -1866,12 +1929,15 @@ def _recover_task_create(
     first: http_retry.WriteUnconfirmed, started: float, since: float,
 ) -> dict:
     title = body.get("title")
+    created_note = ("SAP dropped the connection, but the task was created — confirmed by "
+                    "reading the project back.")
+    took = http_retry._clock() - started
 
-    def check() -> tuple[list[dict], bool] | None:
-        http_retry._sleep(WRITE_SETTLE)
+    def check(slow: bool) -> tuple[list[dict], bool] | None:
+        http_retry._sleep(SLOW_WRITE_SETTLE if slow else WRITE_SETTLE)
         return _new_tasks_like(base, token, body, since)
 
-    def created(matches: list[dict], how: str) -> dict:
+    def created(matches: list[dict]) -> dict:
         if len(matches) > 1:
             raise RuntimeError(
                 f"SAP Cloud ALM did not confirm the create of task '{title}', and the project "
@@ -1879,31 +1945,38 @@ def _recover_task_create(
                 f"(IDs: {', '.join(str(m.get('id')) for m in matches)}). Check them before "
                 "creating it again, and delete any duplicate."
             )
-        return _with_note(_format_task(matches[0]), how)
+        return _with_note(_format_task(matches[0]), created_note)
 
-    found = check()
+    def still_finishing(cause: http_retry.WriteUnconfirmed, seconds: float) -> RuntimeError:
+        return RuntimeError(
+            f"SAP Cloud ALM took {seconds:.0f}s and then dropped the connection on the create "
+            f"of task '{title}' ({cause.reason or 'no response'}). The task is not in the "
+            "project yet, but SAP may still be finishing it. Do NOT create it again yet: in a "
+            "minute, search the project for this title; create it only if it is still "
+            "missing. SAP is slow on write requests on this tenant right now."
+        )
+
+    found = check(took > SLOW_WRITE)
     if found is None:
         raise first  # could not check: the original "may or may not" message stands
     matches, conclusive = found
     if matches:
-        return created(matches, "SAP dropped the connection, but the task was created — "
-                                "confirmed by reading the project back.")
+        return created(matches)
     if not conclusive:
         raise first
-    if http_retry._clock() - started > WRITE_RESEND_WITHIN:
-        raise RuntimeError(
-            f"SAP Cloud ALM did not answer the create of task '{title}' in time "
-            f"({first.reason or 'no response'}). Reading the project back shows it was NOT "
-            "created, so it is safe to create it again now."
-        ) from first
+    if took > SLOW_WRITE:
+        raise still_finishing(first, took) from first
     log.warning("task create unconfirmed (%s) and not found; sending it again", first.reason)
+    again_started = http_retry._clock()
     try:
         result = _write("POST", url, token, body, user_email=user_email)
     except http_retry.WriteUnconfirmed as again:
-        found = check()
+        again_took = http_retry._clock() - again_started
+        found = check(again_took > SLOW_WRITE)
         if found is not None and found[0]:
-            return created(found[0], "SAP dropped the connection, but the task was created — "
-                                     "confirmed by reading the project back.")
+            return created(found[0])
+        if found is not None and found[1] and again_took > SLOW_WRITE:
+            raise still_finishing(again, again_took) from again
         if found is not None and found[1]:
             raise RuntimeError(
                 f"SAP Cloud ALM dropped the connection on both attempts to create task "

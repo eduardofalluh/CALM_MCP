@@ -391,6 +391,20 @@ async def main() -> int:
                                            data={"timebox": "sprint 1"}))
             check("tasks timebox filter keeps only that sprint",
                   [t.get("ID") for t in one_sprint] == ["K1"], f"got {one_sprint}")
+            found = _payload(await _call(session, "tasks", "list", project_id="P001",
+                                         data={"search": "task b", "fields": ["Title"]}))
+            check("tasks search returns the match with totals (duplicate check)",
+                  isinstance(found, dict) and found.get("Total Matching") == 1
+                  and found.get("Tasks") == [{"ID": "K1", "Title": "Task B"}], f"got {found}")
+            res = await _call(session, "tasks", "list", project_id="P001",
+                              data={"search": "task b", "status": "Open"})
+            text = res.content[0].text if res.content else ""
+            check("tasks list refuses an unknown data key instead of listing everything",
+                  res.is_error is True and "does not support" in text, f"got {text[:160]}")
+            one = _payload(await _call(session, "tasks", "get",
+                                       resource_id="0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"))
+            check("tasks get by UUID returns one task row",
+                  isinstance(one, dict) and one.get("ID") == "T1" and "Title" in one, f"got {one}")
 
             reqs = _list(await _call(session, "requirements", "list", project_id="P001"))
             check("requirements read returns a list", isinstance(reqs, list))

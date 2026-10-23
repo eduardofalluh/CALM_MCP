@@ -414,6 +414,10 @@ def register(mcp: FastMCP) -> None:
                     matched nothing, rows come as {Total Matching, Returned,
                     Search, Note, Filter Values With No Tasks, Tasks: [rows]}.
                     Any other data key is refused with the supported list.
+                - tasks get: resource_id = the task's ID (UUID), or its display ID /
+                    external ID together with project_id. Returns one task row —
+                    use it to read a task back (e.g. after a write) instead of
+                    listing the project.
                 - test_cases get: resource_id = UUID or display ID ("8-1-1380").
                     Returns the list fields plus Activities, Steps (Step "1.2",
                     Activity, Action, Instructions, Expected Result, Evidence
@@ -794,7 +798,9 @@ def register(mcp: FastMCP) -> None:
                     token=h.token, task_id=resource_id, base_url=h.base_url, user_email=acting_email
                 )
             elif operation == "get":
-                raise ValueError("Use operation='list' with project_id and optionally filter by task_type")
+                if not resource_id:
+                    raise ValueError("resource_id is required for get: the task's ID (UUID) or display ID")
+                return client.get_task(h.token, resource_id, h.base_url, project_id=project_id)
             else:
                 raise ValueError(f"Unknown operation '{operation}' for tasks")
 

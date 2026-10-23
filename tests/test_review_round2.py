@@ -450,7 +450,9 @@ def test_update_slow_first_attempt_is_not_resent():
          patch.object(client, "_get_with_meta", return_value=(old, None)), \
          pytest.raises(RuntimeError) as err:
         _update(due_date="2026-11-07")
-    assert len(write.calls) == 1 and "NOT applied" in str(err.value)
+    # SAP held it 40s before dropping: it may still land, so "not there yet".
+    msg = str(err.value)
+    assert len(write.calls) == 1 and "not on the task yet" in msg and "Retrying is safe" in msg
 
 
 def test_update_second_attempt_rejected_but_first_landed():
@@ -577,7 +579,35 @@ def test_create_slow_first_attempt_is_not_resent():
     writes = Script(dropped())
     with patch.object(http_retry, "_clock", lambda: next(clock, 40.0)), pytest.raises(RuntimeError) as err:
         _create([[]], writes)
-    assert len(writes.calls) == 1 and "NOT created" in str(err.value) and "safe to create" in str(err.value)
+    # Production: a create dropped after 18s. It may still land, so it must
+    # not be re-sent nor called "not created".
+    msg = str(err.value)
+    assert len(writes.calls) == 1 and "may still be finishing" in msg
+    assert "Do NOT create it again yet" in msg and "NOT created" not in msg
+
+
+def test_create_slow_drop_waits_longer_before_looking(no_sleep):
+    clock = iter([0.0, 0.0, 18.0])
+    writes = Script(dropped())
+    with patch.object(http_retry, "_clock", lambda: next(clock, 18.0)), pytest.raises(RuntimeError):
+        _create([[]], writes)
+    assert no_sleep == [client.SLOW_WRITE_SETTLE]
+
+
+def test_create_slow_drop_that_landed_is_found():
+    clock = iter([0.0, 0.0, 18.0])
+    writes = Script(dropped())
+    with patch.object(http_retry, "_clock", lambda: next(clock, 18.0)):
+        out = _create([[_task(1)]], writes)
+    assert out["ID"] == "new-1" and len(writes.calls) == 1
+
+
+def test_create_second_attempt_slow_drop_is_not_called_not_created():
+    times = iter([0.0, 0.0, 1.0, 1.0, 1.0, 30.0])
+    writes = Script(dropped(), dropped())
+    with patch.object(http_retry, "_clock", lambda: next(times, 30.0)), pytest.raises(RuntimeError) as err:
+        _create([[], []], writes)
+    assert len(writes.calls) == 2 and "may still be finishing" in str(err.value)
 
 
 def test_subtask_matches_only_under_its_parent():
@@ -670,3 +700,52 @@ def test_no_plan_set_answer_is_rechecked_next_call():
         assert second == [{"ID": "p", "Title": "Plan"}]
     finally:
         client._TM_ENTITY_SETS.clear()
+
+
+# --------------------------------------------------------------------------- #
+# tasks get — the agent's read-back after a dropped update (trace: 5x "Use
+# operation='list'") now works
+# --------------------------------------------------------------------------- #
+
+TASK_UUID = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+
+
+def test_get_task_by_uuid_resolves_names():
+    raw = {"id": TASK_UUID, "projectId": "p1", "title": "Configure GL", "type": "CALMTASK",
+           "responsibleTeamId": "tf", "timeboxId": "tb1"}
+    with patch.object(client, "_get", return_value=raw) as g, \
+         patch.object(client, "get_project_teams", return_value=[{"ID": "tf", "Name": "Finance"}]), \
+         patch.object(client, "get_timeboxes", return_value=[{"ID": "tb1", "Name": "Sprint 1"}]):
+        row = client.get_task("tok", TASK_UUID, BASE)
+    assert g.call_args.args[0] == f"{BASE}/api/calm-tasks/v1/tasks/{TASK_UUID}"
+    assert row["ID"] == TASK_UUID and row["Responsible Team"] == "Finance" and row["Timebox"] == "Sprint 1"
+    assert list(row) == list(client.TASK_FIELDS)
+
+
+def test_get_task_by_display_id_needs_and_uses_the_project():
+    rows = [_row(1, "A"), _row(2, "B", **{"External ID (FRICEF)": "FIN-1"})]
+    with pytest.raises(ValueError, match="pass project_id"):
+        client.get_task("tok", "3-2", BASE)
+    with patch.object(client, "get_tasks", return_value=rows):
+        assert client.get_task("tok", "3-2", BASE, project_id="p1")["ID"] == "id-2"
+        assert client.get_task("tok", "fin-1", BASE, project_id="p1")["ID"] == "id-2"
+        with pytest.raises(ValueError, match="No task"):
+            client.get_task("tok", "3-99", BASE, project_id="p1")
+
+
+def test_get_task_ambiguous_display_id_lists_candidates():
+    rows = [_row(1, "A", **{"Display ID": "X-1"}), _row(2, "B", **{"External ID (FRICEF)": "X-1"})]
+    with patch.object(client, "get_tasks", return_value=rows), pytest.raises(ValueError) as err:
+        client.get_task("tok", "X-1", BASE, project_id="p1")
+    assert "id-1" in str(err.value) and "id-2" in str(err.value)
+
+
+def test_tasks_get_through_calm_resource(calm):
+    raw = {"id": TASK_UUID, "projectId": "11111111-1111-1111-1111-111111111111",
+           "title": "Configure GL", "type": "CALMTASK"}
+    with patch.object(client, "_get", return_value=raw):
+        row = calm(Ctx(), resource="tasks", operation="get",
+                   project_id="11111111-1111-1111-1111-111111111111", resource_id=TASK_UUID)
+    assert row["ID"] == TASK_UUID and row["Title"] == "Configure GL"
+    with pytest.raises(ValueError, match="resource_id is required"):
+        calm(Ctx(), resource="tasks", operation="get", project_id="p1")
