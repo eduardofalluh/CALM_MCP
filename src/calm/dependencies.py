@@ -13,6 +13,7 @@ Auth URL resolution order:
 
 Base URL resolution order:
   x-calm-base-url header > zone headers > env vars.
+  There is no built-in tenant: if none of these supply one, TenantNotConfiguredError.
 
 Cross-tenant safety (fail-closed):
   The server env credential (CALM_CLIENT_ID/SECRET) belongs to ONE tenant. In a
@@ -37,7 +38,7 @@ import os
 
 from fastmcp import Context
 
-from .config import build_auth_url, build_base_url, get_auth_url, get_base_url
+from .config import TenantNotConfiguredError, build_auth_url, build_base_url, get_auth_url, get_base_url
 from .models import CALMHeaders
 from .token_manager import get_managed_token, get_or_create_token_manager
 
@@ -151,12 +152,18 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
         tenant_signal, _multi_tenant_mode(),
     )
 
-    # Resolve base URL: explicit header > zone headers > env vars
+    # Resolve base URL: explicit header > zone headers > env vars.
+    # A missing tenant is raised only after the credential checks below, so the
+    # fail-closed credential errors keep their priority.
+    tenant_error: TenantNotConfiguredError | None = None
     if not base_url:
-        if identity_zone or region_zone:
-            base_url = build_base_url(identity_zone, region_zone)
-        else:
-            base_url = get_base_url()
+        try:
+            if identity_zone or region_zone:
+                base_url = build_base_url(identity_zone, region_zone)
+            else:
+                base_url = get_base_url()
+        except TenantNotConfiguredError as exc:
+            tenant_error = exc
 
     # --- 1. Client credentials from request headers (per-tenant OAuth) ---
     if has_header_creds:
@@ -235,6 +242,9 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
             "  Per-request: Authorization: Bearer <token>\n"
             "  Local dev: CALM_TOKEN env var"
         )
+
+    if tenant_error:
+        raise tenant_error
 
     # Fallback to env var if no header provided
     if not user_email:

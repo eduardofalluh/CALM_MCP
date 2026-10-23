@@ -5,6 +5,8 @@ Run this to verify the OAuth implementation is correct before deploying.
 """
 
 import json
+import os
+from unittest import mock
 
 from src.calm.oauth import (
     build_www_authenticate_header,
@@ -20,12 +22,17 @@ def test_oauth_endpoints():
     print("Testing OAuth Endpoint Generation")
     print("=" * 80)
 
-    endpoints = get_oauth_endpoints()
+    # No built-in tenant any more: supply an obviously fake one.
+    fake_tenant = {"IDENTITY_ZONE": "my-tenant", "REGION_ZONE": "eu10"}
+    overrides = ("CALM_IDENTITY_ZONE", "CALM_REGION_ZONE", "CALM_BASE_URL", "CALM_AUTH_URL")
+    env = {k: v for k, v in os.environ.items() if k not in overrides}
+    with mock.patch.dict(os.environ, {**env, **fake_tenant}, clear=True):
+        endpoints = get_oauth_endpoints()
     print("\nOAuth Endpoints:")
     print(json.dumps(endpoints, indent=2))
 
     # Validate URLs
-    assert endpoints["tenant"] == "illumiti-corp-cloudalm"
+    assert endpoints["tenant"] == "my-tenant"
     assert endpoints["region"] == "eu10"
     assert "/oauth/authorize" in endpoints["authorization_endpoint"]
     assert "/oauth/token" in endpoints["token_endpoint"]
@@ -41,7 +48,7 @@ def test_protected_resource_metadata():
     print("Testing RFC 9728 Protected Resource Metadata")
     print("=" * 80)
 
-    base_url = "https://illumiti-corp-cloudalm.eu10.alm.cloud.sap"
+    base_url = "https://my-tenant.eu10.alm.cloud.sap"
     metadata = get_protected_resource_metadata(base_url)
     print("\nProtected Resource Metadata:")
     print(json.dumps(metadata, indent=2))
@@ -61,7 +68,7 @@ def test_authorization_server_metadata():
     print("Testing RFC 8414 Authorization Server Metadata")
     print("=" * 80)
 
-    auth_url = "https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com"
+    auth_url = "https://my-tenant.authentication.eu10.hana.ondemand.com"
     metadata = get_authorization_server_metadata(auth_url)
     print("\nAuthorization Server Metadata:")
     print(json.dumps(metadata, indent=2))
@@ -85,7 +92,7 @@ def test_www_authenticate_header():
     print("Testing WWW-Authenticate Header")
     print("=" * 80)
 
-    base_url = "https://illumiti-corp-cloudalm.eu10.alm.cloud.sap"
+    base_url = "https://my-tenant.eu10.alm.cloud.sap"
 
     # Test 401 response header
     header_401 = build_www_authenticate_header(

@@ -18,7 +18,7 @@ def get_protected_resource_metadata(base_url: str | None = None) -> dict:
     This tells MCP clients (GenAI Studio) where to send users for OAuth login.
 
     Args:
-        base_url: CALM API base URL (e.g. https://illumiti-corp-cloudalm.eu10.alm.cloud.sap)
+        base_url: CALM API base URL (e.g. https://my-tenant.eu10.alm.cloud.sap)
                   Extracted from env vars or request headers.
 
     Returns:
@@ -69,7 +69,7 @@ def get_authorization_server_metadata(auth_url: str) -> dict:
 
     Args:
         auth_url: CALM auth server base URL
-                  (e.g. https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com)
+                  (e.g. https://my-tenant.authentication.eu10.hana.ondemand.com)
 
     Returns:
         Authorization Server Metadata per RFC 8414

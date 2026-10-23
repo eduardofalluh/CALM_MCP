@@ -4,24 +4,35 @@ from __future__ import annotations
 
 import os
 
-DEFAULT_IDENTITY_ZONE = "illumiti-corp-cloudalm"
-DEFAULT_REGION_ZONE = "eu10"
+
+class TenantNotConfiguredError(ValueError):
+    """No CALM tenant was supplied by env vars or request headers.
+
+    There is deliberately no built-in tenant: an unconfigured server must fail
+    instead of silently answering for whichever tenant happened to be the default.
+    """
+
+
+_TENANT_NOT_CONFIGURED = (
+    "No SAP Cloud ALM tenant configured. Set IDENTITY_ZONE and REGION_ZONE "
+    "(or CALM_IDENTITY_ZONE / CALM_REGION_ZONE) on the server, or explicit "
+    "CALM_BASE_URL and CALM_AUTH_URL; or send x-calm-identity-zone + "
+    "x-calm-region-zone (or x-calm-base-url / x-calm-auth-url) headers per request."
+)
 
 
 def get_identity_zone() -> str:
-    return (
-        os.getenv("CALM_IDENTITY_ZONE")
-        or os.getenv("IDENTITY_ZONE")
-        or DEFAULT_IDENTITY_ZONE
-    )
+    zone = os.getenv("CALM_IDENTITY_ZONE") or os.getenv("IDENTITY_ZONE")
+    if not zone:
+        raise TenantNotConfiguredError(_TENANT_NOT_CONFIGURED)
+    return zone
 
 
 def get_region_zone() -> str:
-    return (
-        os.getenv("CALM_REGION_ZONE")
-        or os.getenv("REGION_ZONE")
-        or DEFAULT_REGION_ZONE
-    )
+    zone = os.getenv("CALM_REGION_ZONE") or os.getenv("REGION_ZONE")
+    if not zone:
+        raise TenantNotConfiguredError(_TENANT_NOT_CONFIGURED)
+    return zone
 
 
 def build_auth_url(identity_zone: str | None = None, region_zone: str | None = None) -> str:
@@ -83,15 +94,15 @@ def parse_calm_url(url: str) -> tuple[str, str]:
     """Extract tenant and region from a CALM URL.
 
     Args:
-        url: CALM URL (e.g. https://illumiti-corp-cloudalm.eu10.alm.cloud.sap
-             or https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com)
+        url: CALM URL (e.g. https://my-tenant.eu10.alm.cloud.sap
+             or https://my-tenant.authentication.eu10.hana.ondemand.com)
 
     Returns:
         Tuple of (tenant, region)
 
     Example:
-        >>> parse_calm_url("https://illumiti-corp-cloudalm.eu10.alm.cloud.sap")
-        ('illumiti-corp-cloudalm', 'eu10')
+        >>> parse_calm_url("https://my-tenant.eu10.alm.cloud.sap")
+        ('my-tenant', 'eu10')
     """
     # Remove protocol
     url = url.replace("https://", "").replace("http://", "")

@@ -4,7 +4,13 @@ import os
 
 from fastmcp import Context, FastMCP
 
-from src.calm.config import build_auth_url, build_base_url, get_auth_url, get_base_url
+from src.calm.config import (
+    TenantNotConfiguredError,
+    build_auth_url,
+    build_base_url,
+    get_auth_url,
+    get_base_url,
+)
 from src.calm.dependencies import writes_enabled
 from src.calm.tm_dependencies import tm_configured, tm_writes_enabled
 from src.calm.token_manager import get_managed_token
@@ -28,7 +34,7 @@ def register(mcp: FastMCP) -> None:
         client_id_hdr = None
         client_secret_hdr = None
         auth_url_hdr = None
-        base_url = None
+        base_url_hdr = None
 
         try:
             request = ctx.request_context.request
@@ -43,23 +49,31 @@ def register(mcp: FastMCP) -> None:
                     auth_url_hdr = raw_auth.strip()
                 raw_base = h.get("x-calm-base-url")
                 if raw_base and raw_base.strip().startswith("https://"):
-                    base_url = raw_base.strip()
+                    base_url_hdr = raw_base.strip()
         except Exception:
             pass
 
-        # Resolve URLs using same logic as dependencies.py
-        if not base_url:
-            if identity_zone or region_zone:
+        # Resolve URLs using same logic as dependencies.py; report a missing
+        # tenant instead of raising, since this is the diagnostic tool.
+        try:
+            if base_url_hdr:
+                base_url = base_url_hdr
+            elif identity_zone or region_zone:
                 base_url = build_base_url(identity_zone, region_zone)
             else:
                 base_url = get_base_url()
+        except TenantNotConfiguredError as exc:
+            base_url = f"(not configured) {exc}"
 
-        if auth_url_hdr:
-            auth_url = auth_url_hdr
-        elif identity_zone or region_zone:
-            auth_url = build_auth_url(identity_zone, region_zone)
-        else:
-            auth_url = get_auth_url()
+        try:
+            if auth_url_hdr:
+                auth_url = auth_url_hdr
+            elif identity_zone or region_zone:
+                auth_url = build_auth_url(identity_zone, region_zone)
+            else:
+                auth_url = get_auth_url()
+        except TenantNotConfiguredError as exc:
+            auth_url = f"(not configured) {exc}"
 
         # Mirror token resolution order from dependencies.py
         if client_id_hdr and client_secret_hdr:
@@ -105,6 +119,6 @@ def register(mcp: FastMCP) -> None:
                 "x-calm-client-id": ("set" if client_id_hdr else "(not set)"),
                 "x-calm-client-secret": ("set" if client_secret_hdr else "(not set)"),
                 "x-calm-auth-url": auth_url_hdr or "(not set)",
-                "x-calm-base-url": base_url if base_url != build_base_url(identity_zone, region_zone) else "(not set)",
+                "x-calm-base-url": base_url_hdr or "(not set)",
             },
         }

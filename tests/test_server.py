@@ -592,6 +592,29 @@ async def main() -> int:
             check("tm_odata_read ok", res.is_error is not True,
                   f"err {res.content[0].text if res.content else ''}")
 
+    # ================= No tenant configured: refuse, never guess one =================
+    no_tenant_env = {"IDENTITY_ZONE": "", "REGION_ZONE": "", "CALM_IDENTITY_ZONE": "", "CALM_REGION_ZONE": ""}
+    async with stdio_client(_make_params(shim_dir, no_tenant_env)) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            print("\nTest 8: unconfigured tenant fails with a configuration error")
+            health = _payload(await session.call_tool("calm_health", {}))
+            check("calm_health still answers when unconfigured", health.get("server") == "sap-cloud-alm")
+            check("calm_health reports base_url not configured",
+                  str(health.get("base_url", "")).startswith("(not configured)"), f"got {health.get('base_url')}")
+
+            res = await _call(session, "projects", "list")
+            text = res.content[0].text if res.content else ""
+            check("calm_resource refuses without a tenant", res.is_error is True, f"got {text[:120]}")
+            check("error names the env vars to set", "IDENTITY_ZONE" in text and "REGION_ZONE" in text,
+                  f"got {text[:200]}")
+
+            res = await session.call_tool("get_calm_oauth_endpoints", {})
+            text = res.content[0].text if res.content else ""
+            check("get_calm_oauth_endpoints refuses without a tenant",
+                  res.is_error is True and "IDENTITY_ZONE" in text, f"got {text[:200]}")
+
     # ================= Summary =================
     print("\n" + "=" * 70)
     if failures:

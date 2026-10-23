@@ -245,14 +245,20 @@ try:
     from starlette.routing import Route
 
     from src.calm import oauth
-    from src.calm.config import get_auth_base_url, get_base_url
+    from src.calm.config import TenantNotConfiguredError, get_auth_base_url, get_base_url
+
+    def _tenant_not_configured(exc: TenantNotConfiguredError) -> JSONResponse:
+        return JSONResponse({"error": "tenant_not_configured", "error_description": str(exc)}, status_code=503)
 
     async def protected_resource_metadata(request):
         """RFC 9728 Protected Resource Metadata endpoint.
 
         MCP clients fetch this to discover CALM's authorization server.
         """
-        base_url = get_base_url()
+        try:
+            base_url = get_base_url()
+        except TenantNotConfiguredError as exc:
+            return _tenant_not_configured(exc)
         metadata = oauth.get_protected_resource_metadata(base_url)
         return JSONResponse(metadata)
 
@@ -261,7 +267,10 @@ try:
 
         MCP clients fetch this to discover OAuth endpoints and capabilities.
         """
-        auth_base_url = get_auth_base_url()
+        try:
+            auth_base_url = get_auth_base_url()
+        except TenantNotConfiguredError as exc:
+            return _tenant_not_configured(exc)
         metadata = oauth.get_authorization_server_metadata(auth_base_url)
         return JSONResponse(metadata)
 

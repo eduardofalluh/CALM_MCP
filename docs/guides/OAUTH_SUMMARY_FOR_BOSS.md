@@ -136,8 +136,8 @@ async function getValidToken(userId) {
 Returns:
 ```json
 {
-  "authorization_endpoint": "https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/authorize",
-  "token_endpoint": "https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/token",
+  "authorization_endpoint": "https://my-tenant.authentication.eu10.hana.ondemand.com/oauth/authorize",
+  "token_endpoint": "https://my-tenant.authentication.eu10.hana.ondemand.com/oauth/token",
   "implementation_guide": { ... }
 }
 ```

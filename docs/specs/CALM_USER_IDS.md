@@ -12,7 +12,7 @@ lacks user-read permissions (403), manually add user UUIDs here.
 4. Click it → Preview → Find your email → Copy the `id` field (36-char UUID)
 
 ### Method 2: Postman
-1. GET `https://illumiti-corp-cloudalm.eu10.alm.cloud.sap/api/calm-projects/v1/projects/9dd45151-4393-4b06-9998-208ef3cd66c6/users`
+1. GET `https://my-tenant.eu10.alm.cloud.sap/api/calm-projects/v1/projects/9dd45151-4393-4b06-9998-208ef3cd66c6/users`
 2. Headers: `Authorization: Bearer YOUR_TOKEN`
 3. Find your email in response → copy `id` field
 

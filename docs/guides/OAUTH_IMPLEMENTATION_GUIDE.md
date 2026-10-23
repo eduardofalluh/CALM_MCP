@@ -88,17 +88,17 @@ Or use the MCP tool:
 }
 ```
 
-**For illumiti-corp-cloudalm tenant (eu10 region):**
+**For my-tenant tenant (eu10 region):**
 
 ```json
 {
-  "tenant": "illumiti-corp-cloudalm",
+  "tenant": "my-tenant",
   "region": "eu10",
-  "authorization_endpoint": "https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/authorize",
-  "token_endpoint": "https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/token",
-  "revocation_endpoint": "https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/revoke",
-  "issuer": "https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com",
-  "resource": "https://illumiti-corp-cloudalm.eu10.alm.cloud.sap"
+  "authorization_endpoint": "https://my-tenant.authentication.eu10.hana.ondemand.com/oauth/authorize",
+  "token_endpoint": "https://my-tenant.authentication.eu10.hana.ondemand.com/oauth/token",
+  "revocation_endpoint": "https://my-tenant.authentication.eu10.hana.ondemand.com/oauth/revoke",
+  "issuer": "https://my-tenant.authentication.eu10.hana.ondemand.com",
+  "resource": "https://my-tenant.eu10.alm.cloud.sap"
 }
 ```
 
@@ -166,10 +166,10 @@ function redirectToCALMOAuth(req, res) {
     code_challenge: codeChallenge,
     code_challenge_method: 'S256',
     // RFC 8707: Resource parameter (identifies the MCP server)
-    resource: 'https://illumiti-corp-cloudalm.eu10.alm.cloud.sap',
+    resource: 'https://my-tenant.eu10.alm.cloud.sap',
   });
 
-  const authUrl = `https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/authorize?${params}`;
+  const authUrl = `https://my-tenant.authentication.eu10.hana.ondemand.com/oauth/authorize?${params}`;
 
   // 5. Redirect user to CALM login
   res.redirect(authUrl);
@@ -198,14 +198,14 @@ async function handleCALMOAuthCallback(req, res) {
   }
 
   // 2. Validate issuer (RFC 9207)
-  const expectedIssuer = 'https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com';
+  const expectedIssuer = 'https://my-tenant.authentication.eu10.hana.ondemand.com';
   if (iss && iss !== expectedIssuer) {
     throw new Error('Invalid issuer - possible token confusion attack');
   }
 
   // 3. Exchange authorization code for tokens
   const tokenResponse = await fetch(
-    'https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/token',
+    'https://my-tenant.authentication.eu10.hana.ondemand.com/oauth/token',
     {
       method: 'POST',
       headers: {
@@ -218,7 +218,7 @@ async function handleCALMOAuthCallback(req, res) {
         client_id: process.env.CALM_OAUTH_CLIENT_ID,
         client_secret: process.env.CALM_OAUTH_CLIENT_SECRET,
         code_verifier: req.session.pkce.codeVerifier,
-        resource: 'https://illumiti-corp-cloudalm.eu10.alm.cloud.sap',
+        resource: 'https://my-tenant.eu10.alm.cloud.sap',
       }),
     }
   );
@@ -291,7 +291,7 @@ async function getValidCALMToken(userId) {
 
   try {
     const tokenResponse = await fetch(
-      'https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com/oauth/token',
+      'https://my-tenant.authentication.eu10.hana.ondemand.com/oauth/token',
       {
         method: 'POST',
         headers: {
@@ -302,7 +302,7 @@ async function getValidCALMToken(userId) {
           refresh_token: stored.refreshToken,
           client_id: process.env.CALM_OAUTH_CLIENT_ID,
           client_secret: process.env.CALM_OAUTH_CLIENT_SECRET,
-          resource: 'https://illumiti-corp-cloudalm.eu10.alm.cloud.sap',
+          resource: 'https://my-tenant.eu10.alm.cloud.sap',
         }),
       }
     );
@@ -391,9 +391,9 @@ curl https://your-mcp-server/.well-known/oauth-protected-resource
 Expected response:
 ```json
 {
-  "resource": "https://illumiti-corp-cloudalm.eu10.alm.cloud.sap",
+  "resource": "https://my-tenant.eu10.alm.cloud.sap",
   "authorization_servers": [
-    "https://illumiti-corp-cloudalm.authentication.eu10.hana.ondemand.com"
+    "https://my-tenant.authentication.eu10.hana.ondemand.com"
   ],
   "scopes_supported": ["openid"]
 }
@@ -622,7 +622,7 @@ res.redirect('/connect-calm');
 
 **Solution:** Include `resource` parameter in both authorization and token requests:
 ```javascript
-resource: 'https://illumiti-corp-cloudalm.eu10.alm.cloud.sap'
+resource: 'https://my-tenant.eu10.alm.cloud.sap'
 ```
 
 ### CALM History still shows "API"

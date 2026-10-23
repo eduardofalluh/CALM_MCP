@@ -21,7 +21,7 @@ That's it! No code changes, no scope changes needed.
 
 ```bash
 # Your existing credentials
-IDENTITY_ZONE=illumiti-corp-cloudalm
+IDENTITY_ZONE=<your-btp-identity-zone>
 REGION_ZONE=eu10
 CALM_CLIENT_ID=sb-cloud-alm-api!b175722|sapcloudalm!b16907
 CALM_CLIENT_SECRET=your-secret-here

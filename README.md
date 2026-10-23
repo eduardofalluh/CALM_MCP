@@ -266,7 +266,7 @@ No `.env` file needed on the server. The MCP client (e.g. GenAI Studio) injects 
 
 | Header | Required | Example |
 |--------|----------|---------|
-| `x-calm-identity-zone` | Yes | `illumiti-corp-cloudalm` |
+| `x-calm-identity-zone` | Yes | `<your-btp-identity-zone>` |
 | `x-calm-region-zone` | Yes | `eu10` |
 | `x-calm-client-id` | Yes | `sb-cloud-alm-api!b175722\|sapcloudalm!b16907` |
 | `x-calm-client-secret` | Yes | `<your-client-secret>` |
@@ -382,7 +382,7 @@ Custom headers to configure in Studio:
 
 | Header | Value |
 |--------|-------|
-| `x-calm-identity-zone` | `illumiti-corp-cloudalm` |
+| `x-calm-identity-zone` | `<your-btp-identity-zone>` |
 | `x-calm-region-zone` | `eu10` |
 | `x-calm-client-id` | `<your-oauth-client-id>` |
 | `x-calm-client-secret` | `<your-oauth-client-secret>` |
