@@ -209,7 +209,8 @@ def _fake_get(url, *a, **kw):
     if "calm-tasks/v1/tasks" in url:
         return _FakeResp(json.dumps([
             {"id": "R1", "title": "Req A", "type": "CALMREQU", "status": "CIPREQUOPEN"},
-            {"id": "K1", "title": "Task B", "type": "CALMTASK", "status": "CIPTKOPEN"},
+            {"id": "K1", "title": "Task B", "type": "CALMTASK", "status": "CIPTKOPEN",
+             "responsibleTeamId": "TEAM1", "timeboxId": "TB1", "effort": 8.0},
         ]))
 
     # --- Generic /projects/ single-entity (etag body field) ----------------
@@ -370,6 +371,14 @@ async def main() -> int:
 
             tasks = _list(await _call(session, "tasks", "list", project_id="P001"))
             check("tasks is a list of 2", isinstance(tasks, list) and len(tasks) == 2)
+            k1 = next((t for t in tasks if t.get("ID") == "K1"), {})
+            check("task carries team + sprint by name (per-sprint/per-team grouping)",
+                  k1.get("Responsible Team") == "Development Team" and k1.get("Timebox") == "Sprint 1"
+                  and k1.get("Responsible Team ID") == "TEAM1" and k1.get("Effort") == 8.0,
+                  f"got {k1}")
+            r1 = next((t for t in tasks if t.get("ID") == "R1"), {})
+            check("task without team/sprint stays unassigned",
+                  r1.get("Responsible Team") is None and r1.get("Timebox") is None, f"got {r1}")
 
             reqs = _list(await _call(session, "requirements", "list", project_id="P001"))
             check("requirements read returns a list", isinstance(reqs, list))

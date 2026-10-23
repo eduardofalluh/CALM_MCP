@@ -540,7 +540,14 @@ def get_tasks(
         items = [it for it in items if it.get("type") == type_code]
     if tag:
         items = [it for it in items if _tag_in_family(it.get("tags"), tag)]
-    return [_format_task(item) for item in items]
+    # Resolve team / sprint names once per call, and only when some task carries
+    # the ID, so plain task lists cost no extra request.
+    team_names = timebox_names = None
+    if any(it.get("responsibleTeamId") for it in items):
+        team_names = _id_name_map(lambda: get_project_teams(project_id, token, base_url), "team")
+    if any(it.get("timeboxId") for it in items):
+        timebox_names = _id_name_map(lambda: get_timeboxes(project_id, token, base_url), "timebox")
+    return [_format_task(item, team_names, timebox_names) for item in items]
 
 
 def get_projects(token: str, base_url: str | None = None) -> list[dict]:
@@ -1263,8 +1270,17 @@ def get_project_customization(project_id: str, token: str, base_url: str | None 
 # can bypass label mapping if a tenant differs.
 # ---------------------------------------------------------------------------
 
-def _format_task(item: dict) -> dict:
-    """Format a single raw task the same way get_tasks() formats a list item."""
+def _format_task(
+    item: dict,
+    team_names: dict | None = None,
+    timebox_names: dict | None = None,
+) -> dict:
+    """Format a single raw task the same way get_tasks() formats a list item.
+
+    ``team_names`` / ``timebox_names`` map IDs to names; get_tasks() passes them
+    so each row carries the team and sprint by name. Without them the names are
+    None and only the IDs are set.
+    """
     return {
         "ID": item.get("id"),
         "Display ID": item.get("displayId") or item.get("externalId"),
@@ -1286,7 +1302,23 @@ def _format_task(item: dict) -> dict:
         # toTagAssignments navigation test cases use); surface them so callers
         # can see and filter on them.
         "Tags": item.get("tags") or [],
+        # Sprint planning: the owning team and the timebox (sprint) the task is
+        # planned in — what per-team / per-sprint counts and effort group by.
+        "Responsible Team ID": item.get("responsibleTeamId"),
+        "Responsible Team": (team_names or {}).get(item.get("responsibleTeamId")),
+        "Timebox ID": item.get("timeboxId"),
+        "Timebox": (timebox_names or {}).get(item.get("timeboxId")),
     }
+
+
+def _id_name_map(fetch, what: str) -> dict:
+    """{ID: Name} from a formatted list, or {} if the lookup fails — a missing
+    name must never fail the task read itself."""
+    try:
+        return {r["ID"]: r.get("Name") for r in fetch() if isinstance(r, dict) and r.get("ID")}
+    except Exception as exc:  # noqa: BLE001 — best-effort enrichment
+        log.debug("task %s name lookup skipped: %s", what, type(exc).__name__)
+        return {}
 
 
 def create_task(

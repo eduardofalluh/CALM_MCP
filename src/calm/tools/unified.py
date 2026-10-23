@@ -222,6 +222,11 @@ def register(mcp: FastMCP) -> None:
                 → resource="tasks", operation="list", project_id=X,
                 data={"tag":"<TAG>"}  (returns the whole tag FAMILY — the exact
                 tag PLUS every "<TAG> - <area>" sub-tag — and never truncates)
+          - "task counts / effort per sprint and per team", "sprint planning"
+                → resource="tasks", operation="list", project_id=X (optionally
+                task_type="Project Task"); each row carries "Timebox" (sprint
+                name) and "Responsible Team" (+ their IDs) and "Effort" — group
+                and sum those. Rows with no team or no sprint are unassigned.
           - "requirements in project X"
                 → resource="requirements", operation="list", project_id=X
           - "teams / who is on project X"       → resource="teams"
