@@ -248,7 +248,7 @@ def _fake_get(url, *a, **kw):
         return _FakeResp(json.dumps({"id": "T1", "type": "CALMTASK", "title": "old"}))
     if "calm-tasks/v1/tasks" in url:
         return _FakeResp(json.dumps([
-            {"id": "R1", "title": "Req A", "type": "CALMREQU", "status": "CIPREQUOPEN"},
+            {"id": "R1", "displayId": "3-60729", "title": "Req A", "type": "CALMREQU", "status": "CIPREQUOPEN"},
             {"id": "K1", "title": "Task B", "type": "CALMTASK", "status": "CIPTKOPEN",
              "responsibleTeamId": "TEAM1", "timeboxId": "TB1", "effort": 8.0},
         ]))
@@ -448,6 +448,14 @@ async def main() -> int:
 
             reqs = _list(await _call(session, "requirements", "list", project_id="P001"))
             check("requirements read returns a list", isinstance(reqs, list))
+            res = await _call(session, "requirements", "get", project_id="P001", resource_id="3-60729")
+            one_req = _payload(res)
+            check("requirements get by display ID (the 2026-10-26 traced call) returns it",
+                  res.is_error is not True and isinstance(one_req, dict) and one_req.get("ID") == "R1",
+                  f"got {res.content[0].text[:160] if res.content else ''}")
+            proj = _payload(await _call(session, "projects", "get", resource_id="test project a"))
+            check("projects get by name returns the project",
+                  isinstance(proj, dict) and proj.get("ID") == "P001", f"got {proj}")
 
             # The reported bug: project-scoped teams read.
             teams = _list(await _call(session, "teams", "list", project_id="P001"))

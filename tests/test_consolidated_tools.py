@@ -187,9 +187,11 @@ class TestErrorHandling:
         with pytest.raises(ValueError, match="Write operations are disabled"):
             _tool_fn()(mock_ctx, resource="projects", operation="create", data={"name": "X"})
 
-    def test_customization_list_operation_error(self, mock_ctx):
-        with pytest.raises(ValueError, match="Use operation='get' for customization"):
-            _tool_fn()(mock_ctx, resource="customization", operation="list", project_id="P001")
+    def test_customization_list_behaves_like_get(self, mock_ctx):
+        """One config per project: an agent asking to 'list' it gets it, not an error."""
+        with patch("src.calm.client.get_project_customization", return_value={"Workstreams": []}) as g:
+            out = _tool_fn()(mock_ctx, resource="customization", operation="list", project_id="P001")
+        assert out == {"Workstreams": []} and g.call_args.args[0] == "P001"
 
 
 class TestPhase3Architecture:

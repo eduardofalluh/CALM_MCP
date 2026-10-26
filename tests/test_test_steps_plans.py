@@ -371,7 +371,15 @@ def test_resource_test_plans_server_error_is_not_swallowed():
             _fn()(Ctx(), resource="test_plans", operation="list")
 
 
-@pytest.mark.parametrize("op", ["get", "create", "update", "delete"])
+def test_resource_test_plans_get_returns_one_plan():
+    plans = [{"ID": "p1", "Title": "SIT cycle 1"}, {"ID": "p2", "Title": "UAT"}]
+    with patch("src.calm.client.get_test_plans", return_value=plans):
+        assert _fn()(Ctx(), resource="test_plans", operation="get", resource_id="uat") == plans[1]
+        with pytest.raises(ValueError, match="No test_plans"):
+            _fn()(Ctx(), resource="test_plans", operation="get", resource_id="p9")
+
+
+@pytest.mark.parametrize("op", ["create", "update", "delete"])
 def test_resource_test_plans_is_read_only(op):
     with pytest.raises(ValueError, match="not supported for test_plans"):
         _fn()(Ctx(), resource="test_plans", operation=op, resource_id="x", data={"a": 1})

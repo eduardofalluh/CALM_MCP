@@ -116,6 +116,39 @@ def _task_list_options(d: dict, project_id: str | None, task_type: str | None):
     return opts, project_id, task_type
 
 
+_ID_FIELDS = ("ID", "Display ID", "External ID", "External ID (FRICEF)", "Code", "Role ID", "Email")
+_NAME_FIELDS = ("Name", "Title", "Full Name", "Role Name")
+
+
+def _pick_one(resource: str, rows: Any, ident: Any) -> Any:
+    """``get`` for resources whose API only lists: the one row whose ID / display
+    ID / external ID — or, failing that, exact name or title — is ``ident``
+    (case and spacing ignored). A structured "unavailable" answer passes through."""
+    if isinstance(rows, dict):
+        return rows
+    want = " ".join(str(ident or "").split()).lower()
+    if not want:
+        raise ValueError("resource_id is required for get: the item's ID, display ID or name")
+    rows = [r for r in (rows or []) if isinstance(r, dict)]
+    for fields in (_ID_FIELDS, _NAME_FIELDS):
+        hits = [r for r in rows
+                if any(" ".join(str(r.get(f) or "").split()).lower() == want for f in fields)]
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            raise ValueError(
+                f"{len(hits)} {resource} match '{ident}': "
+                + ", ".join(f"{h.get('ID')} ({h.get('Name') or h.get('Title')})" for h in hits[:10])
+                + " — pass the ID."
+            )
+    names = sorted({str(r.get(f)) for r in rows for f in _NAME_FIELDS if r.get(f)})[:15]
+    raise ValueError(
+        f"No {resource} with ID, display ID or name '{ident}'"
+        + (f". Some that exist: {names}" if names else " (the list is empty)")
+        + "."
+    )
+
+
 def _filter_report(unmatched: dict) -> str:
     parts = []
     for k, v in unmatched.items():
@@ -369,6 +402,11 @@ def register(mcp: FastMCP) -> None:
                 hand and never use calm_api_read for this.
           - "requirements in project X"
                 → resource="requirements", operation="list", project_id=X
+          - ONE item by its ID — "show requirement 3-60729", "open task 3-1234",
+            "project Alpha", "sprint 4"
+                → operation="get", resource_id=<UUID, display ID or exact name>
+                (pass project_id too for display IDs). Every resource supports
+                get; never list a whole project to find one item.
           - "teams / who is on project X"       → resource="teams"
           - "business / solution processes"     → resource="business_processes"
                                                     / "solution_processes"
@@ -715,7 +753,7 @@ def register(mcp: FastMCP) -> None:
             elif operation == "delete":
                 raise ValueError("Delete operation not supported for projects")
             elif operation == "get":
-                raise ValueError("Use operation='list' to get all projects, then filter by ID")
+                return _pick_one("projects", client.get_projects(h.token, h.base_url), resource_id)
             else:
                 raise ValueError(f"Unknown operation '{operation}' for projects")
 
@@ -943,7 +981,17 @@ def register(mcp: FastMCP) -> None:
                     token=h.token, task_id=resource_id, base_url=h.base_url, user_email=acting_email
                 )
             elif operation == "get":
-                raise ValueError("Use operation='list' with project_id to get requirements, then filter by ID")
+                # By UUID: read the requirement directly. By display ID (e.g.
+                # "3-60729"), external ID or title: look it up in the project.
+                if resource_id and client._UUID_RE.match(str(resource_id).strip()):
+                    return client.get_task(h.token, resource_id, h.base_url, project_id=project_id)
+                if not project_id:
+                    raise ValueError(
+                        "project_id is required to get a requirement by display ID; "
+                        "or pass the requirement's ID (UUID)"
+                    )
+                return _pick_one("requirements", client.get_tasks(
+                    project_id, h.token, h.base_url, task_type="Requirement"), resource_id)
             else:
                 raise ValueError(f"Unknown operation '{operation}' for requirements")
 
@@ -952,14 +1000,20 @@ def register(mcp: FastMCP) -> None:
                 if project_id:
                     return client.get_project_teams(project_id, h.token, h.base_url)
                 return client.get_teams(h.token, h.base_url)
+            elif operation == "get":
+                teams = (client.get_project_teams(project_id, h.token, h.base_url) if project_id
+                         else client.get_teams(h.token, h.base_url))
+                return _pick_one("teams", teams, resource_id)
             else:
                 raise ValueError(f"Operation '{operation}' not supported for teams in Phase 1")
 
         elif resource == "processes":
-            if operation == "list":
+            if operation in ("list", "get"):
                 # Combined business and solution processes
                 business = client.get_business_processes(h.token, h.base_url)
                 solution = client.get_solution_processes(h.token, h.base_url)
+                if operation == "get":
+                    return _pick_one("processes", business + solution, resource_id)
                 return business + solution
             else:
                 raise ValueError(
@@ -1008,7 +1062,8 @@ def register(mcp: FastMCP) -> None:
                     user_email=acting_email,
                 )
             elif operation == "get":
-                raise ValueError("Use operation='list' to get all business_processes, then filter by ID")
+                return _pick_one("business_processes",
+                                 client.get_business_processes(h.token, h.base_url), resource_id)
             else:
                 raise ValueError(f"Unknown operation '{operation}' for business_processes")
 
@@ -1062,7 +1117,8 @@ def register(mcp: FastMCP) -> None:
                     user_email=acting_email,
                 )
             elif operation == "get":
-                raise ValueError("Use operation='list' to get all solution_processes, then filter by ID")
+                return _pick_one("solution_processes",
+                                 client.get_solution_processes(h.token, h.base_url), resource_id)
             else:
                 raise ValueError(f"Unknown operation '{operation}' for solution_processes")
 
@@ -1112,7 +1168,10 @@ def register(mcp: FastMCP) -> None:
                     token=h.token, timebox_id=resource_id, base_url=h.base_url, user_email=acting_email
                 )
             elif operation == "get":
-                raise ValueError("Use operation='list' with project_id to get timeboxes, then filter by ID")
+                if not project_id:
+                    raise ValueError("project_id is required to get a timebox (sprint)")
+                return _pick_one("timeboxes", client.get_timeboxes(project_id, h.token, h.base_url),
+                                 resource_id)
             else:
                 raise ValueError(f"Unknown operation '{operation}' for timeboxes")
 
@@ -1166,7 +1225,10 @@ def register(mcp: FastMCP) -> None:
                     user_email=acting_email,
                 )
             elif operation == "get":
-                raise ValueError("Use operation='list' to get all scopes, then filter by ID")
+                scopes = client.get_scopes(h.token, h.base_url)
+                if project_id:
+                    scopes = [s for s in scopes if s.get("Project ID") == project_id] or scopes
+                return _pick_one("scopes", scopes, resource_id)
             else:
                 raise ValueError(f"Unknown operation '{operation}' for scopes")
 
@@ -1245,11 +1307,15 @@ def register(mcp: FastMCP) -> None:
                 raise ValueError(f"Unknown operation '{operation}' for test_cases")
 
         elif resource == "test_plans":
-            if operation == "list":
+            if operation in ("list", "get"):
                 try:
-                    return client.get_test_plans(
+                    plans = client.get_test_plans(
                         h.token, h.base_url, project_id=project_id or d.get("project_id"),
                     )
+                    if operation == "get":
+                        rows = plans.get("Test Plans", plans) if isinstance(plans, dict) else plans
+                        return _pick_one("test_plans", rows, resource_id)
+                    return plans
                 except RuntimeError as exc:
                     if _is_not_authorized(exc):
                         return {
@@ -1291,7 +1357,14 @@ def register(mcp: FastMCP) -> None:
             elif operation in ["update", "delete"]:
                 raise ValueError(f"Operation '{operation}' not supported for tags (read-only after creation)")
             elif operation == "get":
-                raise ValueError("Use operation='list' with project_id to get tags, then filter by ID")
+                if not project_id:
+                    raise ValueError("project_id is required for tags")
+                try:
+                    return _pick_one("tags", client.get_tags(project_id, h.token, h.base_url), resource_id)
+                except RuntimeError as exc:
+                    if _is_not_authorized(exc):
+                        return _capability_unavailable("tags", tag_alternative)
+                    raise
             else:
                 raise ValueError(f"Unknown operation '{operation}' for tags")
 
@@ -1417,11 +1490,12 @@ def register(mcp: FastMCP) -> None:
             )
 
         elif resource == "project_users":
-            if operation == "list":
+            if operation in ("list", "get"):
                 if not project_id:
                     raise ValueError("project_id is required for project_users")
                 try:
-                    return client.get_project_users(project_id, h.token, h.base_url)
+                    users = client.get_project_users(project_id, h.token, h.base_url)
+                    return _pick_one("project_users", users, resource_id) if operation == "get" else users
                 except RuntimeError as exc:
                     if _is_not_authorized(exc):
                         return _capability_unavailable(
@@ -1435,7 +1509,7 @@ def register(mcp: FastMCP) -> None:
                 raise ValueError(f"Operation '{operation}' not supported for project_users in Phase 1")
 
         elif resource == "customization":
-            if operation == "get":
+            if operation in ("get", "list"):  # one config per project: list == get
                 if not project_id:
                     raise ValueError("project_id is required for customization")
                 try:
@@ -1444,8 +1518,6 @@ def register(mcp: FastMCP) -> None:
                     if _is_not_authorized(exc):
                         return _capability_unavailable("customization")
                     raise
-            elif operation == "list":
-                raise ValueError("Use operation='get' for customization (returns single project config)")
             else:
                 raise ValueError(f"Operation '{operation}' not supported for customization in Phase 1")
 
@@ -1535,6 +1607,13 @@ def register(mcp: FastMCP) -> None:
                 return client.set_task_tags(
                     token=h.token, task_id=task_id, tags=tags, base_url=h.base_url, user_email=acting_email
                 )
+            elif operation in ("get", "list"):  # read a task's tags
+                task_id = resource_id or d.get("task_id")
+                if not task_id:
+                    raise ValueError("resource_id (task ID or display ID) is required to read task tags")
+                task = client.get_task(h.token, task_id, h.base_url, project_id=project_id)
+                return {"Task ID": task["ID"], "Display ID": task["Display ID"],
+                        "Title": task["Title"], "Tags": task["Tags"]}
             else:
                 raise ValueError(f"Operation '{operation}' not supported for task_tags (use update to set tags)")
 
@@ -1584,6 +1663,17 @@ def register(mcp: FastMCP) -> None:
                     base_url=h.base_url,
                     user_email=acting_email,
                 )
+            elif operation in ("get", "list"):  # read through the test case
+                tc_id = d.get("test_case_id") or resource_id
+                if not tc_id:
+                    raise ValueError("resource_id (the test case's ID or display ID) is required to read test_actions")
+                try:
+                    tc = client.get_test_case(h.token, tc_id, h.base_url)
+                except ValueError as exc:
+                    raise ValueError(f"{exc} — test_actions are read through their test case: pass the "
+                                     "test case's ID or display ID as resource_id") from exc
+                return {"Test Case ID": tc["ID"], "Display ID": tc["Display ID"], "Title": tc["Title"],
+                        "Steps": tc["Steps"]}
             else:
                 raise ValueError(f"Operation '{operation}' not supported for test_actions (use create/update/delete)")
 
@@ -1613,6 +1703,17 @@ def register(mcp: FastMCP) -> None:
                     base_url=h.base_url,
                     user_email=acting_email,
                 )
+            elif operation in ("get", "list"):  # read through the test case
+                tc_id = d.get("test_case_id") or resource_id
+                if not tc_id:
+                    raise ValueError("resource_id (the test case's ID or display ID) is required to read test_activities")
+                try:
+                    tc = client.get_test_case(h.token, tc_id, h.base_url)
+                except ValueError as exc:
+                    raise ValueError(f"{exc} — test_activities are read through their test case: pass the "
+                                     "test case's ID or display ID as resource_id") from exc
+                return {"Test Case ID": tc["ID"], "Display ID": tc["Display ID"], "Title": tc["Title"],
+                        "Activities": tc["Activities"]}
             else:
                 raise ValueError(f"Operation '{operation}' not supported for test_activities (use update/delete)")
 
@@ -1666,6 +1767,17 @@ def register(mcp: FastMCP) -> None:
                     base_url=h.base_url,
                     user_email=acting_email,
                 )
+            elif operation in ("get", "list"):  # read through the test case
+                tc_id = d.get("test_case_id") or resource_id
+                if not tc_id:
+                    raise ValueError("resource_id (the test case's ID or display ID) is required to read test_case_links")
+                try:
+                    tc = client.get_test_case(h.token, tc_id, h.base_url)
+                except ValueError as exc:
+                    raise ValueError(f"{exc} — test_case_links are read through their test case: pass the "
+                                     "test case's ID or display ID as resource_id") from exc
+                return {"Test Case ID": tc["ID"], "Display ID": tc["Display ID"], "Title": tc["Title"],
+                        "Linked Tasks": tc["Linked Tasks"]}
             else:
                 raise ValueError(f"Operation '{operation}' not supported for test_case_links (use create)")
 
@@ -1673,7 +1785,7 @@ def register(mcp: FastMCP) -> None:
             # Aggregated analytics rows (status breakdowns, readiness %, effort/
             # story-point sums) without paging every task. provider defaults to
             # DP_TASKS; DP_PROJECTS and DP_FEATURES are also available.
-            if operation == "list":
+            if operation in ("list", "get"):
                 try:
                     return client.get_analytics(
                         h.token,
@@ -1706,7 +1818,7 @@ def register(mcp: FastMCP) -> None:
 
         elif resource == "team_roles":
             # Roles and staffed members of a team (resource_id = team_id).
-            if operation == "list":
+            if operation in ("list", "get"):
                 team_id = resource_id or d.get("team_id")
                 if not team_id:
                     raise ValueError("resource_id (team_id) is required for team_roles; get it from resource='teams'")
@@ -1715,14 +1827,16 @@ def register(mcp: FastMCP) -> None:
                 raise ValueError(f"Operation '{operation}' not supported for team_roles (use list)")
 
         elif resource == "feature_status":
-            if operation == "list":
-                return _features_read("feature_status", lambda: client.get_feature_status(h.token, h.base_url))
+            if operation in ("list", "get"):
+                rows = _features_read("feature_status", lambda: client.get_feature_status(h.token, h.base_url))
+                return _pick_one("feature_status", rows, resource_id) if operation == "get" and resource_id else rows
             else:
                 raise ValueError(f"Operation '{operation}' not supported for feature_status (use list)")
 
         elif resource == "feature_priorities":
-            if operation == "list":
-                return _features_read("feature_priorities", lambda: client.get_feature_priorities(h.token, h.base_url))
+            if operation in ("list", "get"):
+                rows = _features_read("feature_priorities", lambda: client.get_feature_priorities(h.token, h.base_url))
+                return _pick_one("feature_priorities", rows, resource_id) if operation == "get" and resource_id else rows
             else:
                 raise ValueError(f"Operation '{operation}' not supported for feature_priorities (use list)")
 
