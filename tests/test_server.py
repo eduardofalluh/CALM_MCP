@@ -460,8 +460,15 @@ async def main() -> int:
             check("project name in project_id resolves to the project (same tasks as by ID)",
                   [t.get("ID") for t in by_name] == [t.get("ID") for t in tasks], f"got {by_name}")
             res = await _call(session, "tasks", "list", project_id="No Such Project")
-            check("unknown project name is a clear error naming the real projects",
-                  res.is_error is True and "Test Project A" in (res.content[0].text if res.content else ""))
+            miss = _payload(res)
+            check("unknown project name on a read is an answer naming the real projects (no tool error)",
+                  res.is_error is not True and isinstance(miss, dict) and miss.get("status") == "not_found"
+                  and "Test Project A" in miss.get("message", ""), f"got {miss}")
+            res = await _call(session, "requirements", "get", project_id="P001", resource_id="3-99999")
+            miss = _payload(res)
+            check("requirements get on a missing ID is a not_found answer (no tool error)",
+                  res.is_error is not True and isinstance(miss, dict) and miss.get("status") == "not_found",
+                  f"got {miss}")
 
             # The reported bug: project-scoped teams read.
             teams = _list(await _call(session, "teams", "list", project_id="P001"))

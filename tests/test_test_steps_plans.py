@@ -375,8 +375,8 @@ def test_resource_test_plans_get_returns_one_plan():
     plans = [{"ID": "p1", "Title": "SIT cycle 1"}, {"ID": "p2", "Title": "UAT"}]
     with patch("src.calm.client.get_test_plans", return_value=plans):
         assert _fn()(Ctx(), resource="test_plans", operation="get", resource_id="uat") == plans[1]
-        with pytest.raises(ValueError, match="No test_plans"):
-            _fn()(Ctx(), resource="test_plans", operation="get", resource_id="p9")
+        missing = _fn()(Ctx(), resource="test_plans", operation="get", resource_id="p9")
+        assert missing["status"] == "not_found" and "No test_plans" in missing["message"]
 
 
 @pytest.mark.parametrize("op", ["create", "update", "delete"])

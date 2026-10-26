@@ -26,6 +26,23 @@ from .config import build_base_url
 
 REQUEST_TIMEOUT = 30  # seconds
 
+
+class NotFound(ValueError):
+    """A lookup found no item for the given ID / display ID / name. For reads
+    the tool answers this as a normal result, not a tool error."""
+
+
+class Ambiguous(ValueError):
+    """Several items match the given name or ID; ``matches`` lists them."""
+
+    def __init__(self, message: str, matches: list | None = None) -> None:
+        super().__init__(message)
+        self.matches = list(matches or [])
+
+
+def _is_http_404(exc: Exception) -> bool:
+    return "HTTP 404" in str(exc)
+
 log = logging.getLogger("calm-mcp.client")
 
 
@@ -609,9 +626,14 @@ def get_task(
     if not ident:
         raise ValueError("resource_id is required: the task's ID (UUID) or display ID")
     if _UUID_RE.match(ident):
-        item = _get(f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{ident}", token)
+        try:
+            item = _get(f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{ident}", token)
+        except RuntimeError as exc:
+            if _is_http_404(exc):
+                raise NotFound(f"No task with ID {ident}") from exc
+            raise
         if not isinstance(item, dict) or not item:
-            raise ValueError(f"No task with ID {ident}")
+            raise NotFound(f"No task with ID {ident}")
         project = item.get("projectId") or project_id
         team_names = timebox_names = None
         if project and item.get("responsibleTeamId"):
@@ -631,12 +653,16 @@ def get_task(
                for k in ("Display ID", "External ID (FRICEF)"))
     ]
     if not hits:
-        raise ValueError(f"No task with display ID or external ID '{ident}' in project {project_id}")
+        raise NotFound(
+            f"No task with display ID or external ID '{ident}' in project {project_id} "
+            "(it may be in another project)"
+        )
     if len(hits) > 1:
-        raise ValueError(
+        raise Ambiguous(
             f"{len(hits)} tasks have display/external ID '{ident}': "
             + ", ".join(f"{r['ID']} ({r.get('Title')})" for r in hits[:10])
-            + " — use the task's ID (UUID)."
+            + " — use the task's ID (UUID).",
+            hits[:10],
         )
     return hits[0]
 
@@ -1120,13 +1146,18 @@ def get_test_case(token: str, test_case_id: str, base_url: str | None = None) ->
         raise ValueError("test_case_id is required (UUID or display ID, e.g. '8-1-1380')")
     root = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases"
     if _UUID_RE.match(key):
-        return _format_test_case_detail(_get(f"{root}/{key}?{_TEST_CASE_DETAIL_EXPAND}", token))
+        try:
+            return _format_test_case_detail(_get(f"{root}/{key}?{_TEST_CASE_DETAIL_EXPAND}", token))
+        except RuntimeError as exc:
+            if _is_http_404(exc):
+                raise NotFound(f"No test case with ID {key}") from exc
+            raise
     esc = key.replace("'", "''")
     flt = quote(f"displayId eq '{esc}'", safe="")
     result = _get(f"{root}?{_TEST_CASE_DETAIL_EXPAND}&$filter={flt}", token)
     items = result.get("value", []) if isinstance(result, dict) else (result or [])
     if not items:
-        raise ValueError(
+        raise NotFound(
             f"No test case with display ID '{key}'. Pass the test case UUID, or check "
             "the display ID with calm_resource(resource='test_cases', operation='list')."
         )

@@ -87,11 +87,12 @@ def test_requirement_get_by_uuid_reads_it_directly(calm):
     gt.assert_not_called()
 
 
-def test_requirement_get_not_found_names_examples(calm):
-    with patch.object(client, "get_tasks", return_value=REQS), pytest.raises(ValueError) as err:
-        calm(Ctx(), resource="requirements", operation="get", project_id=PROJECT, resource_id="3-1")
-    assert "No requirements" in str(err.value) and "Payroll interface" in str(err.value)
-    assert "Use operation" not in str(err.value)
+def test_requirement_get_not_found_is_an_answer_not_a_tool_error(calm):
+    with patch.object(client, "get_tasks", return_value=REQS):
+        out = calm(Ctx(), resource="requirements", operation="get", project_id=PROJECT, resource_id="3-1")
+    assert out["status"] == "not_found" and out["found"] is False and out["requested"] == "3-1"
+    assert "3-1" in out["message"] and "search" in out["hint"]
+    assert "Use operation" not in out["message"]
 
 
 def test_requirement_get_by_display_id_needs_the_project(calm):
@@ -101,9 +102,10 @@ def test_requirement_get_by_display_id_needs_the_project(calm):
 
 def test_ambiguous_name_asks_for_the_id(calm):
     twins = [_req(1, "3-1", "Same"), _req(2, "3-2", "Same")]
-    with patch.object(client, "get_tasks", return_value=twins), pytest.raises(ValueError) as err:
-        calm(Ctx(), resource="requirements", operation="get", project_id=PROJECT, resource_id="same")
-    assert "2 requirements match" in str(err.value) and "req-1" in str(err.value)
+    with patch.object(client, "get_tasks", return_value=twins):
+        out = calm(Ctx(), resource="requirements", operation="get", project_id=PROJECT, resource_id="same")
+    assert out["status"] == "ambiguous" and [m["ID"] for m in out["matches"]] == ["req-1", "req-2"]
+    assert "pass the ID" in out["message"]
 
 
 # --------------------------------------------------------------------------- #
@@ -203,3 +205,71 @@ def test_test_case_children_wrong_id_explains_what_to_pass(calm):
     with patch.object(client, "get_test_case", side_effect=ValueError("No test case with display ID 'act-1'.")), \
          pytest.raises(ValueError, match="read through their test case"):
         calm(Ctx(), resource="test_actions", operation="get", resource_id="act-1")
+
+
+# --------------------------------------------------------------------------- #
+# 2026-10-26 trace 2: "3-60729" is a User Story, asked for as a requirement
+# --------------------------------------------------------------------------- #
+
+STORY = {"ID": "story-1", "Display ID": "3-70001", "External ID (FRICEF)": None,
+         "Title": "As a planner I want...", "Type": "User Story", "Status": "Open"}
+
+
+def test_requirement_get_returns_the_item_when_it_is_another_type(calm):
+    def tasks(project_id, token, base_url, task_type=None, tag=None):
+        return REQS if task_type == "Requirement" else REQS + [STORY]
+    with patch.object(client, "get_tasks", side_effect=tasks):
+        out = calm(Ctx(), resource="requirements", operation="get", project_id=PROJECT,
+                   resource_id="3-70001")
+    assert out["ID"] == "story-1" and out["Type"] == "User Story"
+    assert out["Note"] == "3-70001 is a User Story, not a Requirement."
+
+
+def test_requirement_get_by_uuid_of_another_type_says_so(calm):
+    with patch.object(client, "get_task", return_value=STORY):
+        out = calm(Ctx(), resource="requirements", operation="get", resource_id=REQ_UUID)
+    assert out["Note"].endswith("is a User Story, not a Requirement.")
+
+
+def test_real_requirement_has_no_note(calm):
+    with patch.object(client, "get_tasks", return_value=REQS):
+        out = calm(Ctx(), resource="requirements", operation="get", project_id=PROJECT, resource_id="3-60729")
+    assert "Note" not in out
+
+
+@pytest.mark.parametrize("resource, kw, patch_target, effect", [
+    ("tasks", {"resource_id": REQ_UUID}, "_get", RuntimeError("HTTP 404 Not Found")),
+    ("tasks", {"resource_id": "3-9", "project_id": PROJECT}, "get_tasks", lambda *a, **k: REQS),
+    ("test_cases", {"resource_id": "8-1-9"}, "_get", lambda *a, **k: {"value": []}),
+    ("test_cases", {"resource_id": REQ_UUID}, "_get", RuntimeError("HTTP 404 Not Found")),
+    ("projects", {"resource_id": "Nope"}, "get_projects", lambda *a, **k: [{"ID": "P1", "Name": "Alpha"}]),
+])
+def test_every_read_miss_is_an_answer(calm, resource, kw, patch_target, effect):
+    side = effect if callable(effect) else None
+    with patch.object(client, patch_target, side_effect=side if side else effect):
+        out = calm(Ctx(), resource=resource, operation="get", **kw)
+    assert out["status"] == "not_found" and out["found"] is False
+
+
+def test_documents_read_miss_is_an_answer(calm, monkeypatch):
+    from src.calm import odata_service
+    sets = {"Documents": {"name": "Documents", "type": "Documents", "key": ["uuid"],
+                          "props": {"uuid": {"type": "Edm.Guid"}, "displayId": {"type": "Edm.String"},
+                                    "projectId": {"type": "Edm.Guid"}}, "navs": {}}}
+    monkeypatch.setattr(odata_service, "schema", lambda *a, **k: sets)
+    with patch.object(client, "_get_all", return_value=[]):
+        out = calm(Ctx(), resource="documents", operation="get", resource_id="7-999")
+    assert out["status"] == "not_found"
+
+
+def test_writes_on_a_missing_item_still_fail(calm, monkeypatch):
+    monkeypatch.setenv("CALM_ENABLE_WRITES", "true")
+    with patch.object(client, "get_tasks", return_value=REQS), patch.object(client, "update_task") as ut, \
+         pytest.raises(client.NotFound):
+        calm(Ctx(), resource="requirements", operation="update", project_id=PROJECT,
+             resource_id="3-404", data={"title": "x"})
+    ut.assert_not_called()
+
+
+def test_not_found_is_still_a_value_error_for_existing_callers():
+    assert issubclass(client.NotFound, ValueError) and issubclass(client.Ambiguous, ValueError)

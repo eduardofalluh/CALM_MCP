@@ -246,10 +246,11 @@ def resolve_uuid(
     # Re-check locally: an ID must match exactly even if a filter were ignored.
     hits = [h for h in hits if str(h.get("displayId", "")).strip().lower() == ident.lower()]
     if not hits:
-        raise ValueError(f"No {set_name[:-1].lower()} with display ID '{ident}'")
+        raise client.NotFound(f"No {set_name[:-1].lower()} with display ID '{ident}'")
     if len(hits) > 1:
-        raise ValueError(
-            f"{len(hits)} {set_name.lower()} have display ID '{ident}' — pass project_id or the UUID"
+        raise client.Ambiguous(
+            f"{len(hits)} {set_name.lower()} have display ID '{ident}' — pass project_id or the UUID",
+            [format_row(h, long_text=False) for h in hits[:10]],
         )
     return str(hits[0].get("uuid") or hits[0].get("id"))
 
@@ -264,9 +265,14 @@ def get_raw(
     url = _key_url(service, es, base_url, uuid)
     if expand_all and es["navs"]:
         url += "?$expand=" + ",".join(es["navs"])
-    data, etag = client._get_with_meta(url, token)
+    try:
+        data, etag = client._get_with_meta(url, token)
+    except RuntimeError as exc:
+        if client._is_http_404(exc):
+            raise client.NotFound(f"No {set_name[:-1].lower()} with ID {uuid}") from exc
+        raise
     if not isinstance(data, dict) or not data:
-        raise ValueError(f"No {set_name[:-1].lower()} with ID {uuid}")
+        raise client.NotFound(f"No {set_name[:-1].lower()} with ID {uuid}")
     return data, etag or data.get("@odata.etag")
 
 

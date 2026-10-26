@@ -138,13 +138,14 @@ def _pick_one(resource: str, rows: Any, ident: Any) -> Any:
         if len(hits) == 1:
             return hits[0]
         if len(hits) > 1:
-            raise ValueError(
+            raise client.Ambiguous(
                 f"{len(hits)} {resource} match '{ident}': "
                 + ", ".join(f"{h.get('ID')} ({h.get('Name') or h.get('Title')})" for h in hits[:10])
-                + " — pass the ID."
+                + " — pass the ID.",
+                hits[:10],
             )
-    names = sorted({str(r.get(f)) for r in rows for f in _NAME_FIELDS if r.get(f)})[:15]
-    raise ValueError(
+    names = sorted({str(r.get(f)).strip() for r in rows for f in _NAME_FIELDS if r.get(f)})[:10]
+    raise client.NotFound(
         f"No {resource} with ID, display ID or name '{ident}'"
         + (f". Some that exist: {names}" if names else " (the list is empty)")
         + "."
@@ -203,13 +204,14 @@ def resolve_project_id(project_id: Any, h: Any) -> Any:
     if len(hits) == 1:
         return hits[0]["ID"]
     if len(hits) > 1:
-        raise ValueError(
+        raise client.Ambiguous(
             f"project '{project_id}' matches {len(hits)} projects: "
             + "; ".join(f"{p.get('Name')} ({p.get('ID')})" for p in hits[:10])
-            + " — pass the project's ID or full name."
+            + " — pass the project's ID or full name.",
+            hits[:10],
         )
     names = sorted(str(p.get("Name")) for p in projects if p.get("Name"))[:20]
-    raise ValueError(f"No project with ID or name '{project_id}'. Projects: {names}")
+    raise client.NotFound(f"No project with ID or name '{project_id}'. Projects: {names}")
 
 
 # Kept separate so the unit-test suite can make project IDs pass through.
@@ -248,6 +250,30 @@ _TASK_ID_CALLS = {
 }
 # Write calls whose resource_id (or data.test_case_id) is a test case.
 _TEST_CASE_ID_CALLS = {("test_cases", "update"), ("test_cases", "delete"), ("test_case_links", "create")}
+
+
+def _typed(row: dict, ident: Any) -> dict:
+    """A task returned for a requirement lookup, with a note when it is another type."""
+    if isinstance(row, dict) and row.get("Type") not in (None, "Requirement"):
+        row = {**row, "Note": f"{ident} is a {row['Type']}, not a Requirement."}
+    return row
+
+
+def _read_answer(resource: str, operation: str, resource_id: Any, exc: Exception) -> dict:
+    """A read that found nothing (or several) answers that, instead of failing."""
+    hint = ("Check the ID, or search: calm_resource(resource='tasks', operation='list', "
+            "project_id=..., data={'search': '<title or ID>'})"
+            if resource in ("tasks", "requirements", "task_tags") else
+            f"Check the ID, or list them: calm_resource(resource='{resource}', operation='list', ...)")
+    out: dict[str, Any] = {
+        "status": "ambiguous" if isinstance(exc, client.Ambiguous) else "not_found",
+        "found": False, "resource": resource, "requested": resource_id, "message": str(exc),
+    }
+    if isinstance(exc, client.Ambiguous):
+        out["matches"] = exc.matches
+    else:
+        out["hint"] = hint
+    return out
 
 
 def _filter_report(unmatched: dict) -> str:
@@ -507,7 +533,11 @@ def register(mcp: FastMCP) -> None:
             "project Alpha", "sprint 4"
                 → operation="get", resource_id=<UUID, display ID or exact name>
                 (pass project_id too for display IDs). Every resource supports
-                get; never list a whole project to find one item.
+                get; never list a whole project to find one item. A requirement
+                ID that is really a user story / task returns that item with a
+                "Note" saying its type. A read that finds nothing answers
+                {"status": "not_found", "message", "hint"}; several matches
+                answer {"status": "ambiguous", "matches": [...]} — pick one by ID.
           - "teams / who is on project X"       → resource="teams"
           - "business / solution processes"     → resource="business_processes"
                                                     / "solution_processes"
@@ -816,6 +846,17 @@ def register(mcp: FastMCP) -> None:
         by a `resource` above, use the low-level escape hatches calm_api_read /
         calm_api_write / calm_api_delete (same CALM tenant, raw API paths).
         """
+        try:
+            return _calm_resource(ctx, resource, operation, project_id, resource_id, task_type,
+                                  data, user_email)
+        except (client.NotFound, client.Ambiguous) as exc:
+            # A read that finds nothing (or several) is an answer, not a fault;
+            # writes keep failing so they never act on the wrong item.
+            if operation in ("list", "get"):
+                return _read_answer(resource, operation, resource_id, exc)
+            raise
+
+    def _calm_resource(ctx, resource, operation, project_id, resource_id, task_type, data, user_email):
         h = get_calm_headers(ctx)
         d = parse_data(data)
         data = d or None
@@ -1113,14 +1154,21 @@ def register(mcp: FastMCP) -> None:
                 # By UUID: read the requirement directly. By display ID (e.g.
                 # "3-60729"), external ID or title: look it up in the project.
                 if resource_id and client._UUID_RE.match(str(resource_id).strip()):
-                    return client.get_task(h.token, resource_id, h.base_url, project_id=project_id)
+                    return _typed(client.get_task(h.token, resource_id, h.base_url, project_id=project_id),
+                                  resource_id)
                 if not project_id:
                     raise ValueError(
                         "project_id is required to get a requirement by display ID; "
                         "or pass the requirement's ID (UUID)"
                     )
-                return _pick_one("requirements", client.get_tasks(
-                    project_id, h.token, h.base_url, task_type="Requirement"), resource_id)
+                try:
+                    return _pick_one("requirements", client.get_tasks(
+                        project_id, h.token, h.base_url, task_type="Requirement"), resource_id)
+                except client.NotFound:
+                    # Not a requirement — maybe the same ID is a user story or task:
+                    # return it rather than "not found" (the agent wanted that item).
+                    return _typed(client.get_task(h.token, resource_id, h.base_url,
+                                                  project_id=project_id), resource_id)
             else:
                 raise ValueError(f"Unknown operation '{operation}' for requirements")
 
@@ -1798,6 +1846,9 @@ def register(mcp: FastMCP) -> None:
                     raise ValueError("resource_id (the test case's ID or display ID) is required to read test_actions")
                 try:
                     tc = client.get_test_case(h.token, tc_id, h.base_url)
+                except client.NotFound as exc:
+                    raise client.NotFound(f"{exc} — {resource} are read through their test case: pass "
+                                          "the test case's ID or display ID as resource_id") from exc
                 except ValueError as exc:
                     raise ValueError(f"{exc} — test_actions are read through their test case: pass the "
                                      "test case's ID or display ID as resource_id") from exc
@@ -1838,6 +1889,9 @@ def register(mcp: FastMCP) -> None:
                     raise ValueError("resource_id (the test case's ID or display ID) is required to read test_activities")
                 try:
                     tc = client.get_test_case(h.token, tc_id, h.base_url)
+                except client.NotFound as exc:
+                    raise client.NotFound(f"{exc} — {resource} are read through their test case: pass "
+                                          "the test case's ID or display ID as resource_id") from exc
                 except ValueError as exc:
                     raise ValueError(f"{exc} — test_activities are read through their test case: pass the "
                                      "test case's ID or display ID as resource_id") from exc
@@ -1902,6 +1956,9 @@ def register(mcp: FastMCP) -> None:
                     raise ValueError("resource_id (the test case's ID or display ID) is required to read test_case_links")
                 try:
                     tc = client.get_test_case(h.token, tc_id, h.base_url)
+                except client.NotFound as exc:
+                    raise client.NotFound(f"{exc} — {resource} are read through their test case: pass "
+                                          "the test case's ID or display ID as resource_id") from exc
                 except ValueError as exc:
                     raise ValueError(f"{exc} — test_case_links are read through their test case: pass the "
                                      "test case's ID or display ID as resource_id") from exc
