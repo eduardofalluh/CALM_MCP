@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import re
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -96,8 +98,8 @@ def test_requirement_get_not_found_is_an_answer_not_a_tool_error(calm):
 
 
 def test_requirement_get_by_display_id_needs_the_project(calm):
-    with pytest.raises(ValueError, match="project_id is required"):
-        calm(Ctx(), resource="requirements", operation="get", resource_id="3-60729")
+    _refused(calm(Ctx(), resource="requirements", operation="get", resource_id="3-60729"),
+             "project_id is required")
 
 
 def test_ambiguous_name_asks_for_the_id(calm):
@@ -202,9 +204,9 @@ def test_test_case_children_read_through_the_test_case(calm, resource, key):
 
 
 def test_test_case_children_wrong_id_explains_what_to_pass(calm):
-    with patch.object(client, "get_test_case", side_effect=ValueError("No test case with display ID 'act-1'.")), \
-         pytest.raises(ValueError, match="read through their test case"):
-        calm(Ctx(), resource="test_actions", operation="get", resource_id="act-1")
+    with patch.object(client, "get_test_case", side_effect=ValueError("No test case with display ID 'act-1'.")):
+        _refused(calm(Ctx(), resource="test_actions", operation="get", resource_id="act-1"),
+                 "read through their test case")
 
 
 # --------------------------------------------------------------------------- #
@@ -273,3 +275,10 @@ def test_writes_on_a_missing_item_still_fail(calm, monkeypatch):
 
 def test_not_found_is_still_a_value_error_for_existing_callers():
     assert issubclass(client.NotFound, ValueError) and issubclass(client.Ambiguous, ValueError)
+
+
+def _refused(out, match=""):
+    """A read the MCP can't run as asked: an answer saying why, not a tool error."""
+    assert isinstance(out, dict) and out.get("status") == "invalid_request", out
+    assert re.search(match, out["message"]), out["message"]
+    return out["message"]

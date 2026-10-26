@@ -20,6 +20,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import re
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -164,15 +166,17 @@ def test_requirement_create_folds_sub_status():
         assert kwargs["title"] == "Req A"
 
 
-def test_requirement_update_pins_type():
+def test_requirement_update_keeps_the_items_own_type():
+    # The item may be a user story reached through requirements: its type is
+    # never sent unless asked, and a status label resolves against its real type.
     fn = _fn()
     with patch("src.calm.client.update_task") as m:
         m.return_value = {"ID": "R1"}
         fn(Ctx(), resource="requirements", operation="update", resource_id="R1",
            data={"status": "Done"})
         _, kwargs = m.call_args
-        assert kwargs["task_type"] == "Requirement"
-        assert kwargs["task_id"] == "R1"
+        assert kwargs["task_type"] is None
+        assert kwargs["task_id"] == "R1" and kwargs["status"] == "Done"
 
 
 # --------------------------------------------------------------------------- #
@@ -848,3 +852,10 @@ def test_customization_get_reraises_non_auth_error():
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-q"]))
+
+
+def _refused(out, match=""):
+    """A read the MCP can't run as asked: an answer saying why, not a tool error."""
+    assert isinstance(out, dict) and out.get("status") == "invalid_request", out
+    assert re.search(match, out["message"]), out["message"]
+    return out["message"]

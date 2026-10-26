@@ -21,6 +21,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import re
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -340,8 +342,7 @@ def test_resource_get_routes_to_get_test_case():
 
 
 def test_resource_get_requires_resource_id():
-    with pytest.raises(ValueError, match="resource_id is required for get"):
-        _fn()(Ctx(), resource="test_cases", operation="get")
+    _refused(_fn()(Ctx(), resource="test_cases", operation="get"), "resource_id is required for get")
 
 
 def test_resource_list_test_cases_unchanged():
@@ -411,3 +412,10 @@ def test_test_plans_is_an_advertised_resource():
     resource_type = typing.get_type_hints(fn, globalns=vars(unified))["resource"]
     assert "test_plans" in typing.get_args(resource_type)
     assert "test_cases" in typing.get_args(resource_type)
+
+
+def _refused(out, match=""):
+    """A read the MCP can't run as asked: an answer saying why, not a tool error."""
+    assert isinstance(out, dict) and out.get("status") == "invalid_request", out
+    assert re.search(match, out["message"]), out["message"]
+    return out["message"]

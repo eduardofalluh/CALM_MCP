@@ -18,6 +18,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import re
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -84,9 +86,8 @@ class TestUnifiedToolTasks:
         _tool_fn()(mock_ctx, resource="tasks", operation="list", project_id="P001", task_type="User Story")
         mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type="User Story", tag=None)
 
-    def test_tasks_missing_project_id_raises_error(self, mock_ctx):
-        with pytest.raises(ValueError, match="project_id is required"):
-            _tool_fn()(mock_ctx, resource="tasks", operation="list")
+    def test_tasks_missing_project_id_is_answered(self, mock_ctx):
+        _refused(_tool_fn()(mock_ctx, resource="tasks", operation="list"), "project_id is required")
 
 
 class TestUnifiedToolRequirements:
@@ -178,8 +179,8 @@ class TestUnifiedToolOtherResources:
 
 class TestErrorHandling:
     def test_invalid_resource_type(self, mock_ctx):
-        with pytest.raises(ValueError, match="Unknown resource type"):
-            _tool_fn()(mock_ctx, resource="invalid_resource", operation="list")
+        _refused(_tool_fn()(mock_ctx, resource="invalid_resource", operation="list"),
+                 "Unknown resource type")
 
     def test_write_guard_blocks_create_when_disabled(self, mock_ctx, monkeypatch):
         """Create is now supported, but must be refused when CALM_ENABLE_WRITES is off."""
@@ -220,3 +221,10 @@ class TestPhase3Architecture:
 
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v", "--tb=short"]))
+
+
+def _refused(out, match=""):
+    """A read the MCP can't run as asked: an answer saying why, not a tool error."""
+    assert isinstance(out, dict) and out.get("status") == "invalid_request", out
+    assert re.search(match, out["message"]), out["message"]
+    return out["message"]

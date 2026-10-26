@@ -19,6 +19,7 @@ from typing import Any, Literal, Optional
 from fastmcp import Context, FastMCP
 
 from src.calm import client, http_retry, odata_service
+from src.calm.config import TenantNotConfiguredError
 from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
 from src.calm.tools.user_resolver import resolve_assignee
 
@@ -252,6 +253,256 @@ _TASK_ID_CALLS = {
 _TEST_CASE_ID_CALLS = {("test_cases", "update"), ("test_cases", "delete"), ("test_case_links", "create")}
 
 
+# --------------------------------------------------------------------------- #
+# Task / requirement writes: agents name the same field several ways. Map each
+# to the one name the code uses, resolve sprint / team / scope names to the IDs
+# the API needs, and report — never silently drop — anything not written.
+# --------------------------------------------------------------------------- #
+
+_TASK_WRITE_FIELDS = frozenset((
+    "title", "task_type", "status", "start_date", "due_date", "assignee_id", "description",
+    "priority_id", "external_id", "parent_id", "obsolete", "sub_status", "extra_fields",
+    "project_id", "timebox", "team", "scope", "approval_state",
+))
+_TASK_FIELD_ALIASES = {
+    "name": "title", "type": "task_type", "tasktype": "task_type",
+    "duedate": "due_date", "due": "due_date", "plannedcompletion": "due_date",
+    "plannedcompletiondate": "due_date", "startdate": "start_date",
+    "externalid": "external_id", "parentid": "parent_id", "parent": "parent_id",
+    "priority": "priority_id", "priorityid": "priority_id",
+    "assignee": "assignee_id", "assigneeid": "assignee_id", "assigneeemail": "assignee_id",
+    "assignedto": "assignee_id", "responsible": "assignee_id", "owner": "assignee_id",
+    "substatus": "sub_status", "projectid": "project_id",
+    "sprint": "timebox", "timeboxid": "timebox", "timeboxname": "timebox",
+    "responsibleteam": "team", "responsibleteamid": "team", "teamid": "team",
+    "scopeid": "scope",
+    "approvalstate": "approval_state", "approvalstatus": "approval_state", "approval": "approval_state",
+}
+# Other documented Tasks API fields, written as sent (camelCase) when given at
+# the top level of data instead of inside extra_fields.
+_TASK_API_FIELDS = frozenset(
+    ("storyPoints", "effort", "workstream", "involvedParties", "classificationId")
+    + tuple(f"customField{i}" for i in range(1, 21))
+)
+_NOT_WRITTEN_HINT = {
+    "tag": "set tags with resource='task_tags', operation='update', data={'tags': [...]}",
+    "comment": "add comments with resource='task_comments', operation='create'",
+}
+_NO_ASSIGNEE = frozenset(("", "unassigned", "none", "null", "nobody", "n/a", "tbd"))
+
+
+def _field_key(key: str) -> str:
+    return re.sub(r"[\s_\-]+", "", str(key)).lower()
+
+
+def _task_write_data(d: dict) -> tuple[dict, dict]:
+    """Task / requirement write ``data`` with every field under the name the code
+    uses -> (data, not_written). ``not_written`` maps each key that can't be written
+    to the reason; a key given twice with different values is refused."""
+    out: dict[str, Any] = {}
+    extra = dict(d.get("extra_fields") or {})
+    not_written: dict[str, str] = {}
+    for key, value in d.items():
+        if key == "extra_fields":
+            continue
+        name = key if key in _TASK_WRITE_FIELDS else _TASK_FIELD_ALIASES.get(_field_key(key))
+        if name is None and client._camel(key) in _TASK_API_FIELDS:
+            extra.setdefault(client._camel(key), value)
+            continue
+        if name is None:
+            word = _field_key(key)
+            hint = _NOT_WRITTEN_HINT.get(word) or _NOT_WRITTEN_HINT.get(word.rstrip("s"))
+            not_written[key] = hint or (
+                "not a task field this tool writes — supported: title, description, status, "
+                "priority, due_date, start_date, assignee, external_id, parent_id, timebox "
+                "(sprint), team, scope, approval_state, task_type, sub_status, obsolete; any other CALM task "
+                "field goes in extra_fields under its API name")
+            continue
+        if name in out and out[name] != value and value is not None:
+            raise ValueError(f"data gives {name} twice with different values ({out[name]!r} and {value!r})")
+        if value is not None or name not in out:
+            out[name] = value
+    if extra:
+        out["extra_fields"] = extra
+    return out, not_written
+
+
+def _task_project(task_id: Any, h: Any) -> Any:
+    """The project a task (by UUID) belongs to, or None if it can't be read."""
+    return _task_raw(task_id, h).get("projectId") or None
+
+
+def _project_item_id(kind: str, value: Any, rows: list) -> Any:
+    """The ID of the project's sprint / team / scope named (or identified) by
+    ``value`` — exact ID or name, case and spacing ignored. Never guessed."""
+    if client._UUID_RE.match(str(value).strip()):
+        return str(value).strip()
+    want = " ".join(str(value).split()).lower()
+    hits = [r for r in rows if isinstance(r, dict) and " ".join(str(r.get("Name") or "").split()).lower() == want]
+    if len(hits) == 1:
+        return hits[0]["ID"]
+    names = sorted({str(r.get("Name")) for r in rows if isinstance(r, dict) and r.get("Name")})
+    if hits:
+        raise ValueError(f"{len(hits)} {kind}s in this project are named '{value}' — pass its ID: "
+                         + ", ".join(str(r["ID"]) for r in hits[:10]))
+    raise ValueError(f"No {kind} named '{value}' in this project. {kind.capitalize()}s: {names[:40]}")
+
+
+def _resolve_task_refs(d: dict, project_id: Any, h: Any) -> dict:
+    """Sprint / team / scope given by name or ID -> the IDs in extra_fields."""
+    wanted = {k: d[k] for k in ("timebox", "team", "scope") if d.get(k) not in (None, "")}
+    if not wanted:
+        return {k: v for k, v in d.items() if k not in ("timebox", "team", "scope")}
+    if not project_id:
+        raise ValueError(f"project_id is needed to set {', '.join(wanted)} by name")
+    lookups = {
+        "timebox": ("sprint (timebox)", "timeboxId", lambda: client.get_timeboxes(project_id, h.token, h.base_url)),
+        "team": ("team", "responsibleTeamId", lambda: client.get_project_teams(project_id, h.token, h.base_url)),
+        "scope": ("scope", "scopeId", lambda: [s for s in client.get_scopes(h.token, h.base_url)
+                                               if s.get("Project ID") == project_id]),
+    }
+    extra = dict(d.get("extra_fields") or {})
+    for key, value in wanted.items():
+        kind, api_field, read = lookups[key]
+        rows = [] if client._UUID_RE.match(str(value).strip()) else read()
+        extra[api_field] = _project_item_id(kind, value, rows)
+    out = {k: v for k, v in d.items() if k not in ("timebox", "team", "scope")}
+    out["extra_fields"] = extra
+    return out
+
+
+def _assignee(value: Any, project_id: Any, h: Any) -> Any:
+    """The Responsible to send: an email / name resolved to the project member's
+    user ID (CALM refuses an email); unchanged when no single member matches."""
+    if not project_id:
+        return value
+    return resolve_assignee(user_identifier=str(value), project_id=project_id,
+                            token=h.token, base_url=h.base_url)
+
+
+def _task_extra(d: dict, updating: bool = False) -> dict | None:
+    """extra_fields for a task write: sub_status as subStatus, approval_state as
+    approvalState, and on an update a sub-task's parent (create takes it as its
+    own argument)."""
+    extra = dict(d.get("extra_fields") or {})
+    if d.get("sub_status") is not None:
+        extra["subStatus"] = d["sub_status"]
+    if d.get("approval_state") is not None:
+        extra["approvalState"] = d["approval_state"]
+    if updating and d.get("parent_id"):
+        extra["parentId"] = d["parent_id"]
+    return extra or None
+
+
+def _task_raw(task_id: Any, h: Any) -> dict:
+    """The task as the API stores it (by UUID), or {} if it can't be read."""
+    if not task_id or not client._UUID_RE.match(str(task_id)):
+        return {}
+    try:
+        raw = client._get(f"{client._base_url(h.base_url)}/api/calm-tasks/v1/tasks/{task_id}", h.token)
+    except Exception:  # noqa: BLE001 — callers fall back to what they were given
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+# SAP's answer when the Responsible isn't a member of the project it can assign.
+_ASSIGNEE_REFUSED = re.compile(r"processor|assignee", re.I)
+
+
+def _save_task(write, kwargs: dict, not_written: dict, asked: Any) -> Any:
+    """Write a task. If SAP refuses only the Responsible (someone who isn't a
+    member of the project, or no CALM user at all), save the item without one
+    and say so — a person that can't be assigned never blocks the write."""
+    try:
+        return write(**kwargs)
+    except http_retry.WriteUnconfirmed:
+        raise
+    except RuntimeError as exc:
+        text = str(exc)
+        if not (kwargs.get("assignee_id") and "HTTP 400" in text and _ASSIGNEE_REFUSED.search(text)):
+            raise
+    note = (f"'{asked}' can't be made Responsible here — CALM only accepts members of this "
+            "project (SAP: invalid processor ID), and its API can't add members. Saved without "
+            "a Responsible; name the person in the attribution comment / description instead.")
+    try:
+        result = write(**{**kwargs, "assignee_id": None})
+    except ValueError as exc:
+        if "No fields to update" in str(exc):
+            raise ValueError(note.split(" Saved without")[0] + " Nothing else was asked, so nothing was changed.") from None
+        raise
+    not_written["assignee"] = note
+    return result
+
+
+def _keep_dates(result: Any, kwargs: dict, h: Any, user_email: Any, not_written: dict) -> Any:
+    """Make the dates sent stick. SAP re-derives a user story's due date when one
+    write also changes its sprint (live: sprint + due date together -> no due
+    date), so a date SAP didn't keep is sent again on its own, once (setting a
+    date is idempotent). Still not kept -> reported, never shown as saved."""
+    if not isinstance(result, dict) or not result.get("ID"):
+        return result
+    again_args = {}
+    for arg, field in (("due_date", "DueDate"), ("start_date", "StartDate")):
+        sent = kwargs.get(arg)
+        if sent in (None, "") or field not in result:
+            continue
+        try:
+            sent = client.api_date(sent, arg)
+        except ValueError:
+            continue
+        if result.get(field) != sent:
+            again_args[arg] = sent
+    if not again_args:
+        return result
+    try:
+        again = client.update_task(h.token, result["ID"], base_url=h.base_url, user_email=user_email,
+                                   **again_args)
+    except Exception as exc:  # noqa: BLE001 — the item is saved; report, don't fail
+        for arg in again_args:
+            not_written[arg] = f"saved, but SAP did not keep this date and sending it again failed ({exc})"
+        return result
+    fields = {"due_date": "DueDate", "start_date": "StartDate"}
+    for arg, sent in again_args.items():
+        if not isinstance(again, dict) or again.get(fields[arg]) != sent:
+            not_written[arg] = ("SAP did not keep this date (it re-derives dates from the sprint); "
+                                "set it again on its own")
+    return {**result, **again} if isinstance(again, dict) else result
+
+
+def _link_under(result: Any, parent_id: Any, h: Any, user_email: Any, not_written: dict) -> Any:
+    """Link an item under its parent the way CALM does for anything but a
+    sub-task: a relation on the parent (a requirement's user stories and tasks).
+    The item is already saved, so a failure here is reported, never raised."""
+    child = result.get("ID") if isinstance(result, dict) else None
+    how = ("link it with calm_resource(resource='task_relations', operation='create', "
+           f"resource_id='{parent_id}', data={{'relation_task_id': '<the item ID>'}})")
+    if not child:
+        not_written["parent_id"] = f"saved, but its ID wasn't returned so it wasn't linked — {how}"
+        return result
+    try:
+        existing = client._get(f"{client._base_url(h.base_url)}/api/calm-tasks/v1/tasks/{parent_id}/relations",
+                               h.token)
+        if not any(isinstance(r, dict) and r.get("relationTaskId") == child for r in existing or []):
+            client.create_task_relation(h.token, parent_id, child, "0", base_url=h.base_url, user_email=user_email)
+    except Exception as exc:  # noqa: BLE001 — the item exists; report, don't fail
+        not_written["parent_id"] = f"saved, but linking it under {parent_id} failed ({exc}) — {how}"
+        return result
+    return {**result, "Linked Under": parent_id}
+
+
+def _with_not_written(result: Any, not_written: dict) -> Any:
+    """Add what was left out of a write to its result, so nothing goes missing silently."""
+    if not not_written or not isinstance(result, dict):
+        return result
+    return {**result, "Not Written": not_written}
+
+
+_COMMENT_TEXT_KEYS = ("text", "content", "comment", "body", "message", "note")
+# Resources whose items are named by "title", and those named by "name".
+_TITLED = frozenset(("tasks", "requirements", "test_cases", "test_actions", "test_activities", "documents"))
+_NAMED = frozenset(("projects", "business_processes", "solution_processes", "scopes", "features", "timeboxes"))
+
+
 def _typed(row: dict, ident: Any) -> dict:
     """A task returned for a requirement lookup, with a note when it is another type."""
     if isinstance(row, dict) and row.get("Type") not in (None, "Requirement"):
@@ -274,6 +525,36 @@ def _read_answer(resource: str, operation: str, resource_id: Any, exc: Exception
     else:
         out["hint"] = hint
     return out
+
+
+_HTTP_STATUS = re.compile(r"\bHTTP (\d{3})\b")
+
+
+def _unanswerable_read(resource: str, operation: str, resource_id: Any, exc: Exception) -> dict | None:
+    """A read that can't run as asked — a missing or invalid input, or SAP
+    answering 400 / 403 / 404 — as an answer saying so, instead of a tool error.
+    None for faults the agent can't fix by asking differently (SAP down, a
+    timeout, broken credentials): those still fail."""
+    if isinstance(exc, TenantNotConfiguredError):
+        return None
+    if isinstance(exc, ValueError):
+        return {"status": "invalid_request", "found": False, "resource": resource,
+                "operation": operation, "requested": resource_id, "message": str(exc)}
+    match = _HTTP_STATUS.search(str(exc)) if isinstance(exc, RuntimeError) else None
+    code = int(match.group(1)) if match else None
+    if code == 404:
+        return _read_answer(resource, operation, resource_id, client.NotFound(
+            f"No {resource} found for '{resource_id}'" if resource_id else f"SAP found no {resource} here"))
+    if code in (400, 422):
+        return {"status": "invalid_request", "found": False, "resource": resource,
+                "operation": operation, "requested": resource_id,
+                "message": f"SAP Cloud ALM rejected this read as invalid: {exc}"}
+    if code == 403:
+        return {"status": "unavailable", "supported": False, "resource": resource,
+                "operation": operation,
+                "message": (f"The SAP Cloud ALM service key is not authorized for this read "
+                            f"(HTTP 403) — its scopes don't cover {resource}. {exc}")}
+    return None
 
 
 def _filter_report(unmatched: dict) -> str:
@@ -846,8 +1127,10 @@ def register(mcp: FastMCP) -> None:
         by a `resource` above, use the low-level escape hatches calm_api_read /
         calm_api_write / calm_api_delete (same CALM tenant, raw API paths).
         """
+        # Credentials / tenant first: a fault there is a real failure, never an answer.
+        h = get_calm_headers(ctx)
         try:
-            return _calm_resource(ctx, resource, operation, project_id, resource_id, task_type,
+            return _calm_resource(h, resource, operation, project_id, resource_id, task_type,
                                   data, user_email)
         except (client.NotFound, client.Ambiguous) as exc:
             # A read that finds nothing (or several) is an answer, not a fault;
@@ -855,18 +1138,67 @@ def register(mcp: FastMCP) -> None:
             if operation in ("list", "get"):
                 return _read_answer(resource, operation, resource_id, exc)
             raise
+        except (ValueError, RuntimeError) as exc:
+            # So is a read that can't run as asked (an input missing or invalid,
+            # SAP answering 400/403/404): the answer says how to ask instead.
+            answer = (_unanswerable_read(resource, operation, resource_id, exc)
+                      if operation in ("list", "get") else None)
+            if answer is None:
+                raise
+            return answer
 
-    def _calm_resource(ctx, resource, operation, project_id, resource_id, task_type, data, user_email):
-        h = get_calm_headers(ctx)
+    def _calm_resource(h, resource, operation, project_id, resource_id, task_type, data, user_email):
         d = parse_data(data)
-        data = d or None
         # Prefer an explicitly-passed acting user, else the header-derived email.
         acting_email = user_email or h.user_email
+
+        # The item's ID inside data (data.id) instead of resource_id.
+        if not resource_id and operation in ("get", "update", "delete"):
+            for key in ("id", "resource_id") + (("task_id", "requirement_id")
+                                                if resource in ("tasks", "requirements") else ()):
+                if d.get(key):
+                    resource_id = d[key]
+                    d = {k: v for k, v in d.items() if k != key}
+                    break
 
         # Accept a project name (or project_id inside data) as well as its ID.
         project_id = _resolve_project_id(project_id, h)
         if d.get("project_id"):
             d = {**d, "project_id": _resolve_project_id(d["project_id"], h)}
+        project_id = project_id or d.get("project_id")
+
+        # Title / name: whichever word the agent used for the item's name.
+        if operation in ("create", "update"):
+            if resource in _TITLED and not d.get("title") and d.get("name"):
+                d = {**{k: v for k, v in d.items() if k != "name"}, "title": d["name"]}
+            elif resource in _NAMED and not d.get("name") and d.get("title"):
+                d = {**{k: v for k, v in d.items() if k != "title"}, "name": d["title"]}
+        data = d or None
+        # Task / requirement writes: every field under the name the code uses.
+        task_write = resource in ("tasks", "requirements") and operation in ("create", "update")
+        not_written: dict = {}
+        link_under = asked = None
+
+        def _finish(write, **kwargs):
+            """Save a task / requirement, link it under its parent, and report
+            anything that could not be written."""
+            result = _save_task(write, kwargs, not_written, asked)
+            result = _keep_dates(result, kwargs, h, acting_email, not_written)
+            if link_under:
+                result = _link_under(result, link_under, h, acting_email, not_written)
+            return _with_not_written(result, not_written)
+        if task_write:
+            ensure_writes_enabled()
+            d, not_written = _task_write_data(d)
+            if operation == "update" and not any(
+                    v is not None for k, v in d.items() if k != "project_id"):
+                raise ValueError(
+                    "Nothing to update: none of the data keys is a field this tool writes. "
+                    + "; ".join(f"{k}: {why}" for k, why in not_written.items())
+                    if not_written else "data is required for update operation (the fields to change)")
+            if resource == "tasks" and operation == "create" and not d.get("task_type") and task_type:
+                d = {**d, "task_type": task_type}  # the task_type argument, not repeated in data
+
         # Writes may name a task / test case by display ID ("3-60729",
         # "8-1-1380"): resolve it to the UUID the API needs, once, up front.
         if (resource, operation) in _TASK_ID_CALLS | _TEST_CASE_ID_CALLS:
@@ -885,6 +1217,31 @@ def register(mcp: FastMCP) -> None:
             if resource == "test_case_links" and d.get("requirement_id"):
                 d = {**d, "requirement_id": _task_uuid(d["requirement_id"], task_project, h,
                                                        required=False)}
+        if task_write:
+            # The item's own project (an update may come without one), for the
+            # parent / sprint / team / scope / assignee lookups below.
+            asked = d.get("assignee_id")
+            if asked is not None and str(asked).strip().lower() in _NO_ASSIGNEE:
+                # "Unassigned": leave it out of a create; clear it on an update.
+                d = {k: v for k, v in d.items() if k != "assignee_id"}
+                if operation == "update":
+                    d["extra_fields"] = {**(d.get("extra_fields") or {}), "assigneeId": None}
+                asked = None
+            needs_project = asked is not None or any(
+                d.get(k) not in (None, "") for k in ("timebox", "team", "scope", "parent_id"))
+            item_project = project_id or (_task_project(resource_id, h)
+                                          if operation == "update" and needs_project else None)
+            if d.get("parent_id"):
+                d = {**d, "parent_id": _task_uuid(d["parent_id"], item_project, h, required=False)}
+                # Only a sub-task takes a parent ID; anything else is linked
+                # under its parent by a relation once it is saved.
+                kind = (d.get("task_type") or ("Requirement" if resource == "requirements" else None)
+                        if operation == "create" else d.get("task_type") or _task_raw(resource_id, h).get("type"))
+                if not kind or client.resolve_task_type_code(kind) != "CALMST":
+                    link_under, d = d["parent_id"], {k: v for k, v in d.items() if k != "parent_id"}
+            d = _resolve_task_refs(d, item_project, h)
+            if asked is not None:
+                d = {**d, "assignee_id": _assignee(asked, item_project, h)}
 
         # Route to appropriate client function based on resource type
         if resource == "projects":
@@ -999,21 +1356,13 @@ def register(mcp: FastMCP) -> None:
             elif operation == "create":
                 ensure_writes_enabled()
                 if not project_id:
-                    raise ValueError("project_id is required for tasks")
+                    raise ValueError("project_id is required for tasks (the project's ID or name)")
                 if not d.get("title"):
                     raise ValueError("data must include 'title' for create operation")
                 if not d.get("task_type"):
-                    raise ValueError("data must include 'task_type' for create operation")
-                # Smart assignee resolution (email/name/UUID -> assignable ID).
-                assignee = d.get("assignee_id")
-                if assignee:
-                    assignee = resolve_assignee(
-                        user_identifier=assignee,
-                        project_id=project_id,
-                        token=h.token,
-                        base_url=h.base_url,
-                    )
-                return client.create_task(
+                    raise ValueError("task_type is required to create a task — e.g. 'Project Task', "
+                                     "'User Story' or 'Sub-task' (the task_type argument, or in data)")
+                return _finish(client.create_task,
                     token=h.token,
                     project_id=project_id,
                     title=d.get("title"),
@@ -1021,12 +1370,12 @@ def register(mcp: FastMCP) -> None:
                     status=d.get("status"),
                     start_date=d.get("start_date"),
                     due_date=d.get("due_date"),
-                    assignee_id=assignee,
+                    assignee_id=d.get("assignee_id"),
                     description=d.get("description"),
                     priority_id=d.get("priority_id"),
                     external_id=d.get("external_id"),
                     parent_id=d.get("parent_id"),
-                    extra_fields=d.get("extra_fields"),
+                    extra_fields=_task_extra(d),
                     base_url=h.base_url,
                     user_email=acting_email,
                 )
@@ -1034,29 +1383,7 @@ def register(mcp: FastMCP) -> None:
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
-                if not data:
-                    raise ValueError("data is required for update operation")
-                # Smart assignee resolution — needs the task's project to look up users.
-                assignee = d.get("assignee_id")
-                if assignee:
-                    proj_id = project_id or (d.get("extra_fields") or {}).get("projectId")
-                    if not proj_id:
-                        try:
-                            task_data = client._get(
-                                f"{client._base_url(h.base_url)}/api/calm-tasks/v1/tasks/{resource_id}",
-                                h.token,
-                            )
-                            proj_id = task_data.get("projectId")
-                        except Exception:
-                            pass  # fall back to the raw identifier
-                    if proj_id:
-                        assignee = resolve_assignee(
-                            user_identifier=assignee,
-                            project_id=proj_id,
-                            token=h.token,
-                            base_url=h.base_url,
-                        )
-                return client.update_task(
+                return _finish(client.update_task,
                     token=h.token,
                     task_id=resource_id,
                     title=d.get("title"),
@@ -1064,12 +1391,12 @@ def register(mcp: FastMCP) -> None:
                     status=d.get("status"),
                     start_date=d.get("start_date"),
                     due_date=d.get("due_date"),
-                    assignee_id=assignee,
+                    assignee_id=d.get("assignee_id"),
                     description=d.get("description"),
                     priority_id=d.get("priority_id"),
                     external_id=d.get("external_id"),
                     obsolete=d.get("obsolete"),
-                    extra_fields=d.get("extra_fields"),
+                    extra_fields=_task_extra(d, updating=True),
                     base_url=h.base_url,
                     user_email=acting_email,
                 )
@@ -1096,25 +1423,23 @@ def register(mcp: FastMCP) -> None:
             elif operation == "create":
                 ensure_writes_enabled()
                 if not project_id:
-                    raise ValueError("project_id is required for requirements")
+                    raise ValueError("project_id is required for requirements (the project's ID or name)")
                 if not d.get("title"):
                     raise ValueError("data must include 'title' for create operation")
-                # sub_status is folded into extra_fields as subStatus (as the old tool did).
-                extra = dict(d.get("extra_fields") or {})
-                if d.get("sub_status") is not None:
-                    extra["subStatus"] = d.get("sub_status")
-                return client.create_task(
+                return _finish(client.create_task,
                     token=h.token,
                     project_id=project_id,
                     title=d.get("title"),
-                    task_type="Requirement",
+                    task_type=d.get("task_type") or "Requirement",
                     status=d.get("status"),
                     start_date=d.get("start_date"),
                     due_date=d.get("due_date"),
                     assignee_id=d.get("assignee_id"),
                     description=d.get("description"),
                     priority_id=d.get("priority_id"),
-                    extra_fields=extra or None,
+                    external_id=d.get("external_id"),
+                    parent_id=d.get("parent_id"),
+                    extra_fields=_task_extra(d),
                     base_url=h.base_url,
                     user_email=acting_email,
                 )
@@ -1122,15 +1447,13 @@ def register(mcp: FastMCP) -> None:
                 ensure_writes_enabled()
                 if not resource_id:
                     raise ValueError("resource_id is required for update operation")
-                if not data:
-                    raise ValueError("data is required for update operation")
-                extra = dict(d.get("extra_fields") or {})
-                if d.get("sub_status") is not None:
-                    extra["subStatus"] = d.get("sub_status")
-                return client.update_task(
+                # The type is only sent when the agent asks to change it: the item
+                # may be a user story or task reached through requirements, and a
+                # status label resolves against the item's real type.
+                return _finish(client.update_task,
                     token=h.token,
                     task_id=resource_id,
-                    task_type="Requirement",
+                    task_type=d.get("task_type"),
                     title=d.get("title"),
                     status=d.get("status"),
                     start_date=d.get("start_date"),
@@ -1138,8 +1461,9 @@ def register(mcp: FastMCP) -> None:
                     assignee_id=d.get("assignee_id"),
                     description=d.get("description"),
                     priority_id=d.get("priority_id"),
+                    external_id=d.get("external_id"),
                     obsolete=d.get("obsolete"),
-                    extra_fields=extra or None,
+                    extra_fields=_task_extra(d, updating=True),
                     base_url=h.base_url,
                     user_email=acting_email,
                 )
@@ -1730,15 +2054,20 @@ def register(mcp: FastMCP) -> None:
                 raise ValueError(f"Operation '{operation}' not supported for task_relations (use create/delete)")
 
         elif resource == "task_comments":
+            # SAP stores a comment's words only in "text": any other key would
+            # post an empty comment, so take the words from whichever key was used.
+            text = next((d[k] for k in _COMMENT_TEXT_KEYS if d.get(k) not in (None, "")), None)
             if operation == "create":
                 ensure_writes_enabled()
                 task_id = resource_id or d.get("task_id")
                 if not task_id:
                     raise ValueError("resource_id (task_id) is required to create a task comment")
+                if text is None and not d.get("extra_fields"):
+                    raise ValueError("data must include 'text' — the comment's words (nothing was posted)")
                 return client.create_task_comment(
                     token=h.token,
                     task_id=task_id,
-                    text=d.get("text"),
+                    text=text,
                     extra_fields=d.get("extra_fields"),
                     base_url=h.base_url,
                     user_email=acting_email,
@@ -1750,7 +2079,7 @@ def register(mcp: FastMCP) -> None:
                 return client.update_task_comment(
                     token=h.token,
                     comment_id=resource_id,
-                    text=d.get("text"),
+                    text=text,
                     extra_fields=d.get("extra_fields"),
                     base_url=h.base_url,
                     user_email=acting_email,

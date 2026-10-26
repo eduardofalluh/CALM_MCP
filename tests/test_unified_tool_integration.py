@@ -1,3 +1,4 @@
+import re
 #!/usr/bin/env python3
 """Quick integration smoke test for the unified calm_resource tool.
 
@@ -72,21 +73,13 @@ def test_unified_tool_error_handling():
     print("Test 3: Error handling...")
     _set_creds()
 
-    # Missing required parameter
-    try:
-        _tool_fn()(Ctx(), resource="tasks", operation="list")
-        assert False, "Should have raised ValueError"
-    except ValueError as e:
-        assert "project_id is required" in str(e)
-        print("  ✓ Missing parameter error works")
+    # A read missing a required parameter answers what is missing (no tool error)
+    _refused(_tool_fn()(Ctx(), resource="tasks", operation="list"), "project_id is required")
+    print("  ✓ Missing parameter is answered")
 
     # Invalid resource
-    try:
-        _tool_fn()(Ctx(), resource="invalid_resource", operation="list")
-        assert False, "Should have raised ValueError"
-    except ValueError as e:
-        assert "Unknown resource type" in str(e)
-        print("  ✓ Invalid resource error works")
+    _refused(_tool_fn()(Ctx(), resource="invalid_resource", operation="list"), "Unknown resource type")
+    print("  ✓ Invalid resource is answered")
 
     # Write guard: create is supported but blocked when writes are disabled
     os.environ["CALM_ENABLE_WRITES"] = ""
@@ -161,3 +154,10 @@ def main():
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+def _refused(out, match=""):
+    """A read the MCP can't run as asked: an answer saying why, not a tool error."""
+    assert isinstance(out, dict) and out.get("status") == "invalid_request", out
+    assert re.search(match, out["message"]), out["message"]
+    return out["message"]

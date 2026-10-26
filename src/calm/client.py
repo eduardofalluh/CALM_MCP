@@ -15,7 +15,7 @@ import logging
 import re
 import time
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
@@ -159,35 +159,125 @@ STATUS_CODE_BY_TYPE = {
 _KNOWN_STATUS_CODES = set(TASK_STATUS_MAP)
 
 
+def _squash(value: Any) -> str:
+    """"User-Story", "user_story", "UserStory" -> "userstory"."""
+    return re.sub(r"[\s_\-/]+", "", str(value)).lower()
+
+
+# What people (and agents) call each type, besides its CALM label.
+_TYPE_WORDS = {
+    "task": "CALMTASK", "subtask": "CALMST", "story": "CALMUS", "req": "CALMREQU",
+    "bug": "CALMDEF", "qgate": "CALMQGATE", "checklist": "CALMCHKLI", "roadmap": "CALMTMPL",
+}
+_TYPE_BY_WORD = {**{_squash(label): code for code, label in TASK_TYPE_MAP.items()}, **_TYPE_WORDS}
+
+
 def resolve_task_type_code(value: str) -> str:
-    """Accept a human label ("User Story") or a raw code ("CALMUS") and return the code."""
-    if value in TASK_TYPE_MAP:  # already a raw code
-        return value
-    code = TASK_TYPE_REVERSE_MAP.get(value.strip().lower())
-    if not code:
-        raise ValueError(
-            f"Unknown task type '{value}'. Use one of: "
-            f"{', '.join(sorted(TASK_TYPE_MAP.values()))} (or a raw CALM code)."
-        )
-    return code
+    """Accept a human label ("User Story"), an everyday name ("Task", "Subtask",
+    "Story", "Bug"; singular or plural, any case or separator) or a raw code
+    ("CALMUS") and return the code."""
+    if str(value).strip().upper() in TASK_TYPE_MAP:  # already a raw code
+        return str(value).strip().upper()
+    word = _squash(value)
+    for candidate in (word, word[:-1] if word.endswith("s") else None,
+                      word[:-3] + "y" if word.endswith("ies") else None):
+        if candidate and candidate in _TYPE_BY_WORD:
+            return _TYPE_BY_WORD[candidate]
+    raise ValueError(
+        f"Unknown task type '{value}'. Use one of: "
+        f"{', '.join(sorted(TASK_TYPE_MAP.values()))} (or a raw CALM code)."
+    )
+
+
+# Everyday words for each status label.
+_STATUS_WORDS = {
+    "open": ("new", "todo", "notstarted"),
+    "in progress": ("inprogress", "wip", "ongoing", "started", "inwork"),
+    "done": ("closed", "complete", "completed", "resolved", "finished"),
+    "not relevant": ("notrelevant", "na", "notapplicable", "irrelevant"),
+}
 
 
 def resolve_status_code(value: str, type_code: str) -> str:
-    """Resolve a human status label to the type-specific CALM code.
+    """Resolve a human status label ("In Progress", or an everyday word such as
+    "Closed" / "Completed" / "To Do") to the type-specific CALM code.
 
     A raw CALM status code is accepted and returned unchanged.
     """
-    if value in _KNOWN_STATUS_CODES:  # already a raw code
-        return value
+    if str(value).strip().upper() in _KNOWN_STATUS_CODES:  # already a raw code
+        return str(value).strip().upper()
     by_type = STATUS_CODE_BY_TYPE.get(type_code, {})
-    code = by_type.get(value.strip().lower())
-    if not code:
+    word = _squash(value)
+    label = next((lbl for lbl in by_type
+                  if word == _squash(lbl) or word in _STATUS_WORDS.get(lbl, ())), None)
+    if not label:
         allowed = ", ".join(sorted(by_type)) or "(none for this type)"
         raise ValueError(
             f"Unknown status '{value}' for task type '{type_code}'. "
             f"Allowed labels: {allowed} (or a raw CALM code)."
         )
+    return by_type[label]
+
+
+def resolve_priority(value: Any) -> Any:
+    """A task priority as CALM's priorityId: a label ("High") becomes its code
+    (20); a number, or a number sent as text, is sent as that number."""
+    if isinstance(value, bool):
+        raise ValueError(f"Unknown priority {value!r}. Use Very High, High, Medium or Low (or 10/20/30/40).")
+    if isinstance(value, (int, float)):
+        return int(value) if float(value).is_integer() else value
+    text = " ".join(str(value).split())
+    if text.isdigit():
+        return int(text)
+    code = TESTCASE_PRIORITY_REVERSE_MAP.get(text.lower()) or {
+        "critical": "10", "veryhigh": "10", "normal": "30"}.get(_squash(text))
+    if not code:
+        raise ValueError(f"Unknown priority {value!r}. Use Very High, High, Medium or Low (or 10/20/30/40).")
+    return int(code)
+
+
+_APPROVAL_BY_WORD = {_squash(label): code for code, label in TASK_APPROVAL_STATE_MAP.items()}
+
+
+def resolve_approval_state(value: Any) -> str:
+    """An approval state as CALM's code: "Ready for Approval" -> READY_4_APPR.
+    CALM has four; anything else is refused before it reaches SAP."""
+    text = str(value).strip()
+    if text.upper() in TASK_APPROVAL_STATE_MAP:
+        return text.upper()
+    code = _APPROVAL_BY_WORD.get(_squash(text))
+    if not code:
+        raise ValueError(
+            f"Unknown approval state {value!r}. CALM has: "
+            f"{', '.join(TASK_APPROVAL_STATE_MAP.values())} (or codes {', '.join(TASK_APPROVAL_STATE_MAP)})."
+        )
     return code
+
+
+_DATE_PREFIX = re.compile(r"^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})(?:[T ].*)?$")
+_DATE_FORMATS = ("%d %B %Y", "%d %b %Y", "%B %d, %Y", "%b %d, %Y", "%B %d %Y", "%b %d %Y")
+
+
+def api_date(value: Any, field: str) -> Any:
+    """A task date the way the Tasks API takes it (2026-12-31). Accepts that,
+    a datetime ("2026-12-31T00:00:00Z" — its date is kept), 2026/12/31, and
+    month-name dates ("31 December 2026", "Dec 31, 2026"). An ambiguous date like
+    12/11/2026 is refused rather than guessed. Empty values pass through."""
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return value
+    text = " ".join(str(value).split())
+    match = _DATE_PREFIX.match(text)
+    try:
+        if match:
+            return date(*(int(part) for part in match.groups())).isoformat()
+        for fmt in _DATE_FORMATS:
+            try:
+                return datetime.strptime(text, fmt).date().isoformat()
+            except ValueError:
+                continue
+    except ValueError:
+        pass
+    raise ValueError(f"{field} must be a date like 2026-12-31 (got {value!r})")
 
 
 TESTCASE_PRIORITY_REVERSE_MAP = {label.lower(): code for code, label in TESTCASE_PRIORITY_MAP.items()}
@@ -2079,8 +2169,9 @@ def create_task(
 ) -> dict:
     """Create a task in a Cloud ALM project. Returns the created task, formatted.
 
-    `assignee_id` is the assignee's email address. `priority_id` is numeric
-    (10/20/30/40 = Very High/High/Medium/Low). `parent_id` links a sub-task to
+    `assignee_id` is the assignee's email address. `priority_id` is 10/20/30/40
+    or its label (Very High/High/Medium/Low); dates are YYYY-MM-DD (a datetime or
+    month-name date is converted). `parent_id` links a sub-task to
     its parent. `extra_fields` merges any other documented task field
     (e.g. subStatus, scopeId, storyPoints, effort, workstream, involvedParties,
     classificationId, customField1..20) — used for the long tail not exposed as
@@ -2095,21 +2186,23 @@ def create_task(
     if status is not None:
         body["status"] = resolve_status_code(status, type_code)
     if start_date is not None:
-        body["startDate"] = start_date
+        body["startDate"] = api_date(start_date, "start_date")
     if due_date is not None:
-        body["dueDate"] = due_date
+        body["dueDate"] = api_date(due_date, "due_date")
     if assignee_id is not None:
         body["assigneeId"] = assignee_id
     if description is not None:
         body["description"] = description
     if priority_id is not None:
-        body["priorityId"] = priority_id
+        body["priorityId"] = resolve_priority(priority_id)
     if external_id is not None:
         body["externalId"] = external_id
     if parent_id is not None:
         body["parentId"] = parent_id
     if extra_fields:
         body.update(_api_field_names(extra_fields))
+    if body.get("approvalState") is not None:
+        body["approvalState"] = resolve_approval_state(body["approvalState"])
 
     base = _base_url(base_url)
     url = f"{base}/api/calm-tasks/v1/tasks"
@@ -2170,21 +2263,23 @@ def update_task(
                 "auto-detect the task's type); or pass a raw CALM status code."
             )
     if start_date is not None:
-        body["startDate"] = start_date
+        body["startDate"] = api_date(start_date, "start_date")
     if due_date is not None:
-        body["dueDate"] = due_date
+        body["dueDate"] = api_date(due_date, "due_date")
     if assignee_id is not None:
         body["assigneeId"] = assignee_id
     if description is not None:
         body["description"] = description
     if priority_id is not None:
-        body["priorityId"] = priority_id
+        body["priorityId"] = resolve_priority(priority_id)
     if external_id is not None:
         body["externalId"] = external_id
     if obsolete is not None:
         body["obsolete"] = obsolete
     if extra_fields:
         body.update(_api_field_names(extra_fields))
+    if body.get("approvalState") is not None:
+        body["approvalState"] = resolve_approval_state(body["approvalState"])
 
     if not body:
         raise ValueError("No fields to update — provide at least one field.")

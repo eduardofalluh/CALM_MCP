@@ -438,9 +438,20 @@ async def main() -> int:
                   and found.get("Tasks") == [{"ID": "K1", "Title": "Task B"}], f"got {found}")
             res = await _call(session, "tasks", "list", project_id="P001",
                               data={"search": "task b", "status": "Open"})
-            text = res.content[0].text if res.content else ""
-            check("tasks list refuses an unknown data key instead of listing everything",
-                  res.is_error is True and "does not support" in text, f"got {text[:160]}")
+            refused = _payload(res)
+            check("tasks list answers an unknown data key (no tool error, nothing listed)",
+                  res.is_error is not True and isinstance(refused, dict)
+                  and refused.get("status") == "invalid_request"
+                  and "does not support" in refused.get("message", ""), f"got {str(refused)[:160]}")
+            res = await _call(session, "requirements", "list")
+            missing = _payload(res)
+            check("a read missing project_id answers what is missing (no tool error)",
+                  res.is_error is not True and missing.get("status") == "invalid_request"
+                  and "project_id is required" in missing.get("message", ""), f"got {str(missing)[:160]}")
+            res = await _call(session, "tasks", "list", project_id="P001", task_type="Task")
+            check("tasks list takes an everyday type name ('Task')",
+                  res.is_error is not True and [t.get("ID") for t in _list(res)] == ["K1"],
+                  f"got {str(_payload(res))[:160]}")
             one = _payload(await _call(session, "tasks", "get",
                                        resource_id="0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"))
             check("tasks get by UUID returns one task row",
@@ -533,8 +544,11 @@ async def main() -> int:
                   isinstance(doc, dict) and doc.get("Content") == "Design text"
                   and doc.get("Status Code") == "IN_PROGRESS", f"got {doc}")
             res = await _call(session, "documents", "list", project_id="P001", data={"colour": "red"})
-            check("documents list refuses an unknown field",
-                  res.is_error is True and "statusCode" in (res.content[0].text if res.content else ""))
+            refused = _payload(res)
+            check("documents list answers an unknown field with the real field names",
+                  res.is_error is not True and isinstance(refused, dict)
+                  and refused.get("status") == "invalid_request"
+                  and "statusCode" in refused.get("message", ""), f"got {str(refused)[:160]}")
             atcs = _list(await _call(session, "automated_test_cases", "list", project_id="P001"))
             check("automated test cases list with the priority label",
                   len(atcs) == 1 and atcs[0].get("Priority") == "High" and atcs[0].get("Display ID") == "8-2-17",
@@ -599,6 +613,51 @@ async def main() -> int:
                               data={"title": "New Req", "sub_status": "In Specification"})
             check("requirement create ok", res.is_error is not True,
                   f"err {res.content[0].text if res.content else ''}")
+
+            # Agent-style calls (2026-10-26 live replay): everyday names and values.
+            res = await _call(session, "tasks", "create", project_id="P001", task_type="Task",
+                              data={"name": "Agent task", "priority": "High", "sprint": "sprint 1",
+                                    "dueDate": "2026-12-31T00:00:00Z", "colour": "red"})
+            made = _payload(res)
+            check("agent-style task create: type arg, name, priority label, sprint name, datetime",
+                  res.is_error is not True and made.get("Title") == "Agent task"
+                  and made.get("Type") == "Project Task" and made.get("Priority") == "High"
+                  and made.get("Timebox ID") == "TB1" and made.get("DueDate") == "2026-12-31",
+                  f"got {made}")
+            check("a field that can't be written is reported, not dropped",
+                  set((made.get("Not Written") or {})) == {"colour"}, f"got {made.get('Not Written')}")
+            res = await _call(session, "requirements", "create", project_id="P001",
+                              data={"title": "Req with ids", "priority": "Very High", "external_id": "FTS-001"})
+            made = _payload(res)
+            check("requirement create writes priority and external ID",
+                  res.is_error is not True and made.get("Priority") == "Very High"
+                  and made.get("External ID (FRICEF)") == "FTS-001", f"got {made}")
+            res = await _call(session, "requirements", "update", project_id="P001", resource_id="T1",
+                              data={"status": "In Progress"})
+            upd = _payload(res)
+            check("requirements update sends no type; status resolves on the item's own type",
+                  res.is_error is not True and upd.get("Type") is None and upd.get("Status") == "In Progress",
+                  f"got {upd}")
+            res = await _call(session, "tasks", "create", project_id="P001",
+                              data={"title": "Story for Req A", "task_type": "User Story", "parent_id": "3-60729"})
+            made = _payload(res)
+            check("a user story is linked under its requirement (a relation, as CALM links them)",
+                  res.is_error is not True and made.get("Linked Under") == "R1"
+                  and made.get("Parent ID") is None and "Not Written" not in made, f"got {made}")
+            res = await _call(session, "requirements", "create", project_id="P001",
+                              data={"title": "Req approval", "approval_status": "No Approval Required"})
+            check("approval state by name is written as CALM's code",
+                  res.is_error is not True and _payload(res).get("ApprovalState") == "No Approval Required",
+                  f"got {_payload(res)}")
+            res = await _call(session, "requirements", "create", project_id="P001",
+                              data={"title": "Req bad approval", "approval_state": "Pending Customer Confirmation"})
+            check("an approval state CALM doesn't have is refused before writing, naming the real ones",
+                  res.is_error is True and "Ready for Approval" in (res.content[0].text if res.content else ""))
+            res = await _call(session, "task_comments", "create", resource_id="T1",
+                              data={"content": "Created via Project Agent by A. Person."})
+            check("a comment sent as data.content is posted with its words",
+                  res.is_error is not True and _payload(res).get("text") == "Created via Project Agent by A. Person.",
+                  f"got {_payload(res)}")
 
             res = await _call(session, "business_processes", "create", project_id="P001",
                               data={"name": "New BP", "description": "d"})

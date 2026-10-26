@@ -32,6 +32,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import re
+
 import pytest
 import requests
 from urllib3.exceptions import ProtocolError
@@ -112,10 +114,10 @@ def _row(i, title, **kw):
 # --------------------------------------------------------------------------- #
 
 def test_unknown_data_key_is_refused_before_any_read(calm):
-    with patch("src.calm.client.get_tasks") as gt, pytest.raises(ValueError) as err:
-        calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"status": "Open"})
+    with patch("src.calm.client.get_tasks") as gt:
+        msg = _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
+                            data={"status": "Open"}))
     gt.assert_not_called()
-    msg = str(err.value)
     assert "'status'" in msg and "search" in msg and "top" in msg and "summarize_by" in msg
 
 
@@ -135,27 +137,26 @@ def test_project_id_only_in_data_works(calm):
 
 
 def test_conflicting_project_id_in_data_is_refused(calm):
-    with pytest.raises(ValueError, match="differs"):
-        calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"project_id": "p2"})
+    _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"project_id": "p2"}),
+             "differs")
 
 
 @pytest.mark.parametrize("top", [0, -1, "x", True, 2.5, [3]])
 def test_bad_top_is_refused(calm, top):
-    with patch("src.calm.client.get_tasks") as gt, pytest.raises(ValueError, match="top"):
-        calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"top": top})
+    with patch("src.calm.client.get_tasks") as gt:
+        _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"top": top}), "top")
     gt.assert_not_called()
 
 
 @pytest.mark.parametrize("search", ["", "   ", True, ["a"]])
 def test_bad_search_is_refused(calm, search):
-    with pytest.raises(ValueError, match="search"):
-        calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"search": search})
+    _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"search": search}),
+             "search")
 
 
 def test_top_with_summarize_by_is_refused(calm):
-    with pytest.raises(ValueError, match="top does not apply"):
-        calm(Ctx(), resource="tasks", operation="list", project_id="p1",
-             data={"summarize_by": ["Status"], "top": 5})
+    _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
+                  data={"summarize_by": ["Status"], "top": 5}), "top does not apply")
 
 
 def test_top_limits_rows_and_says_how_many_exist(calm):
@@ -176,9 +177,8 @@ def test_plain_list_unchanged_without_new_options(calm):
 
 
 def test_alias_and_name_disagreeing_is_refused(calm):
-    with pytest.raises(ValueError, match="alias"):
-        calm(Ctx(), resource="tasks", operation="list", project_id="p1",
-             data={"search": "a", "query": "b"})
+    _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
+                  data={"search": "a", "query": "b"}), "alias")
 
 
 # --------------------------------------------------------------------------- #
@@ -292,28 +292,28 @@ def test_existing_sprint_with_no_tasks_is_an_empty_answer_not_an_error(calm):
 def test_typo_still_errors_with_project_names(calm):
     rows = [_row(1, "A", Timebox="Sprint 1", **{"Timebox ID": "tb1"})]
     with patch("src.calm.client.get_tasks", return_value=rows), \
-         patch("src.calm.client.get_timeboxes", return_value=SPRINTS), \
-         pytest.raises(ValueError) as err:
-        calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"timebox": "Sprnt 5"})
-    assert "Sprnt 5" in str(err.value) and "Sprint 5" in str(err.value)
+         patch("src.calm.client.get_timeboxes", return_value=SPRINTS):
+        msg = _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
+                            data={"timebox": "Sprnt 5"}))
+    assert "Sprnt 5" in msg and "Sprint 5" in msg
 
 
 def test_catalog_failure_keeps_the_old_report(calm):
     rows = [_row(1, "A", Timebox="Sprint 1", **{"Timebox ID": "tb1"})]
     with patch("src.calm.client.get_tasks", return_value=rows), \
-         patch("src.calm.client.get_timeboxes", side_effect=RuntimeError("HTTP 403")), \
-         pytest.raises(ValueError) as err:
-        calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"timebox": "Sprint 5"})
-    assert "values present: ['Sprint 1']" in str(err.value)
+         patch("src.calm.client.get_timeboxes", side_effect=RuntimeError("HTTP 403")):
+        msg = _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
+                            data={"timebox": "Sprint 5"}))
+    assert "values present: ['Sprint 1']" in msg
 
 
 def test_failed_name_lookup_is_not_reported_as_no_tasks(calm):
     rows = [_row(1, "A", Timebox=None, **{"Timebox ID": "tb1"})]   # name lookup failed
     with patch("src.calm.client.get_tasks", return_value=rows), \
-         patch("src.calm.client.get_timeboxes") as gb, pytest.raises(ValueError) as err:
-        calm(Ctx(), resource="tasks", operation="list", project_id="p1",
-             data={"timebox": "Sprint 1", "summarize_by": ["Timebox"]})
-    assert "could not be looked up" in str(err.value) and "tb1" in str(err.value)
+         patch("src.calm.client.get_timeboxes") as gb:
+        msg = _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
+                            data={"timebox": "Sprint 1", "summarize_by": ["Timebox"]}))
+    assert "could not be looked up" in msg and "tb1" in msg
     gb.assert_not_called()
 
 
@@ -747,5 +747,11 @@ def test_tasks_get_through_calm_resource(calm):
         row = calm(Ctx(), resource="tasks", operation="get",
                    project_id="11111111-1111-1111-1111-111111111111", resource_id=TASK_UUID)
     assert row["ID"] == TASK_UUID and row["Title"] == "Configure GL"
-    with pytest.raises(ValueError, match="resource_id is required"):
-        calm(Ctx(), resource="tasks", operation="get", project_id="p1")
+    _refused(calm(Ctx(), resource="tasks", operation="get", project_id="p1"), "resource_id is required")
+
+
+def _refused(out, match=""):
+    """A read the MCP can't run as asked: an answer saying why, not a tool error."""
+    assert isinstance(out, dict) and out.get("status") == "invalid_request", out
+    assert re.search(match, out["message"]), out["message"]
+    return out["message"]

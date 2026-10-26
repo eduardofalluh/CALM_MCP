@@ -22,6 +22,8 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import re
+
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -209,10 +211,10 @@ def test_list_with_a_typo_is_an_error_naming_the_real_values(calm):
     rows = [_row(1, team="Consulting - Finance", team_id="tf", sprint="Sprint 1", sprint_id="tb1")]
     with patch("src.calm.client.get_tasks", return_value=rows), \
          patch("src.calm.client.get_timeboxes", return_value=SPRINTS):
-        with pytest.raises(ValueError) as err:
-            calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"timebox": "Sprnt 1"})
-    assert "Sprnt 1" in str(err.value) and "Sprint 1" in str(err.value)
-    assert "not found in the project" in str(err.value)
+        msg = _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
+                            data={"timebox": "Sprnt 1"}))
+    assert "Sprnt 1" in msg and "Sprint 1" in msg
+    assert "not found in the project" in msg
 
 
 def test_list_filter_with_some_matches_returns_them(calm):
@@ -231,15 +233,15 @@ def test_list_filter_with_some_matches_returns_them(calm):
 @pytest.mark.parametrize("bad", [[], ["Title"], "Sprint"])
 def test_summarize_by_is_validated_before_reading(calm, bad):
     with patch("src.calm.client.get_tasks") as m:
-        with pytest.raises(ValueError, match="summarize_by must be one or more of"):
-            calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"summarize_by": bad})
+        _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
+                      data={"summarize_by": bad}), "summarize_by must be one or more of")
     m.assert_not_called()
 
 
 def test_fields_are_validated_before_reading(calm):
     with patch("src.calm.client.get_tasks") as m:
-        with pytest.raises(ValueError, match="fields must be one or more of"):
-            calm(Ctx(), resource="tasks", operation="list", project_id="p1", data={"fields": ["Bogus"]})
+        _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
+                      data={"fields": ["Bogus"]}), "fields must be one or more of")
     m.assert_not_called()
 
 
@@ -313,3 +315,10 @@ def test_test_case_rows_carry_last_changed():
     assert row["Last Changed"] == "2026-10-20T08:00:00Z"
     assert list(row)[:-1] == ["ID", "Display ID", "Project ID", "Scope ID", "Solution Process ID",
                               "Title", "Prepared", "Priority", "Tags"]  # existing fields unchanged, in order
+
+
+def _refused(out, match=""):
+    """A read the MCP can't run as asked: an answer saying why, not a tool error."""
+    assert isinstance(out, dict) and out.get("status") == "invalid_request", out
+    assert re.search(match, out["message"]), out["message"]
+    return out["message"]
