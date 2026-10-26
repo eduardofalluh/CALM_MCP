@@ -456,6 +456,12 @@ async def main() -> int:
             proj = _payload(await _call(session, "projects", "get", resource_id="test project a"))
             check("projects get by name returns the project",
                   isinstance(proj, dict) and proj.get("ID") == "P001", f"got {proj}")
+            by_name = _list(await _call(session, "tasks", "list", project_id="Test Project A"))
+            check("project name in project_id resolves to the project (same tasks as by ID)",
+                  [t.get("ID") for t in by_name] == [t.get("ID") for t in tasks], f"got {by_name}")
+            res = await _call(session, "tasks", "list", project_id="No Such Project")
+            check("unknown project name is a clear error naming the real projects",
+                  res.is_error is True and "Test Project A" in (res.content[0].text if res.content else ""))
 
             # The reported bug: project-scoped teams read.
             teams = _list(await _call(session, "teams", "list", project_id="P001"))
@@ -573,6 +579,10 @@ async def main() -> int:
             res = await _call(session, "tasks", "update", project_id="P001", resource_id="T1",
                               data={"title": "Updated", "status": "in progress"})
             check("task update ok", res.is_error is not True, f"err {res.content[0].text if res.content else ''}")
+            res = await _call(session, "requirements", "update", project_id="Test Project A",
+                              resource_id="3-60729", data='{"title": "Updated by display ID"}')
+            check("update by display ID + project name + data as JSON text",
+                  res.is_error is not True, f"err {res.content[0].text if res.content else ''}")
 
             res = await _call(session, "tasks", "delete", project_id="P001", resource_id="T1",
                               data={"task_type": "Project Task"})

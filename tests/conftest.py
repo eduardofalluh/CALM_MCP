@@ -82,3 +82,15 @@ def _no_live_odata_schema(monkeypatch):
     monkeypatch.setattr(odata_service, "schema", no_schema)
     yield
     odata_service._SCHEMAS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _project_ids_pass_through(monkeypatch):
+    """calm_resource looks a non-UUID project_id up by name in the project list.
+    Unit tests use short fake IDs ("P1") with mocked reads, so the lookup is a
+    pass-through here; tests of the lookup itself patch the real resolver back
+    in (``unified.resolve_project_id``)."""
+    from src.calm.tools import unified
+
+    monkeypatch.setattr(unified, "_resolve_project_id", lambda project_id, h: project_id)
+    yield

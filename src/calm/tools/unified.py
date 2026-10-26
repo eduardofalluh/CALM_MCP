@@ -12,6 +12,8 @@ All existing individual tools remain functional for backwards compatibility.
 
 from __future__ import annotations
 
+import json
+import re
 from typing import Any, Literal, Optional
 
 from fastmcp import Context, FastMCP
@@ -147,6 +149,105 @@ def _pick_one(resource: str, rows: Any, ident: Any) -> Any:
         + (f". Some that exist: {names}" if names else " (the list is empty)")
         + "."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Input normalisation: agents send IDs and payloads in several reasonable
+# shapes; accept them instead of failing (all lookups reuse reads already made).
+# --------------------------------------------------------------------------- #
+
+def parse_data(data: Any) -> dict:
+    """``data`` as a dict: a JSON object, or that object sent as JSON text."""
+    if data is None or data == "":
+        return {}
+    if isinstance(data, dict):
+        return data
+    if isinstance(data, str):
+        try:
+            parsed = json.loads(data)
+        except ValueError:
+            raise ValueError(
+                'data must be a JSON object, e.g. {"title": "..."} — the text sent is not valid JSON'
+            ) from None
+        if parsed is None:
+            return {}
+        if isinstance(parsed, dict):
+            return parsed
+    raise ValueError(f'data must be a JSON object, e.g. {{"title": "..."}} (got {type(data).__name__})')
+
+
+def resolve_project_id(project_id: Any, h: Any) -> Any:
+    """A project ID as given, or the ID of the project the agent named.
+
+    CALM project IDs are UUIDs, so anything else is looked up in the project
+    list: exact ID, then exact name, then a name that uniquely contains the text
+    (case and spacing ignored). If the list can't be read, the value passes
+    through unchanged and SAP answers as before.
+    """
+    if not project_id or not isinstance(project_id, str):
+        return project_id
+    pid = project_id.strip()
+    if client._UUID_RE.match(pid):
+        return pid
+    try:
+        projects = [p for p in client.get_projects(h.token, h.base_url) if isinstance(p, dict)]
+    except Exception:  # noqa: BLE001 — can't check: let SAP answer as before
+        return pid
+    norm = lambda v: " ".join(str(v or "").split()).lower()  # noqa: E731
+    want = norm(pid)
+    for field in ("ID", "Name"):
+        hits = [p for p in projects if norm(p.get(field)) == want]
+        if len(hits) == 1:
+            return hits[0]["ID"]
+    hits = [p for p in projects if want and want in norm(p.get("Name"))]
+    if len(hits) == 1:
+        return hits[0]["ID"]
+    if len(hits) > 1:
+        raise ValueError(
+            f"project '{project_id}' matches {len(hits)} projects: "
+            + "; ".join(f"{p.get('Name')} ({p.get('ID')})" for p in hits[:10])
+            + " — pass the project's ID or full name."
+        )
+    names = sorted(str(p.get("Name")) for p in projects if p.get("Name"))[:20]
+    raise ValueError(f"No project with ID or name '{project_id}'. Projects: {names}")
+
+
+# Kept separate so the unit-test suite can make project IDs pass through.
+_resolve_project_id = resolve_project_id
+
+
+# What CALM shows as an item's ID in the UI: "3-60729" (task), "8-1-1380" (test case).
+_DISPLAY_ID = re.compile(r"^\d+(?:-\d+)+$")
+
+
+def _task_uuid(ident: Any, project_id: Any, h: Any, required: bool = True) -> Any:
+    """The task / requirement UUID for a display ID such as "3-60729" (looked up
+    in the project); any other value is passed through unchanged. Without a
+    project a display ID can't be looked up: ``required`` IDs then get a clear
+    error, others pass through as before."""
+    text = str(ident or "").strip()
+    if not _DISPLAY_ID.match(text) or (not project_id and not required):
+        return ident
+    return client.get_task(h.token, text, h.base_url, project_id=project_id)["ID"]
+
+
+def _test_case_uuid(ident: Any, h: Any) -> Any:
+    """The test case UUID for a display ID such as "8-1-1380"; any other value
+    is passed through unchanged."""
+    text = str(ident or "").strip()
+    if not _DISPLAY_ID.match(text):
+        return ident
+    return client.get_test_case(h.token, text, h.base_url)["ID"]
+
+
+# Write calls whose resource_id (or data.task_id) is a task / requirement.
+_TASK_ID_CALLS = {
+    ("tasks", "update"), ("tasks", "delete"), ("requirements", "update"),
+    ("requirements", "delete"), ("task_comments", "create"), ("task_relations", "create"),
+    ("task_tags", "create"), ("task_tags", "update"),
+}
+# Write calls whose resource_id (or data.test_case_id) is a test case.
+_TEST_CASE_ID_CALLS = {("test_cases", "update"), ("test_cases", "delete"), ("test_case_links", "create")}
 
 
 def _filter_report(unmatched: dict) -> str:
@@ -345,7 +446,7 @@ def register(mcp: FastMCP) -> None:
         project_id: Optional[str] = None,
         resource_id: Optional[str] = None,
         task_type: Optional[str] = None,
-        data: Optional[dict] = None,
+        data: Optional[dict | str] = None,
         user_email: Optional[str] = None,
     ) -> list[dict] | dict:
         """READ AND WRITE SAP CLOUD ALM (CALM) DATA — the single authoritative tool
@@ -466,9 +567,13 @@ def register(mcp: FastMCP) -> None:
             resource: The CALM resource type to access.
             operation: The operation to perform (list, get, create, update, delete).
             project_id: Required for project-scoped resources (tasks, teams, timeboxes, etc).
-            resource_id: Required for "get", "update", "delete" operations - the specific resource ID.
+                The project's ID; its exact (or uniquely partial) name also works.
+            resource_id: Required for "get", "update", "delete" operations - the specific
+                resource: its ID, or its display ID (e.g. task "3-60729", test case
+                "8-1-1380" — pass project_id with a task display ID).
             task_type: Optional filter for tasks operation (e.g., "Requirement", "User Story").
-            data: Required for "create" and "update" operations - the resource data.
+            data: Required for "create" and "update" operations - the resource data, as a
+                JSON object (the same object sent as JSON text is also accepted).
                 Keys are snake_case and match the original per-resource tools:
                 - projects: name, program_id, deployment_plan_id, extra_fields, if_match
                 - tasks: title, task_type, status, start_date, due_date, assignee_id
@@ -712,9 +817,33 @@ def register(mcp: FastMCP) -> None:
         calm_api_write / calm_api_delete (same CALM tenant, raw API paths).
         """
         h = get_calm_headers(ctx)
-        d = data or {}
+        d = parse_data(data)
+        data = d or None
         # Prefer an explicitly-passed acting user, else the header-derived email.
         acting_email = user_email or h.user_email
+
+        # Accept a project name (or project_id inside data) as well as its ID.
+        project_id = _resolve_project_id(project_id, h)
+        if d.get("project_id"):
+            d = {**d, "project_id": _resolve_project_id(d["project_id"], h)}
+        # Writes may name a task / test case by display ID ("3-60729",
+        # "8-1-1380"): resolve it to the UUID the API needs, once, up front.
+        if (resource, operation) in _TASK_ID_CALLS | _TEST_CASE_ID_CALLS:
+            ensure_writes_enabled()
+            to_uuid = ((lambda v: _task_uuid(v, project_id or d.get("project_id"), h))
+                       if (resource, operation) in _TASK_ID_CALLS else (lambda v: _test_case_uuid(v, h)))
+            key = "task_id" if (resource, operation) in _TASK_ID_CALLS else "test_case_id"
+            if resource_id:
+                resource_id = to_uuid(resource_id)
+            elif d.get(key):
+                d = {**d, key: to_uuid(d[key])}
+            task_project = project_id or d.get("project_id")
+            if resource == "task_relations" and d.get("relation_task_id"):
+                d = {**d, "relation_task_id": _task_uuid(d["relation_task_id"], task_project, h,
+                                                         required=False)}
+            if resource == "test_case_links" and d.get("requirement_id"):
+                d = {**d, "requirement_id": _task_uuid(d["requirement_id"], task_project, h,
+                                                       required=False)}
 
         # Route to appropriate client function based on resource type
         if resource == "projects":
