@@ -503,6 +503,11 @@ _TITLED = frozenset(("tasks", "requirements", "test_cases", "test_actions", "tes
 _NAMED = frozenset(("projects", "business_processes", "solution_processes", "scopes", "features", "timeboxes"))
 
 
+def _first(d: dict, *keys: str) -> Any:
+    """The value of the first of ``keys`` present (not None) in ``d``."""
+    return next((d[k] for k in keys if d.get(k) is not None), None)
+
+
 def _typed(row: dict, ident: Any) -> dict:
     """A task returned for a requirement lookup, with a note when it is another type."""
     if isinstance(row, dict) and row.get("Type") not in (None, "Requirement"):
@@ -649,6 +654,27 @@ def _capability_unavailable(resource: str, alternative: str | None = None) -> di
     return out
 
 
+def _tags_kept(result: Any, task_id: Any, tags: list, h: Any) -> Any:
+    """What a tag write really did, read back from the task. Whether CALM keeps
+    a tag it has no definition for depends on the tenant (the test tenant keeps
+    free-text tags), and its API can't list the definitions beforehand — so the
+    answer shows the tags actually stored and reports any that didn't stick."""
+    try:
+        task = client.get_task(h.token, task_id, h.base_url)
+    except Exception:  # noqa: BLE001 — the write went through; can't confirm
+        return result
+    stored = list(task.get("Tags") or [])
+    kept = {_normalize_tag(t) for t in stored}
+    dropped = [t for t in tags if _normalize_tag(t) not in kept]
+    out = {**(result if isinstance(result, dict) else {}),
+           "Task ID": task.get("ID"), "Display ID": task.get("Display ID"), "Tags": stored}
+    if dropped:
+        out["Not Written"] = {
+            "tags": f"CALM dropped {dropped}: a tag must already be defined in the project and match "
+                    "its 'Group: Tag' text exactly (define new tags in the SAP Cloud ALM UI)."}
+    return out
+
+
 def _validate_task_tags(tags: list, project_id: str, token: str, base_url: str | None) -> None:
     """Best-effort check that tags are defined in the project before assigning them.
 
@@ -680,8 +706,8 @@ def _validate_task_tags(tags: list, project_id: str, token: str, base_url: str |
             f"These tag(s) are not defined in project {project_id} and CALM would "
             f"silently drop them: {unknown}. "
             f"Valid tags for this project: {valid_names or '(none configured yet)'}. "
-            f"Create a missing tag first with resource='tags', operation='create', "
-            f"data={{'group': ..., 'tag': ...}}."
+            f"A missing tag must first be defined in the SAP Cloud ALM UI (SAP's API "
+            f"can't create tag definitions)."
         )
 
 
@@ -1582,7 +1608,9 @@ def register(mcp: FastMCP) -> None:
                     status=d.get("status"),
                     countries=d.get("countries"),
                     state=d.get("state"),
-                    business_process_id=d.get("business_process_id"),
+                    business_process_id=d.get("business_process_id") or (
+                        _pick_one("business_processes", client.get_business_processes(h.token, h.base_url),
+                                  d["business_process"])["ID"] if d.get("business_process") else None),
                     external_id=d.get("external_id"),
                     base_url=h.base_url,
                     user_email=acting_email,
@@ -1636,7 +1664,7 @@ def register(mcp: FastMCP) -> None:
                     token=h.token,
                     project_id=project_id,
                     name=d.get("name"),
-                    timebox_type=d.get("timebox_type"),
+                    timebox_type=_first(d, "timebox_type", "type"),
                     start_date=d.get("start_date"),
                     end_date=d.get("end_date"),
                     closed=d.get("closed"),
@@ -2110,9 +2138,10 @@ def register(mcp: FastMCP) -> None:
                 # out with data={'skip_validation': True}).
                 if project_id and not d.get("skip_validation"):
                     _validate_task_tags(tags, project_id, h.token, h.base_url)
-                return client.set_task_tags(
+                result = client.set_task_tags(
                     token=h.token, task_id=task_id, tags=tags, base_url=h.base_url, user_email=acting_email
                 )
+                return _tags_kept(result, task_id, tags, h)
             elif operation in ("get", "list"):  # read a task's tags
                 task_id = resource_id or d.get("task_id")
                 if not task_id:
@@ -2135,10 +2164,10 @@ def register(mcp: FastMCP) -> None:
                     token=h.token,
                     activity_id=activity_id,
                     title=d.get("title"),
-                    description=d.get("description"),
-                    expected_result=d.get("expected_result"),
+                    description=d.get("description") or d.get("instructions"),
+                    expected_result=_first(d, "expected_result", "expectedResult", "expected"),
                     sequence=d.get("sequence"),
-                    is_evidence_required=d.get("is_evidence_required"),
+                    is_evidence_required=_first(d, "is_evidence_required", "isEvidenceRequired"),
                     base_url=h.base_url,
                     user_email=acting_email,
                 )

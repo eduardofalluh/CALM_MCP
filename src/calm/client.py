@@ -301,7 +301,7 @@ def resolve_testcase_priority(value: str) -> str:
 # Internal helper
 # ---------------------------------------------------------------------------
 
-def _get(url: str, token: str) -> Any:
+def _get(url: str, token: str, allow_text: bool = False) -> Any:
     headers = {"Authorization": f"Bearer {token}"}
     payload = json.dumps({"session_id": str(uuid.uuid4())})
     resp = http_retry.send(
@@ -309,7 +309,12 @@ def _get(url: str, token: str) -> Any:
         "GET", url, repeatable=True, timeout=REQUEST_TIMEOUT,
     )
     _raise_for_status(resp, url)
-    return resp.json()
+    try:
+        return resp.json()
+    except ValueError:
+        if allow_text:  # e.g. an OData $metadata document (XML)
+            return resp.text
+        raise
 
 
 # Safety ceilings so a misbehaving endpoint can never spin forever.
@@ -1645,17 +1650,16 @@ def link_test_case_to_requirement(
 
     Returns the created reference object or submission confirmation.
     """
-    body: dict[str, Any] = {
-        "name": f"Requirement {requirement_id}",
-        "url": f"/calm/tasks/{requirement_id}",
-        "type": link_type,
-        "targetId": requirement_id,
-        "targetType": "requirement",
-    }
-
-    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}/toReferences"
+    # CALM links a test case to a requirement (or any task) as a task
+    # assignment — what its UI shows as the test case's linked tasks. SAP
+    # requires the parent test case in the body too (verified live).
+    body: dict[str, Any] = {"taskId": requirement_id, "parentTestCase_ID": test_case_id}
+    url = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}/toTaskAssignments"
     result = _write("POST", url, token, body, user_email=user_email)
-    return result if isinstance(result, dict) and result else {"submitted": body, "test_case_id": test_case_id, "requirement_id": requirement_id}
+    if isinstance(result, dict) and result:
+        return {"Test Case ID": test_case_id, "Task ID": result.get("taskId") or requirement_id,
+                "Task Display ID": result.get("taskDisplayId"), "Type": result.get("type"), "Linked": True}
+    return {"Test Case ID": test_case_id, "Task ID": requirement_id, "Linked": True}
 
 
 # --- Analytics --------------------------------------------------------------
@@ -2469,8 +2473,11 @@ def create_solution_process(
         body["state"] = state
     if external_id is not None:
         body["externalId"] = external_id
-    if business_process_id is not None:
-        body["businessProcess"] = {"id": business_process_id}
+    if not business_process_id:
+        # SAP refuses it otherwise ("'$businessProcess' must not be null").
+        raise ValueError("business_process_id is required: the business process this solution "
+                         "process belongs to (its ID, or its name as data.business_process)")
+    body["businessProcess"] = {"id": business_process_id}
 
     url = f"{_base_url(base_url)}/api/calm-processauthoring/v1/solutionProcesses"
     result = _write("POST", url, token, body, user_email=user_email)
@@ -2643,7 +2650,7 @@ def create_test_case(
     if is_prepared is not None:
         body["isPrepared"] = is_prepared
     if activities is not None:
-        body["toActivities"] = activities
+        body["toActivities"] = test_activities_body(activities)
     if references is not None:
         body["toReferences"] = references
 
@@ -2746,7 +2753,7 @@ def delete_test_case(
     base = f"{_base_url(base_url)}/api/calm-testmanagement/v1/ManualTestCases/{test_case_id}"
     etag = _tm_if_match(if_match)
     if force:
-        action_url = f"{base}/api.v1.ExternalServiceAPI.forceDeletionIncludingTestRunsAndResults"
+        action_url = f"{base}/api.v1.ExternalTestCaseServiceAPI.forceDeletionIncludingTestRunsAndResults"
         _write("POST", action_url, token, {}, if_match=etag, user_email=user_email)
         return {"deleted": test_case_id, "force": True}
     _delete(base, token, if_match=etag, user_email=user_email)
@@ -2792,7 +2799,7 @@ def api_read(
     # complete, and $skip-rejecting) pass straight through unchanged.
     lowered = url.lower()
     caller_paging = "$top" in lowered or "%24top" in lowered or "$skip" in lowered or "%24skip" in lowered
-    first = _get(url, token)
+    first = _get(url, token, allow_text=True)
     if caller_paging or not isinstance(first, dict) or "value" not in first:
         return first
     rows = _get_all(url, token)  # one redundant first GET; correctness over a hot path
@@ -2890,6 +2897,22 @@ def delete_task_comment(token: str, comment_id: str, base_url: str | None = None
 
 # --- Project timeboxes (plain REST, no If-Match) ---------------------------
 
+# Timebox types as CALM numbers them (verified on live projects).
+TIMEBOX_TYPES = {"milestone": 0, "phase": 1, "sprint": 2, "iteration": 2}
+
+
+def resolve_timebox_type(value: Any) -> int:
+    """A timebox type as CALM's number: 0 milestone, 1 phase, 2 sprint."""
+    if isinstance(value, bool):
+        raise ValueError(f"Unknown timebox type {value!r}. Use sprint, phase or milestone (2/1/0).")
+    if isinstance(value, int) or str(value).strip().isdigit():
+        return int(value)
+    code = TIMEBOX_TYPES.get(_squash(value).rstrip("s"))
+    if code is None:
+        raise ValueError(f"Unknown timebox type {value!r}. Use sprint, phase or milestone (2/1/0).")
+    return code
+
+
 def create_timebox(
     token: str,
     project_id: str,
@@ -2904,12 +2927,12 @@ def create_timebox(
     body: dict[str, Any] = {}
     if name is not None:
         body["name"] = name
-    if timebox_type is not None:
-        body["type"] = timebox_type
+    # SAP requires the type; a timebox asked for without one is a sprint.
+    body["type"] = resolve_timebox_type(2 if timebox_type is None else timebox_type)
     if start_date is not None:
-        body["startDate"] = start_date
+        body["startDate"] = api_date(start_date, "start_date")
     if end_date is not None:
-        body["endDate"] = end_date
+        body["endDate"] = api_date(end_date, "end_date")
     if closed is not None:
         body["closed"] = closed
     if extra_fields:
@@ -2933,9 +2956,9 @@ def update_timebox(
     if name is not None:
         body["name"] = name
     if start_date is not None:
-        body["startDate"] = start_date
+        body["startDate"] = api_date(start_date, "start_date")
     if end_date is not None:
-        body["endDate"] = end_date
+        body["endDate"] = api_date(end_date, "end_date")
     if closed is not None:
         body["closed"] = closed
     if extra_fields:
@@ -2979,6 +3002,38 @@ def _tm_url(base_url: str | None, path: str) -> str:
     return f"{_base_url(base_url)}/api/calm-testmanagement/v1/{path}"
 
 
+_ACTION_KEYS = {"expected_result": "expectedResult", "expected": "expectedResult",
+                "is_evidence_required": "isEvidenceRequired", "evidence_required": "isEvidenceRequired",
+                "instructions": "description", "step": "title", "action": "title"}
+_ACTIVITY_KEYS = {"is_in_scope": "isInScope", "actions": "toActions", "steps": "toActions",
+                  "to_actions": "toActions"}
+
+
+def test_action_body(action: dict, position: int) -> dict:
+    """One test step the way SAP requires it: title, a non-empty description
+    (the title when none is given), expectedResult, isEvidenceRequired, sequence."""
+    a = {_ACTION_KEYS.get(k, k): v for k, v in dict(action).items() if v is not None}
+    if not a.get("title"):
+        raise ValueError(f"each test step needs a title (step {position} has none)")
+    a["description"] = a.get("description") or a["title"]
+    a.setdefault("expectedResult", "")
+    a.setdefault("isEvidenceRequired", False)
+    a.setdefault("sequence", position)
+    return a
+
+
+def test_activities_body(activities: list) -> list:
+    """Activities (with their steps) for a deep insert, completed as SAP requires."""
+    out = []
+    for n, activity in enumerate(activities or [], start=1):
+        act = {_ACTIVITY_KEYS.get(k, k): v for k, v in dict(activity).items() if v is not None}
+        act.setdefault("sequence", n)
+        if act.get("toActions") is not None:
+            act["toActions"] = [test_action_body(a, i) for i, a in enumerate(act["toActions"], start=1)]
+        out.append(act)
+    return out
+
+
 def create_test_action(
     token: str,
     activity_id: str,
@@ -2989,16 +3044,21 @@ def create_test_action(
     is_evidence_required: bool | None = None,
     base_url: str | None = None, user_email: str | None = None,
 ) -> dict:
-    """Create an action under an activity (POST /Activities/{id}/toActions)."""
-    body: dict[str, Any] = {"title": title}
-    if description is not None:
-        body["description"] = description
-    if expected_result is not None:
-        body["expectedResult"] = expected_result
-    if sequence is not None:
-        body["sequence"] = sequence
-    if is_evidence_required is not None:
-        body["isEvidenceRequired"] = is_evidence_required
+    """Create an action (step) under an activity (POST /Activities/{id}/toActions).
+
+    SAP requires the parent activity in the body, a non-empty description, an
+    expected result and a sequence: a missing description is the step's title,
+    a missing sequence comes after the activity's last step."""
+    if sequence is None:
+        try:
+            existing = _get(_tm_url(base_url, f"Activities/{activity_id}/toActions?$select=sequence"), token)
+            rows = existing.get("value", []) if isinstance(existing, dict) else []
+            sequence = max([int(a.get("sequence") or 0) for a in rows] or [0]) + 1
+        except Exception:  # noqa: BLE001 — SAP orders by sequence; 1 is always valid
+            sequence = 1
+    body = test_action_body({"title": title, "description": description, "expectedResult": expected_result,
+                             "isEvidenceRequired": is_evidence_required}, sequence)
+    body["parent_ID"] = activity_id
     url = _tm_url(base_url, f"Activities/{activity_id}/toActions")
     result = _write("POST", url, token, body, user_email=user_email)
     return result if (isinstance(result, dict) and result) else {"ok": True, "submitted": body}

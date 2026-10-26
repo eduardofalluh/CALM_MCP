@@ -38,7 +38,7 @@ TM_BASE = "https://tm.example.hana.ondemand.com/odata/v4/test-management"
 def test_api_read_pages_odata_collection_to_exhaustion():
     # A collection fetched via the escape hatch must NOT stop at the first server
     # page — it pages like every dedicated list tool and returns the full value.
-    def fake_get(url, token):
+    def fake_get(url, token, **kw):
         if "__next_page__" in url or "%24skip=100" in url or "$skip=100" in url:
             return {"value": [{"id": 100}]}
         return {"value": [{"id": i} for i in range(100)],
@@ -54,7 +54,7 @@ def test_api_read_pages_odata_collection_to_exhaustion():
 def test_api_read_honors_explicit_top_as_single_page():
     calls = []
 
-    def fake_get(url, token):
+    def fake_get(url, token, **kw):
         calls.append(url)
         return {"value": [{"id": 1}], "@odata.nextLink": f"{BASE}/__next_page__"}
 
@@ -85,7 +85,7 @@ def test_api_read_ceiling_feeds_truncation_sink():
     # the shared sink must record the cut-off so the ⚠️ alert fires.
     counter = {"n": 0}
 
-    def endless(url, token):
+    def endless(url, token, **kw):
         base = counter["n"] * 100
         counter["n"] += 1
         return {"value": [{"id": base + i} for i in range(100)],
@@ -113,7 +113,7 @@ def test_analytics_top_with_project_id_does_not_undercount():
         [{"project": "P1"}],                            # page 3 (short -> stop)
     ]
 
-    def fake_get(url, token):
+    def fake_get(url, token, **kw):
         # pick the page by $skip
         import re
         m = re.search(r"(?:\$|%24)skip=(\d+)", url)
@@ -131,7 +131,7 @@ def test_analytics_top_with_project_id_does_not_undercount():
 
 
 def test_analytics_ceiling_feeds_truncation_sink():
-    def endless(url, token):
+    def endless(url, token, **kw):
         return {"value": [{"project": "P1"}, {"project": "P1"}]}  # always a full page
 
     sink, tok = client.install_truncation_sink()

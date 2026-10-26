@@ -194,3 +194,24 @@ def test_middleware_never_raises_on_bad_result(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-v"]))
+
+
+# --------------------------------------------------------------------------- #
+# An empty list has no text block from FastMCP: an agent reading text saw a
+# blank answer (live, 2026-10-26). The middleware gives it "[]".
+# --------------------------------------------------------------------------- #
+
+def test_an_empty_result_gets_text():
+    from types import SimpleNamespace
+
+    from src.calm import toon_middleware as tm
+
+    empty = SimpleNamespace(content=[], structured_content={"result": []})
+    tm._ensure_text(empty)
+    assert [b.text for b in empty.content] == ["[]"]
+    full = SimpleNamespace(content=["x"], structured_content={"result": [1]})
+    tm._ensure_text(full)
+    assert full.content == ["x"]
+    no_schema = SimpleNamespace(content=[], structured_content=None)  # e.g. calm_api_read
+    tm._ensure_text(no_schema)
+    assert [b.text for b in no_schema.content] == ["[]"]

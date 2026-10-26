@@ -94,11 +94,35 @@ def _rewrite_result(result: Any) -> Any:
     return result
 
 
+try:  # content-block class for the alert; degrade gracefully if unavailable
+    from mcp.types import TextContent as _TextContent
+except Exception:  # pragma: no cover
+    _TextContent = None  # type: ignore[assignment]
+
+
+def _ensure_text(result: Any) -> Any:
+    """Give a result with no content block its value as text. FastMCP sends no
+    block at all for an empty list (and, for a tool without an output schema,
+    no structured value either), so an agent reading text would see a blank
+    answer; it sees "[]" instead."""
+    content = getattr(result, "content", None)
+    if content or not isinstance(content, list) or _TextContent is None:
+        return result
+    structured = getattr(result, "structured_content", None)
+    value = structured["result"] if isinstance(structured, dict) and "result" in structured else []
+    content.append(_TextContent(type="text", text=json.dumps(value)))
+    return result
+
+
 class ToonOutputMiddleware(Middleware):
     """Encode tool text output as TOON when enabled (see module docstring)."""
 
     async def on_call_tool(self, context, call_next):  # type: ignore[override]
         result = await call_next(context)
+        try:
+            _ensure_text(result)
+        except Exception:  # pragma: no cover - never break a call over this
+            log.debug("could not add a text block", exc_info=True)
         if not toon_enabled():
             return result
         try:
@@ -106,12 +130,6 @@ class ToonOutputMiddleware(Middleware):
         except Exception:  # pragma: no cover - belt and suspenders
             log.debug("TOON middleware skipped on error", exc_info=True)
             return result
-
-
-try:  # content-block class for the alert; degrade gracefully if unavailable
-    from mcp.types import TextContent as _TextContent
-except Exception:  # pragma: no cover
-    _TextContent = None  # type: ignore[assignment]
 
 
 def _attach_truncation_alert(result: Any, notices: list) -> None:
