@@ -321,3 +321,33 @@ def test_a_checklist_item_needs_its_quality_gate(calm):
              data={"title": "A", "task_type": "Checklist Item", "parent_id": REQ_UUID})
     assert m.call_args.kwargs["parent_id"] == REQ_UUID
     link.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Test-case tags (Nebco 2026-10-27): SAP's API can't change them — verified
+# live: create / update ignore tags, POST toTagAssignments / TagAssignments 405.
+# --------------------------------------------------------------------------- #
+
+def test_a_test_case_tag_change_is_answered_not_silently_dropped(calm):
+    with patch.object(client, "update_test_case") as m:
+        out = calm(Ctx(), resource="test_cases", operation="update", resource_id=TC_UUID,
+                   data={"remove_tags": ["SIT"]})
+    m.assert_not_called()
+    assert out["status"] == "unavailable" and out["changed"] is False and "Cloud ALM UI" in out["message"]
+
+
+def test_other_test_case_fields_are_still_saved_and_the_tags_reported(calm):
+    with patch.object(client, "update_test_case", return_value={"ID": TC_UUID, "Title": "New"}) as m:
+        out = calm(Ctx(), resource="test_cases", operation="update", resource_id=TC_UUID,
+                   data={"title": "New", "tags": ["UAT"]})
+    assert m.call_args.kwargs["title"] == "New"
+    assert out["Title"] == "New" and "Cloud ALM UI" in out["Not Written"]["tags"]
+
+
+def test_task_tags_on_a_test_case_id_is_answered(calm):
+    with patch.object(client, "set_task_tags") as m, patch.object(client, "get_task") as g:
+        out = calm(Ctx(), resource="task_tags", operation="update", project_id=P_UUID,
+                   resource_id="8-1-1575", data={"tags": []})
+    m.assert_not_called()
+    g.assert_not_called()
+    assert out["status"] == "unavailable" and "Test-case tags" in out["message"]

@@ -539,6 +539,20 @@ def _with_not_written(result: Any, not_written: dict) -> Any:
 
 
 _COMMENT_TEXT_KEYS = ("text", "content", "comment", "body", "message", "note")
+# SAP's Test Management API can't change a test case's tags (verified live:
+# create / update ignore them, tag writes answer 405; $metadata marks
+# TagAssignments read-only). Say so instead of dropping them silently.
+_TEST_CASE_TAG_KEYS = ("tags", "tag", "add_tags", "remove_tags", "toTagAssignments", "tag_assignments", "labels")
+_TEST_CASE_TAGS_NOTE = ("Test-case tags can't be added or removed through SAP Cloud ALM's API — it ignores "
+                        "them on create / update and refuses tag writes. Change them in the SAP Cloud ALM "
+                        "UI (open the test case, edit its tags, save). Reading and filtering test cases "
+                        "by tag works.")
+_TEST_CASE_ID = re.compile(r"^\d+-\d+-\d+$")  # "8-1-1575": a test case, not a task
+
+
+def _test_case_tags_unavailable(operation: str) -> dict:
+    return {"status": "unavailable", "supported": False, "resource": "test_cases", "operation": operation,
+            "changed": False, "message": _TEST_CASE_TAGS_NOTE}
 # Task types that take their parent in the body, and what that parent is.
 _PARENT_IN_BODY = {"CALMST": "A sub-task needs its parent task",
                    "CALMCHKLI": "A checklist item needs its quality gate"}
@@ -1012,7 +1026,9 @@ def register(mcp: FastMCP) -> None:
                 - scopes: name, description, if_match
                 - test_cases: title, scope_id (required), project_id, solution_process_id,
                     priority, is_prepared, activities ([{title, steps: [{title,
-                    description, expected_result}]}]), references, force, if_match
+                    description, expected_result}]}]), references, force, if_match.
+                    Test-case TAGS are read-only in SAP's API (list / filter by tag
+                    works; adding or removing them is done in the CALM UI).
                 - tags: creating tag *definitions* is NOT exposed by SAP's CALM
                     public API — create returns an 'unavailable' explanation. To
                     tag work, assign existing tags to a task via resource='task_tags'
@@ -1088,7 +1104,7 @@ def register(mcp: FastMCP) -> None:
                     create → resource_id=task_id, data={text, extra_fields};
                     update → resource_id=comment_id, data={text, extra_fields};
                     delete → resource_id=comment_id
-                - task_tags: update (set/replace a task's tags) → resource_id=task_id,
+                - task_tags: update (set/replace a TASK's tags; not test cases) → resource_id=task_id,
                     data={tags: ["Group: Tag", ...]}. Pass project_id to validate the
                     tags against the project's configured list (recommended — CALM
                     silently drops tags that aren't defined; validation turns that
@@ -1315,6 +1331,10 @@ def register(mcp: FastMCP) -> None:
             if resource == "tasks" and operation == "create" and not d.get("task_type") and task_type:
                 d = {**d, "task_type": task_type}  # the task_type argument, not repeated in data
 
+        if resource == "task_tags" and operation in ("create", "update") and \
+                _TEST_CASE_ID.match(str(resource_id or d.get("task_id") or "").strip()):
+            ensure_writes_enabled()
+            return _test_case_tags_unavailable(operation)
         # Writes may name a task / test case by display ID ("3-60729",
         # "8-1-1380"): resolve it to the UUID the API needs, once, up front.
         if (resource, operation) in _TASK_ID_CALLS | _TEST_CASE_ID_CALLS:
@@ -1910,6 +1930,15 @@ def register(mcp: FastMCP) -> None:
                     project_id=project_id or d.get("project_id"),
                     title_contains=d.get("title_contains"),
                 )
+            elif operation in ("create", "update") and any(k in d for k in _TEST_CASE_TAG_KEYS):
+                ensure_writes_enabled()
+                rest = {k: v for k, v in d.items() if k not in _TEST_CASE_TAG_KEYS}
+                writable = ("title", "scope_id", "solution_process_id", "priority", "is_prepared")
+                if operation == "update" and not any(rest.get(k) is not None for k in writable):
+                    return _test_case_tags_unavailable("update")
+                result = _calm_resource(h, resource, operation, project_id, resource_id, task_type,
+                                        rest, user_email)
+                return _with_not_written(result, {"tags": _TEST_CASE_TAGS_NOTE})
             elif operation == "create":
                 ensure_writes_enabled()
                 tc_project_id = project_id or d.get("project_id")
