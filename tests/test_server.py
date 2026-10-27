@@ -651,8 +651,13 @@ async def main() -> int:
                   f"got {_payload(res)}")
             res = await _call(session, "requirements", "create", project_id="P001",
                               data={"title": "Req bad approval", "approval_state": "Pending Customer Confirmation"})
-            check("an approval state CALM doesn't have is refused before writing, naming the real ones",
-                  res.is_error is True and "Ready for Approval" in (res.content[0].text if res.content else ""))
+            made = _payload(res)
+            check("an approval state CALM doesn't have: saved without it and reported, naming the real ones",
+                  res.is_error is not True and made.get("ApprovalState") is None
+                  and "Ready for Approval" in str((made.get("Not Written") or {}).get("approval_state")), f"got {made}")
+            res = await _call(session, "projects", "get", resource_id="project a")
+            check("projects get takes part of a project's name",
+                  res.is_error is not True and _payload(res).get("ID") == "P001", f"got {_payload(res)}")
             res = await _call(session, "task_comments", "create", resource_id="T1",
                               data={"content": "Created via Project Agent by A. Person."})
             check("a comment sent as data.content is posted with its words",

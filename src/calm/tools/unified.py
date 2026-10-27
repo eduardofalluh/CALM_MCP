@@ -348,13 +348,17 @@ def _project_item_id(kind: str, value: Any, rows: list) -> Any:
     raise ValueError(f"No {kind} named '{value}' in this project. {kind.capitalize()}s: {names[:40]}")
 
 
-def _resolve_task_refs(d: dict, project_id: Any, h: Any) -> dict:
-    """Sprint / team / scope given by name or ID -> the IDs in extra_fields."""
+def _resolve_task_refs(d: dict, project_id: Any, h: Any, not_written: dict) -> dict:
+    """Sprint / team / scope given by name or ID -> the IDs in extra_fields. One
+    that isn't in the project goes to ``not_written`` with the real names — it
+    never blocks the rest of the write."""
     wanted = {k: d[k] for k in ("timebox", "team", "scope") if d.get(k) not in (None, "")}
     if not wanted:
         return {k: v for k, v in d.items() if k not in ("timebox", "team", "scope")}
     if not project_id:
-        raise ValueError(f"project_id is needed to set {', '.join(wanted)} by name")
+        for key in wanted:
+            not_written[key] = "the item's project couldn't be read, so this name couldn't be looked up"
+        return {k: v for k, v in d.items() if k not in ("timebox", "team", "scope")}
     lookups = {
         "timebox": ("sprint (timebox)", "timeboxId", lambda: client.get_timeboxes(project_id, h.token, h.base_url)),
         "team": ("team", "responsibleTeamId", lambda: client.get_project_teams(project_id, h.token, h.base_url)),
@@ -364,10 +368,47 @@ def _resolve_task_refs(d: dict, project_id: Any, h: Any) -> dict:
     extra = dict(d.get("extra_fields") or {})
     for key, value in wanted.items():
         kind, api_field, read = lookups[key]
-        rows = [] if client._UUID_RE.match(str(value).strip()) else read()
-        extra[api_field] = _project_item_id(kind, value, rows)
+        try:
+            rows = [] if client._UUID_RE.match(str(value).strip()) else read()
+            extra[api_field] = _project_item_id(kind, value, rows)
+        except (ValueError, RuntimeError) as exc:
+            not_written[key] = f"not set: {exc}"
     out = {k: v for k, v in d.items() if k not in ("timebox", "team", "scope")}
-    out["extra_fields"] = extra
+    if extra:
+        out["extra_fields"] = extra
+    return out
+
+
+# Field -> the check CALM's value must pass (status needs the item's type).
+_VALUE_CHECKS = {
+    "priority_id": client.resolve_priority,
+    "approval_state": client.resolve_approval_state,
+    "start_date": lambda v: client.api_date(v, "start_date"),
+    "due_date": lambda v: client.api_date(v, "due_date"),
+}
+
+
+def _checked_values(d: dict, type_code: Any, not_written: dict) -> dict:
+    """The task fields whose value CALM can take; any other value goes to
+    ``not_written`` with the valid ones, so it never blocks the write."""
+    out = dict(d)
+    for key, check in _VALUE_CHECKS.items():
+        if out.get(key) in (None, ""):
+            continue
+        try:
+            checked = check(out[key])
+        except ValueError as exc:
+            not_written[key] = f"not set: {exc}"
+            out.pop(key)
+            continue
+        if key.endswith("_date"):
+            out[key] = checked  # sent as the plain date the API takes
+    if out.get("status") not in (None, "") and type_code:
+        try:
+            client.resolve_status_code(out["status"], type_code)
+        except ValueError as exc:
+            not_written["status"] = f"not set: {exc}"
+            out.pop("status")
     return out
 
 
@@ -498,6 +539,13 @@ def _with_not_written(result: Any, not_written: dict) -> Any:
 
 
 _COMMENT_TEXT_KEYS = ("text", "content", "comment", "body", "message", "note")
+# Task types that take their parent in the body, and what that parent is.
+_PARENT_IN_BODY = {"CALMST": "A sub-task needs its parent task",
+                   "CALMCHKLI": "A checklist item needs its quality gate"}
+# Task types SAP's API won't create (verified live).
+_NOT_CREATABLE = {"CALMTMPL": "Roadmap tasks come from the project's roadmap template; SAP's API "
+                              "can't create them (\"The type is not valid to create\"). Create a "
+                              "'Project Task' instead."}
 # Resources whose items are named by "title", and those named by "name".
 _TITLED = frozenset(("tasks", "requirements", "test_cases", "test_actions", "test_activities", "documents"))
 _NAMED = frozenset(("projects", "business_processes", "solution_processes", "scopes", "features", "timeboxes"))
@@ -506,6 +554,22 @@ _NAMED = frozenset(("projects", "business_processes", "solution_processes", "sco
 def _first(d: dict, *keys: str) -> Any:
     """The value of the first of ``keys`` present (not None) in ``d``."""
     return next((d[k] for k in keys if d.get(k) is not None), None)
+
+
+def _check_analytics_dims(h: Any, provider: str, where: dict, sap_error: str | None = None) -> None:
+    """Explain an analytics filter that can't work, naming the dimensions the
+    provider really has (read from one row). Raises ValueError (a read answer)."""
+    sample = client.get_analytics(h.token, provider=provider, base_url=h.base_url, top=1)
+    dims = sorted(k for k in (sample[0] if sample else {}) if k not in ("Provider", "Snapshot", "Metrics"))
+    unknown = [k for k in where if k not in dims]
+    if not sap_error and not unknown:
+        return  # the filter is fine; nothing matched it
+    raise ValueError(
+        (f"SAP can't filter analytics on dimensions ({sap_error.split('response:')[-1].strip()}). "
+         if sap_error else f"{provider} has no dimension {unknown}. ")
+        + f'Filter with data.filter = {{dimension: value}} instead; {provider} dimensions: {dims}. '
+        "For counts or effort per sprint / team / status, calm_resource(resource='tasks', "
+        "operation='list', project_id=..., data={'summarize_by': ['Timebox']}) is exact.")
 
 
 def _typed(row: dict, ident: Any) -> dict:
@@ -867,6 +931,14 @@ def register(mcp: FastMCP) -> None:
                 data={"provider":"DP_TASKS"}, project_id=X  (group rows by
                 "statusText"; providers: DP_TASKS, DP_PROJECTS; DP_FEATURES needs
                 calm-api.features.read)
+          - "comments on task / requirement X"  → resource="task_comments",
+                operation="list", resource_id=<its ID or display ID>, project_id=P
+          - "user stories / tasks linked to requirement X"
+                → resource="task_relations", operation="list", resource_id=<the
+                requirement's ID or display ID>, project_id=P
+          - "create a user story / task under requirement X"
+                → operation="create" with data.parent_id=<X> — it is linked under
+                X the way CALM does it (a sub-task gets X as its parent task)
           - "who is staffed / roles on a team"  → resource="team_roles",
                 resource_id=<team_id from resource='teams'>
           - "feature status / priority value help" → resource="feature_status"
@@ -911,20 +983,36 @@ def register(mcp: FastMCP) -> None:
             task_type: Optional filter for tasks operation (e.g., "Requirement", "User Story").
             data: Required for "create" and "update" operations - the resource data, as a
                 JSON object (the same object sent as JSON text is also accepted).
-                Keys are snake_case and match the original per-resource tools:
+                Keys are snake_case (camelCase and everyday names also work):
                 - projects: name, program_id, deployment_plan_id, extra_fields, if_match
-                - tasks: title, task_type, status, start_date, due_date, assignee_id
-                    (email/name/UUID — auto-resolved), description, priority_id,
-                    external_id, parent_id, obsolete, extra_fields
-                - requirements: title, status, description, assignee_id, start_date,
-                    due_date, priority_id, sub_status, obsolete, extra_fields
+                - tasks / requirements: title (required), task_type (tasks: "Task",
+                    "Sub-task", "User Story", "Requirement", "Defect", "Risk", "Quality
+                    Gate", "Checklist Item" — or the task_type argument), status
+                    (Open / In Progress / Blocked / Done / Not Relevant), priority
+                    (Very High / High / Medium / Low), due_date / start_date
+                    (YYYY-MM-DD), assignee (the Responsible: email or name of a member
+                    of the project), description (HTML), external_id, parent_id (ID or
+                    display ID: a sub-task's parent task, a checklist item's quality
+                    gate; any other item is linked under it), timebox (sprint name),
+                    team, scope (names or IDs), approval_state (Approved / Rejected /
+                    Ready for Approval / No Approval Required), sub_status, obsolete,
+                    extra_fields (other CALM fields by their API name).
+                    A value CALM can't take NEVER blocks the write: the item is saved
+                    and the result lists that field under "Not Written" with the
+                    reason (e.g. a Responsible who isn't a project member) — tell the
+                    user. Refused before writing: no title / type / project, a
+                    sub-task without its parent, a Roadmap Task (SAP can't create
+                    them via the API).
                 - business_processes: name, description, if_match
-                - solution_processes: name, description, status, countries, state,
-                    business_process_id, external_id, if_match
-                - timeboxes: name, timebox_type, start_date, end_date, closed, extra_fields
+                - solution_processes: name, business_process (name) or
+                    business_process_id (required), description, status, countries,
+                    state, external_id, if_match
+                - timeboxes: name, timebox_type (sprint / phase / milestone; default
+                    sprint), start_date, end_date, closed, extra_fields
                 - scopes: name, description, if_match
                 - test_cases: title, scope_id (required), project_id, solution_process_id,
-                    priority, is_prepared, activities, references, force, if_match
+                    priority, is_prepared, activities ([{title, steps: [{title,
+                    description, expected_result}]}]), references, force, if_match
                 - tags: creating tag *definitions* is NOT exposed by SAP's CALM
                     public API — create returns an 'unavailable' explanation. To
                     tag work, assign existing tags to a task via resource='task_tags'
@@ -982,8 +1070,8 @@ def register(mcp: FastMCP) -> None:
                 - analytics: list only. data={provider (DP_TASKS default,
                     DP_PROJECTS, DP_FEATURES; DP_TESTS = test execution status,
                     needs calm-api.tests.read), top (cap rows; default = all pages),
-                    raw_filter (extra OData clause)}; pass project_id to filter to
-                    one project. Rows are flattened dimensions (statusText, status,
+                    filter ({dimension: value}, e.g. {"statusText": "Done"})}; pass
+                    project_id to filter to one project. Rows are flattened dimensions (statusText, status,
                     phase, team, workstream, priority, dueDate, overdue, requirement,
                     taskID, …) plus a Metrics dict (counter, storyPoints, effort).
                     Readiness % = count where statusText=="Done" / total rows.
@@ -991,11 +1079,13 @@ def register(mcp: FastMCP) -> None:
                     'teams'). Returns each role with Member Count + Members.
                 - feature_status / feature_priorities: list only, no data —
                     code→name value help for interpreting/setting feature fields.
-                # --- sub-entity / relationship resources (create/update/delete) ---
-                - task_relations: create → resource_id=parent task_id,
+                # --- sub-entity / relationship resources ---
+                - task_relations: list → resource_id=task (a requirement's linked
+                    items); create → resource_id=parent task_id,
                     data={relation_task_id (required), relation_type (default "0")};
                     delete → resource_id=relation_id
-                - task_comments: create → resource_id=task_id, data={text, extra_fields};
+                - task_comments: list → resource_id=task (its comments);
+                    create → resource_id=task_id, data={text, extra_fields};
                     update → resource_id=comment_id, data={text, extra_fields};
                     delete → resource_id=comment_id
                 - task_tags: update (set/replace a task's tags) → resource_id=task_id,
@@ -1257,17 +1347,52 @@ def register(mcp: FastMCP) -> None:
                 d.get(k) not in (None, "") for k in ("timebox", "team", "scope", "parent_id"))
             item_project = project_id or (_task_project(resource_id, h)
                                           if operation == "update" and needs_project else None)
+            # The item's type: a create's is given (a bad one is refused —
+            # nothing can be created without it); an update's is read only
+            # when a status label or a parent needs it.
+            if operation == "create":
+                kind = d.get("task_type") or ("Requirement" if resource == "requirements" else None)
+                type_code = client.resolve_task_type_code(kind) if kind else None
+            else:
+                needs_type = d.get("parent_id") or (
+                    d.get("status") not in (None, "") and str(d["status"]).strip().upper() not in client._KNOWN_STATUS_CODES)
+                kind = d.get("task_type") or (_task_raw(resource_id, h).get("type") if needs_type else None)
+                try:
+                    type_code = client.resolve_task_type_code(kind) if kind else None
+                except ValueError as exc:
+                    not_written["task_type"], type_code = f"not set: {exc}", None
+                    d = {k: v for k, v in d.items() if k != "task_type"}
             if d.get("parent_id"):
-                d = {**d, "parent_id": _task_uuid(d["parent_id"], item_project, h, required=False)}
-                # Only a sub-task takes a parent ID; anything else is linked
-                # under its parent by a relation once it is saved.
-                kind = (d.get("task_type") or ("Requirement" if resource == "requirements" else None)
-                        if operation == "create" else d.get("task_type") or _task_raw(resource_id, h).get("type"))
-                if not kind or client.resolve_task_type_code(kind) != "CALMST":
-                    link_under, d = d["parent_id"], {k: v for k, v in d.items() if k != "parent_id"}
-            d = _resolve_task_refs(d, item_project, h)
+                try:
+                    parent = _task_uuid(d["parent_id"], item_project, h, required=False)
+                except (ValueError, client.NotFound, client.Ambiguous) as exc:
+                    not_written["parent_id"] = f"not linked: {exc}"
+                    d = {k: v for k, v in d.items() if k != "parent_id"}
+                else:
+                    d = {**d, "parent_id": parent}
+                    # Only a sub-task (or a checklist item, under its quality
+                    # gate) takes a parent ID; anything else is linked under its
+                    # parent by a relation once it is saved.
+                    if type_code not in _PARENT_IN_BODY:
+                        link_under, d = parent, {k: v for k, v in d.items() if k != "parent_id"}
+            if operation == "create" and type_code in _PARENT_IN_BODY and not d.get("parent_id"):
+                # CALM has no sub-task without its parent (SAP: "Invalid parent task
+                # id"), no checklist item without its quality gate.
+                raise ValueError(
+                    f"{_PARENT_IN_BODY[type_code]}: pass parent_id (its ID or display ID)"
+                    + (f" — {not_written['parent_id']}" if "parent_id" in not_written else "")
+                    + ". Nothing was created.")
+            if operation == "create" and type_code in _NOT_CREATABLE:
+                raise ValueError(_NOT_CREATABLE[type_code] + " Nothing was created.")
+            d = _resolve_task_refs(d, item_project, h, not_written)
+            d = _checked_values(d, type_code, not_written)
             if asked is not None:
                 d = {**d, "assignee_id": _assignee(asked, item_project, h)}
+            if operation == "update" and not link_under and not any(
+                    v is not None for k, v in d.items() if k not in ("project_id", "extra_fields")) \
+                    and not d.get("extra_fields"):
+                raise ValueError("Nothing was changed — no value given could be written: "
+                                 + "; ".join(f"{k}: {why}" for k, why in not_written.items()))
 
         # Route to appropriate client function based on resource type
         if resource == "projects":
@@ -1306,7 +1431,22 @@ def register(mcp: FastMCP) -> None:
             elif operation == "delete":
                 raise ValueError("Delete operation not supported for projects")
             elif operation == "get":
-                return _pick_one("projects", client.get_projects(h.token, h.base_url), resource_id)
+                projects = client.get_projects(h.token, h.base_url)
+                try:
+                    return _pick_one("projects", projects, resource_id)
+                except client.NotFound:
+                    # Part of a name ("Syntax Sugar") that fits exactly one project.
+                    want = " ".join(str(resource_id or "").split()).lower()
+                    hits = [pr for pr in projects if isinstance(pr, dict) and want
+                            and want in " ".join(str(pr.get("Name") or "").split()).lower()]
+                    if len(hits) == 1:
+                        return hits[0]
+                    if hits:
+                        raise client.Ambiguous(
+                            f"{len(hits)} projects match '{resource_id}': "
+                            + "; ".join(f"{pr.get('Name')} ({pr.get('ID')})" for pr in hits[:10])
+                            + " — pass the full name or ID.", hits[:10]) from None
+                    raise
             else:
                 raise ValueError(f"Unknown operation '{operation}' for projects")
 
@@ -2078,6 +2218,12 @@ def register(mcp: FastMCP) -> None:
                 return client.delete_task_relation(
                     token=h.token, relation_id=resource_id, base_url=h.base_url, user_email=acting_email
                 )
+            elif operation in ("get", "list"):  # a task's relations (a requirement's linked items)
+                task_id = resource_id or d.get("task_id")
+                if not task_id:
+                    raise ValueError("resource_id (the task's ID or display ID) is required to read its relations")
+                task = client.get_task(h.token, task_id, h.base_url, project_id=project_id)
+                return client.get_task_relations(h.token, task["ID"], h.base_url)
             else:
                 raise ValueError(f"Operation '{operation}' not supported for task_relations (use create/delete)")
 
@@ -2119,6 +2265,12 @@ def register(mcp: FastMCP) -> None:
                 return client.delete_task_comment(
                     token=h.token, comment_id=resource_id, base_url=h.base_url, user_email=acting_email
                 )
+            elif operation in ("get", "list"):  # a task's comments
+                task_id = resource_id or d.get("task_id")
+                if not task_id:
+                    raise ValueError("resource_id (the task's ID or display ID) is required to read its comments")
+                task = client.get_task(h.token, task_id, h.base_url, project_id=project_id)
+                return client.get_task_comments(h.token, task["ID"], h.base_url)
             else:
                 raise ValueError(f"Operation '{operation}' not supported for task_comments (use create/update/delete)")
 
@@ -2330,16 +2482,27 @@ def register(mcp: FastMCP) -> None:
             # story-point sums) without paging every task. provider defaults to
             # DP_TASKS; DP_PROJECTS and DP_FEATURES are also available.
             if operation in ("list", "get"):
+                provider = d.get("provider", "DP_TASKS")
+                where = d.get("filter") or d.get("where")
+                if where is not None and not isinstance(where, dict):
+                    raise ValueError('data.filter must be an object of dimension: value, e.g. {"timebox": "Sprint 1"}')
                 try:
-                    return client.get_analytics(
+                    rows = client.get_analytics(
                         h.token,
-                        provider=d.get("provider", "DP_TASKS"),
+                        provider=provider,
                         base_url=h.base_url,
                         top=int(d["top"]) if d.get("top") is not None else None,
                         project_id=project_id or d.get("project_id"),
                         raw_filter=d.get("raw_filter"),
+                        where=where,
                     )
+                    if where and not rows:
+                        _check_analytics_dims(h, provider, where)
+                    return rows
                 except RuntimeError as exc:
+                    if "is not defined in type" in str(exc):
+                        # The DataSet stores dimensions pivoted, so SAP can't filter on them.
+                        _check_analytics_dims(h, provider, {}, sap_error=str(exc))
                     if _is_not_authorized(exc):
                         return {
                             "status": "unavailable",

@@ -441,18 +441,30 @@ def test_update_resent_even_when_read_back_fails():
     assert len(write.calls) == 2 and out["updated"] == "t-1" and "Note" in out
 
 
-def test_update_slow_first_attempt_is_not_resent():
+def test_update_slow_first_attempt_is_sent_again():
+    # SAP held it 40s before dropping (slow tenants: 18-31s). An update only
+    # sets values, so sending it again is safe even if the first still lands.
     clock = iter([0.0, 40.0, 40.0, 40.0])
-    write = Script(dropped())
+    write = Script(dropped(), Resp(200, dict(STORED, dueDate="2026-11-07")))
+    old = dict(STORED, dueDate="2026-10-01")
+    with patch.object(client.requests, "request", write), \
+         patch.object(http_retry, "_clock", lambda: next(clock, 40.0)), \
+         patch.object(client, "_get_with_meta", return_value=(old, None)):
+        out = _update(due_date="2026-11-07")
+    assert len(write.calls) == 2 and "sent again" in out["Note"]
+
+
+def test_update_dropped_twice_is_reported_honestly():
+    clock = iter([0.0, 40.0, 40.0, 40.0])
+    write = Script(dropped(), dropped())
     old = dict(STORED, dueDate="2026-10-01")
     with patch.object(client.requests, "request", write), \
          patch.object(http_retry, "_clock", lambda: next(clock, 40.0)), \
          patch.object(client, "_get_with_meta", return_value=(old, None)), \
          pytest.raises(RuntimeError) as err:
         _update(due_date="2026-11-07")
-    # SAP held it 40s before dropping: it may still land, so "not there yet".
     msg = str(err.value)
-    assert len(write.calls) == 1 and "not on the task yet" in msg and "Retrying is safe" in msg
+    assert len(write.calls) == 2 and "both attempts" in msg and "Retrying is safe" in msg
 
 
 def test_update_second_attempt_rejected_but_first_landed():

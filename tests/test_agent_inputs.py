@@ -253,13 +253,13 @@ def test_sprint_team_and_scope_names_become_their_ids(calm):
                                                   "scopeId": "scope-1"}
 
 
-def test_an_unknown_sprint_is_refused_with_the_real_names(calm):
+def test_an_unknown_sprint_never_blocks_the_write_and_is_reported(calm):
     with patch.object(client, "get_timeboxes", return_value=SPRINTS), \
-         patch.object(client, "create_task") as m, \
-         pytest.raises(ValueError, match=r"No sprint \(timebox\) named 'Sprint 9'.*Explore"):
-        calm(Ctx(), resource="tasks", operation="create", project_id=P_UUID,
-             data={"title": "A", "task_type": "Task", "timebox": "Sprint 9"})
-    m.assert_not_called()
+         patch.object(client, "create_task", return_value={"ID": "t"}) as m:
+        out = calm(Ctx(), resource="tasks", operation="create", project_id=P_UUID,
+                   data={"title": "A", "task_type": "Task", "timebox": "Sprint 9"})
+    assert m.call_args.kwargs["extra_fields"] is None  # saved without a sprint
+    assert re.search(r"No sprint \(timebox\) named 'Sprint 9'.*Explore", out["Not Written"]["timebox"])
 
 
 def test_a_sprint_id_is_used_without_a_lookup(calm):
@@ -485,13 +485,42 @@ def test_approval_states_by_name_or_code(given, code):
     assert client.resolve_approval_state(given) == code
 
 
-def test_an_approval_state_calm_does_not_have_is_refused_before_writing(calm):
-    # The 2026-10-26 Studio case: "Pending Customer Confirmation" reached SAP.
-    with patch.object(client, "_write") as w, \
-         pytest.raises(ValueError, match="CALM has: Approved, Rejected, Ready for Approval, No Approval Required"):
-        calm(Ctx(), resource="requirements", operation="create", project_id=P_UUID,
-             data={"title": "A", "approval_status": "Pending Customer Confirmation"})
-    w.assert_not_called()
+def test_an_approval_state_calm_does_not_have_never_blocks_the_write(calm):
+    # The 2026-10-26 17:00 Studio trace: "Pending Customer Confirmation" made the
+    # create fail and the agent reported "not saved". Now: saved, and reported.
+    with patch.object(client, "_write", side_effect=_echo) as w:
+        out = calm(Ctx(), resource="requirements", operation="create", project_id=P_UUID,
+                   data={"title": "A", "priority": "Medium", "approval_status": "Pending Customer Confirmation"})
+    body = w.call_args.args[3]
+    assert "approvalState" not in body and body["priorityId"] == 30
+    assert "CALM has: Approved, Rejected, Ready for Approval, No Approval Required" in out["Not Written"]["approval_state"]
+
+
+@pytest.mark.parametrize("field, value, why", [
+    ("status", "Pending", "Allowed labels"), ("priority", "Urgent", "Very High, High, Medium or Low"),
+    ("due_date", "12/11/2026", "date like 2026-12-31"), ("parent_id", "3-99999999", "not linked"),
+])
+def test_a_value_calm_cant_take_is_reported_and_the_item_still_saved(calm, field, value, why):
+    with patch.object(client, "get_task", side_effect=client.NotFound("No task with display ID '3-99999999'")), \
+         patch.object(client, "create_task", return_value={"ID": "t", "Title": "A"}) as m:
+        out = calm(Ctx(), resource="tasks", operation="create", project_id=P_UUID,
+                   data={"title": "A", "task_type": "Task", field: value})
+    m.assert_called_once()
+    key = {"priority": "priority_id"}.get(field, field)
+    assert m.call_args.kwargs.get(key) is None and why in out["Not Written"][key]
+
+
+def test_an_update_whose_only_value_cant_be_written_changes_nothing(calm):
+    with patch.object(client, "update_task") as m, pytest.raises(ValueError, match="Nothing was changed.*priority_id"):
+        calm(Ctx(), resource="tasks", operation="update", resource_id=T_UUID, data={"priority": "Urgent"})
+    m.assert_not_called()
+
+
+def test_a_bad_task_type_on_create_is_still_refused(calm):
+    # Nothing can be created without a type, so this one does block.
+    with patch.object(client, "create_task") as m, pytest.raises(ValueError, match="Unknown task type 'Epic'"):
+        calm(Ctx(), resource="tasks", operation="create", project_id=P_UUID, data={"title": "A", "task_type": "Epic"})
+    m.assert_not_called()
 
 
 def test_approval_state_is_written_as_its_code(calm):
@@ -566,4 +595,11 @@ def test_kept_dates_cost_no_extra_write(calm):
          patch.object(client, "update_task") as m:
         calm(Ctx(), resource="tasks", operation="create", project_id=P_UUID,
              data={"title": "A", "task_type": "Task", "due_date": "2026-12-31"})
+    m.assert_not_called()
+
+
+def test_a_sub_task_without_its_parent_is_refused_before_writing(calm):
+    # Live 2026-10-27: SAP answers 400 "Invalid parent task id".
+    with patch.object(client, "create_task") as m, pytest.raises(ValueError, match="sub-task needs its parent"):
+        calm(Ctx(), resource="tasks", operation="create", project_id=P_UUID, data={"title": "A", "task_type": "Subtask"})
     m.assert_not_called()

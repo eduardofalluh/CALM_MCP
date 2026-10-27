@@ -214,3 +214,110 @@ def test_tags_that_stuck_are_just_returned(calm):
         out = calm(Ctx(), resource="task_tags", operation="update", resource_id=REQ_UUID,
                    data={"tags": ["Scope: Baseline"]})
     assert out["Tags"] == ["Scope: Baseline"] and "Not Written" not in out
+
+
+# --------------------------------------------------------------------------- #
+# From the 2026-10-27 Langfuse error report (63 failed calls, Oct 1-26)
+# --------------------------------------------------------------------------- #
+
+from src.calm import http_retry  # noqa: E402
+
+T_UUID = "6f708192-a3b4-4c5d-9e6f-708192a3b4c5"
+
+
+def _dropped():
+    return http_retry.WriteUnconfirmed("SAP closed the connection", "SAP closed the connection without a response")
+
+
+@pytest.fixture
+def no_sleep(monkeypatch):
+    monkeypatch.setattr(http_retry, "_sleep", lambda s: None)
+
+
+def test_tag_write_dropped_but_saved_is_confirmed(no_sleep):
+    with patch.object(client, "_write", side_effect=_dropped()) as w, \
+         patch.object(client, "_get_with_meta", return_value=({"id": T_UUID, "tags": ["Scope: Baseline"]}, None)):
+        out = client.set_task_tags("tok", T_UUID, ["Scope:Baseline"], base_url=BASE)
+    assert w.call_count == 1 and "tags are set" in out["Note"]
+
+
+def test_tag_write_dropped_and_missing_is_sent_once_more(no_sleep):
+    with patch.object(client, "_write", side_effect=[_dropped(), {}]) as w, \
+         patch.object(client, "_get_with_meta", return_value=({"id": T_UUID, "tags": []}, None)):
+        out = client.set_task_tags("tok", T_UUID, ["Scope: Baseline"], base_url=BASE)
+    assert w.call_count == 2 and "sent again" in out["Note"]
+
+
+def test_tag_write_dropped_twice_says_so(no_sleep):
+    with patch.object(client, "_write", side_effect=[_dropped(), _dropped()]), \
+         patch.object(client, "_get_with_meta", return_value=({"id": T_UUID, "tags": []}, None)), \
+         pytest.raises(RuntimeError, match="both attempts.*safe to retry"):
+        client.set_task_tags("tok", T_UUID, ["Scope: Baseline"], base_url=BASE)
+
+
+def test_a_tasks_comments_can_be_read(calm):
+    task = {"ID": T_UUID, "Display ID": "3-1"}
+    raw = [{"id": "c2", "text": "second", "createdTimestamp": "2026-10-26T10:00:00Z", "createdBy": "EXTERNAL_API"},
+           {"id": "c1", "text": "first", "createdTimestamp": "2026-10-25T10:00:00Z", "createdBy": "EXTERNAL_API"}]
+    with patch.object(client, "get_task", return_value=task) as g, patch.object(client, "_get", return_value=raw):
+        out = calm(Ctx(), resource="task_comments", operation="list", project_id=P_UUID, resource_id="3-1")
+    g.assert_called_once_with("tok", "3-1", BASE, project_id=P_UUID)
+    assert [c["Text"] for c in out] == ["first", "second"] and out[0]["Created By"] == "EXTERNAL_API"
+
+
+def test_a_requirements_linked_items_can_be_read(calm):
+    def fake_get(url, token):
+        return [{"id": "rel-1", "type": "0", "relationTaskId": "story-1"}]
+    story = ({"id": "story-1", "displayId": "3-61730", "title": "User Story", "type": "CALMUS"}, None)
+    with patch.object(client, "get_task", return_value={"ID": REQ_UUID}), \
+         patch.object(client, "_get", side_effect=fake_get), \
+         patch.object(client, "_get_with_meta", return_value=story):
+        out = calm(Ctx(), resource="task_relations", operation="get", project_id=P_UUID, resource_id="3-61724")
+    assert out == [{"Relation ID": "rel-1", "Relation Type": "0", "Related Task ID": "story-1",
+                    "Related Display ID": "3-61730", "Related Title": "User Story", "Related Type": "User Story"}]
+
+
+ANALYTICS = {"value": [
+    {"provider": "DP_TASKS", "d1k": "timebox", "d1v": "Sprint 1", "d2k": "statusText", "d2v": "Done", "m1k": "counter", "m1v": 3},
+    {"provider": "DP_TASKS", "d1k": "timebox", "d1v": "Sprint 2", "d2k": "statusText", "d2v": "Open", "m1k": "counter", "m1v": 5},
+]}
+
+
+def test_analytics_filters_on_dimensions(calm):
+    with patch.object(client, "_get", return_value=ANALYTICS):
+        out = calm(Ctx(), resource="analytics", operation="list", data={"filter": {"timebox": "sprint 1"}})
+    assert [r["timebox"] for r in out] == ["Sprint 1"]
+
+
+def test_analytics_unknown_dimension_is_answered_with_the_real_ones(calm):
+    with patch.object(client, "_get", return_value=ANALYTICS):
+        out = calm(Ctx(), resource="analytics", operation="list", data={"filter": {"taskType": "Requirement"}})
+    assert out["status"] == "invalid_request" and "['statusText', 'timebox']" in out["message"]
+
+
+def test_analytics_sap_refusing_a_dimension_filter_is_answered(calm):
+    # Live report 2026-10-23: "The property 'timeboxName' ... is not defined in type 'analytics.DataSet'".
+    refused = RuntimeError("CALM API error: HTTP 400 Bad Request at x — response: {\"error\":{\"message\":"
+                           "\"The property 'timeboxName', used in a query expression, is not defined in type 'analytics.DataSet'.\"}}")
+    with patch.object(client, "_get", side_effect=[refused, ANALYTICS]):
+        out = calm(Ctx(), resource="analytics", operation="list", data={"raw_filter": "timeboxName eq 'Sprint 1'"})
+    assert out["status"] == "invalid_request" and "data.filter" in out["message"] and "timebox" in out["message"]
+
+
+def test_a_roadmap_task_is_refused_before_writing(calm):
+    # Live: SAP answers 'The "type" is not valid to create.'
+    with patch.object(client, "create_task") as m, pytest.raises(ValueError, match="Roadmap tasks.*Project Task"):
+        calm(Ctx(), resource="tasks", operation="create", project_id=P_UUID, data={"title": "A", "task_type": "Roadmap Task"})
+    m.assert_not_called()
+
+
+def test_a_checklist_item_needs_its_quality_gate(calm):
+    with patch.object(client, "create_task") as m, pytest.raises(ValueError, match="checklist item needs its quality gate"):
+        calm(Ctx(), resource="tasks", operation="create", project_id=P_UUID, data={"title": "A", "task_type": "Checklist Item"})
+    m.assert_not_called()
+    with patch.object(client, "create_task", return_value={"ID": "c"}) as m, \
+         patch.object(client, "create_task_relation") as link:
+        calm(Ctx(), resource="tasks", operation="create", project_id=P_UUID,
+             data={"title": "A", "task_type": "Checklist Item", "parent_id": REQ_UUID})
+    assert m.call_args.kwargs["parent_id"] == REQ_UUID
+    link.assert_not_called()

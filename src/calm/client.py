@@ -1706,6 +1706,7 @@ def get_analytics(
     top: int | None = None,
     project_id: str | None = None,
     raw_filter: str | None = None,
+    where: dict | None = None,
 ) -> list[dict]:
     """Return CALM Analytics rows for a provider, unpivoted to flat dicts.
 
@@ -1720,7 +1721,10 @@ def get_analytics(
     are complete; pass ``top`` to cap the number of rows returned. ``project_id``
     filters client-side on the ``project`` dimension (the DataSet OData surface
     does not filter on pivoted dimension columns server-side). ``raw_filter``
-    appends a raw OData clause to the mandatory provider filter.
+    appends a raw OData clause to the mandatory provider filter. ``where`` keeps
+    rows whose dimensions equal the given values ({"timebox": "Sprint 1"}, case
+    ignored; a list matches any) — applied after reading, because the DataSet
+    can't filter on its pivoted dimension columns server-side.
     """
     flt = f"provider eq '{provider}'"
     if raw_filter:
@@ -1754,6 +1758,9 @@ def get_analytics(
     rows = [_unpivot_analytics_row(r) for r in raw]
     if project_id:
         rows = [r for r in rows if r.get("project") == project_id]
+    for dim, want in (where or {}).items():
+        wanted = {str(v).strip().lower() for v in (want if isinstance(want, list) else [want])}
+        rows = [r for r in rows if str(r.get(dim, "")).strip().lower() in wanted]
     if top is not None:
         rows = rows[:top]
     return rows
@@ -1922,7 +1929,6 @@ def _id_name_map(fetch, what: str) -> dict:
 WRITE_SETTLE = 2.0           # let SAP finish a fast-dropped write before checking
 SLOW_WRITE_SETTLE = 5.0      # more time when SAP was slow to begin with
 SLOW_WRITE = 5.0             # a drop after this many seconds may still be in progress
-UPDATE_RESEND_WITHIN = 15.0  # an update (idempotent) is re-sent if dropped this fast
 _CREATE_LOOKBACK = 300.0     # seconds of clock skew allowed on createdTimestamp
 _TIMESTAMP = re.compile(
     r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-]\d{2}:?\d{2})?$"
@@ -2030,8 +2036,9 @@ def _recover_task_update(
     stored, state = check(took > SLOW_WRITE)
     if state is True:
         return _with_note(_format_task(stored), applied_note)
-    if took > UPDATE_RESEND_WITHIN:
-        raise failed(first, state, resent=False, seconds=took) from first
+    # Not on the task yet. An update only sets values, so sending it again is
+    # safe even if the first attempt is still finishing (slow tenants drop
+    # writes after 18-31s): both set the same values.
     log.warning("task update %s unconfirmed (%s); sending the same update again",
                 task_id, first.reason)
     again_started = http_retry._clock()
@@ -2838,6 +2845,37 @@ def api_delete(token: str, path: str, if_match: str | None = None, base_url: str
 
 # --- Task sub-entities (plain REST, no If-Match) ---------------------------
 
+def get_task_comments(token: str, task_id: str, base_url: str | None = None) -> list[dict]:
+    """A task's comments, oldest first."""
+    items = _get(f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/{task_id}/comments", token) or []
+    rows = [{"ID": c.get("id"), "Text": c.get("text"), "Created": c.get("createdTimestamp"),
+             "Changed": c.get("changedTimestamp"), "Created By": c.get("createdBy")}
+            for c in items if isinstance(c, dict)]
+    return sorted(rows, key=lambda r: str(r.get("Created") or ""))
+
+
+_RELATED_READ_MAX = 25
+
+
+def get_task_relations(token: str, task_id: str, base_url: str | None = None) -> list[dict]:
+    """A task's relations — on a requirement, the user stories and tasks linked
+    under it — each with the related task's display ID, title and type."""
+    base = _base_url(base_url)
+    items = _get(f"{base}/api/calm-tasks/v1/tasks/{task_id}/relations", token) or []
+    rows = []
+    for n, rel in enumerate(r for r in items if isinstance(r, dict)):
+        related = _read_task_back(f"{base}/api/calm-tasks/v1/tasks/{rel.get('relationTaskId')}", token) \
+            if n < _RELATED_READ_MAX else None
+        rows.append({
+            "Relation ID": rel.get("id"), "Relation Type": rel.get("type"),
+            "Related Task ID": rel.get("relationTaskId"),
+            "Related Display ID": (related or {}).get("displayId"),
+            "Related Title": (related or {}).get("title"),
+            "Related Type": TASK_TYPE_MAP.get((related or {}).get("type"), (related or {}).get("type")),
+        })
+    return rows
+
+
 def create_task_relation(
     token: str, task_id: str, relation_task_id: str, relation_type: str = "0", base_url: str | None = None, user_email: str | None = None
 ) -> dict:
@@ -2852,11 +2890,43 @@ def delete_task_relation(token: str, relation_id: str, base_url: str | None = No
     return {"deleted": relation_id}
 
 
+def _tag_key(tag: Any) -> str:
+    return " ".join(str(tag).replace(":", ": ").split()).lower()
+
+
 def set_task_tags(token: str, task_id: str, tags: list, base_url: str | None = None, user_email: str | None = None) -> dict:
-    """Replace a task's tag assignments. Tags look like "Group: Tag"."""
-    url = f"{_base_url(base_url)}/api/calm-tasks/v1/tasks/updateTags"
-    result = _write("POST", url, token, {"taskId": task_id, "tags": tags}, user_email=user_email)
-    return result if (isinstance(result, dict) and result) else {"ok": True, "taskId": task_id, "tags": tags}
+    """Replace a task's tag assignments. Tags look like "Group: Tag".
+
+    Setting tags replaces them all, so it is safe to repeat: when SAP drops the
+    connection, the task is read back and, if the tags aren't there, they are
+    sent once more."""
+    base = _base_url(base_url)
+    url = f"{base}/api/calm-tasks/v1/tasks/updateTags"
+    body = {"taskId": task_id, "tags": tags}
+    done = {"ok": True, "taskId": task_id, "tags": tags}
+
+    def stored_ok() -> bool:
+        http_retry._sleep(WRITE_SETTLE)
+        item = _read_task_back(f"{base}/api/calm-tasks/v1/tasks/{task_id}", token)
+        return item is not None and {_tag_key(t) for t in item.get("tags") or []} == {_tag_key(t) for t in tags}
+
+    for attempt in (1, 2):
+        try:
+            result = _write("POST", url, token, body, user_email=user_email)
+        except http_retry.WriteUnconfirmed as exc:
+            if stored_ok():
+                return _with_note(done, "SAP dropped the connection, but reading the task back shows the tags are set.")
+            if attempt == 2:
+                raise RuntimeError(
+                    f"SAP Cloud ALM dropped the connection on both attempts to set the tags of task "
+                    f"{task_id} ({exc.reason or 'no response'}), and they are not on the task. Setting "
+                    "tags is safe to retry; if it keeps happening, SAP is failing writes on this tenant."
+                ) from exc
+            log.warning("tag update for %s unconfirmed; sending it again", task_id)
+            continue
+        out = result if (isinstance(result, dict) and result) else done
+        return _with_note(out, "SAP dropped the first attempt; the tags were sent again and set.") if attempt == 2 else out
+    return done  # pragma: no cover - the loop always returns or raises
 
 
 def create_task_comment(
