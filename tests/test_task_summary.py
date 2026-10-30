@@ -177,7 +177,7 @@ def test_list_with_filter_only_returns_rows(fn):
 # calm_api_read hint for the exact failure in the trace
 # --------------------------------------------------------------------------- #
 
-def test_api_read_tasks_filter_error_gets_a_hint(monkeypatch):
+def _api_read(monkeypatch):
     monkeypatch.setenv("CALM_TOKEN", "tok")
     monkeypatch.setenv("CALM_BASE_URL", "https://x.alm.cloud.sap")
     from fastmcp import FastMCP
@@ -186,26 +186,64 @@ def test_api_read_tasks_filter_error_gets_a_hint(monkeypatch):
 
     mcp = FastMCP("t")
     register(mcp)
-    read = asyncio.run(mcp.get_tool("calm_api_read")).fn
-    err = RuntimeError("CALM API error: HTTP 400 Bad Request at https://x/api/calm-tasks/v1/tasks — response: "
-                       "{\"message\":\"Required request parameter 'projectId' for method parameter type UUID is not present\"}")
+    return asyncio.run(mcp.get_tool("calm_api_read")).fn
+
+
+def _sap_400(message: str) -> RuntimeError:
+    return RuntimeError("CALM API error: HTTP 400 Bad Request at https://x/api/calm-tasks/v1/tasks — response: "
+                        + json.dumps({"message": message}))
+
+
+def test_api_read_tasks_filter_error_is_an_answer_with_a_hint(monkeypatch):
+    read = _api_read(monkeypatch)
+    err = _sap_400("Required request parameter 'projectId' for method parameter type UUID is not present")
     with patch("src.calm.client.api_read", side_effect=err):
-        with pytest.raises(RuntimeError) as got:
-            read("api/calm-tasks/v1/tasks", Ctx(), params={"$filter": "projectId eq x"})
-    assert "HTTP 400" in str(got.value) and "summarize_by" in str(got.value)
+        got = read("api/calm-tasks/v1/tasks", Ctx(), params={"$filter": "projectId eq x"})
+    assert got["status"] == "invalid_request" and "HTTP 400" in got["message"]
+    assert "summarize_by" in got["hint"]
 
 
-def test_api_read_other_errors_unchanged(monkeypatch):
-    monkeypatch.setenv("CALM_TOKEN", "tok")
-    monkeypatch.setenv("CALM_BASE_URL", "https://x.alm.cloud.sap")
-    from fastmcp import FastMCP
+def test_api_read_drops_top_sap_does_not_support(monkeypatch):
+    # Langfuse 2026-10-30: the Tasks API answered 400 'Query parameter "$top" is not supported yet.'
+    read = _api_read(monkeypatch)
+    rows = [{"id": "T1"}, {"id": "T2"}]
+    with patch("src.calm.client.api_read",
+               side_effect=[_sap_400('Query parameter "$top" is not supported yet.'), rows]) as m:
+        got = read("api/calm-tasks/v1/tasks", Ctx(), params={"projectId": "P1", "$top": 1000})
+    assert m.call_args.kwargs["params"] == {"projectId": "P1"}
+    assert got["Ignored Parameters"] == ["$top"] and got["Result"] == rows
+    assert "complete answer" in got["Note"]
 
-    from src.calm.tools.advanced_write import register
 
-    mcp = FastMCP("t")
-    register(mcp)
-    read = asyncio.run(mcp.get_tool("calm_api_read")).fn
+def test_api_read_drops_each_unsupported_option_in_turn(monkeypatch):
+    read = _api_read(monkeypatch)
+    with patch("src.calm.client.api_read",
+               side_effect=[_sap_400('Query parameter "$top" is not supported yet.'),
+                            _sap_400('Query parameter "$skip" is not supported yet.'), []]) as m:
+        got = read("api/calm-tasks/v1/tasks", Ctx(), params={"projectId": "P1", "$top": 5, "$skip": 5})
+    assert m.call_count == 3 and m.call_args.kwargs["params"] == {"projectId": "P1"}
+    assert got["Ignored Parameters"] == ["$top", "$skip"]
+
+
+def test_api_read_never_drops_filter(monkeypatch):
+    # Leaving $filter out would answer a different question: say so instead.
+    read = _api_read(monkeypatch)
+    with patch("src.calm.client.api_read",
+               side_effect=_sap_400('Query parameter "$filter" is not supported yet.')) as m:
+        got = read("api/calm-tasks/v1/tasks", Ctx(), params={"projectId": "P1", "$filter": "status eq 'x'"})
+    assert m.call_count == 1
+    assert got["status"] == "invalid_request" and "calm_resource" in got["hint"]
+
+
+def test_api_read_404_is_an_answer(monkeypatch):
+    read = _api_read(monkeypatch)
     with patch("src.calm.client.api_read", side_effect=RuntimeError("CALM API error: HTTP 404 Not Found")):
-        with pytest.raises(RuntimeError) as got:
-            read("api/calm-projects/v1/projects/x", Ctx())
-    assert str(got.value) == "CALM API error: HTTP 404 Not Found"
+        got = read("api/calm-projects/v1/projects/x", Ctx())
+    assert got["status"] == "not_found" and "api/calm-projects/v1/projects/x" in got["message"]
+
+
+def test_api_read_outage_still_fails(monkeypatch):
+    read = _api_read(monkeypatch)
+    with patch("src.calm.client.api_read", side_effect=RuntimeError("CALM API error: HTTP 503 Service Unavailable")):
+        with pytest.raises(RuntimeError, match="503"):
+            read("api/calm-projects/v1/projects", Ctx())

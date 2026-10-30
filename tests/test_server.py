@@ -58,6 +58,7 @@ class _FakeResp:
         self.text = text
         self.status_code = status_code
         self.headers = headers or {}
+        self.reason = "Bad Request" if status_code >= 400 else "OK"
 
     def raise_for_status(self):
         pass
@@ -243,6 +244,11 @@ def _fake_get(url, *a, **kw):
         return _FakeResp(json.dumps({"id": "X", "name": "old"}), headers={"ETag": 'W/"1"'})
 
     # --- Task list / single task -------------------------------------------
+    if "calm-tasks/v1/tasks" in url and "%%24" in url:
+        # SAP's Tasks API is plain REST and refuses OData options (live, 2026-10-30).
+        name = url.split("%%24", 1)[1].split("=", 1)[0]
+        return _FakeResp(json.dumps({"message": f'Query parameter "${name}" is not supported yet.'}),
+                         status_code=400)
     if "/tasks/" in url:
         # Single-task GET used to auto-detect type for status-by-label updates.
         return _FakeResp(json.dumps({"id": "T1", "type": "CALMTASK", "title": "old"}))
@@ -753,6 +759,18 @@ async def main() -> int:
             })
             check("calm_api_delete ok", res.is_error is not True,
                   f"err {res.content[0].text if res.content else ''}")
+            res = await session.call_tool("calm_api_read", {
+                "path": "api/calm-tasks/v1/tasks", "params": {"projectId": "P001", "$top": 1000}})
+            got = _payload(res)
+            check("calm_api_read leaves out $top the Tasks API refuses", res.is_error is not True
+                  and got.get("Ignored Parameters") == ["$top"] and len(got.get("Result", [])) == 2,
+                  f"got {got or (res.content[0].text if res.content else '')}")
+            res = await session.call_tool("calm_api_read", {
+                "path": "api/calm-tasks/v1/tasks", "params": {"projectId": "P001", "$filter": "x"}})
+            got = _payload(res)
+            check("calm_api_read $filter on tasks is an answer, not an error", res.is_error is not True
+                  and got.get("status") == "invalid_request" and "calm_resource" in got.get("hint", ""),
+                  f"got {got or (res.content[0].text if res.content else '')}")
 
     # ================= BTP Test Management (TM OData) =================
     print("\nConnecting with TM OData configured...")

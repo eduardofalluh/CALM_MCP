@@ -14,12 +14,32 @@ API-relative path, so these can hit anything the token is scoped for.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fastmcp import Context, FastMCP
 
 from src.calm import client
 from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
+from src.calm.tools.unified import _unanswerable_read
+
+# Query options that only shape or page an answer: leaving one out can't change
+# what the answer is about ($filter can, so it is never dropped).
+_DROPPABLE = {"$top", "$skip", "$select", "$orderby", "$count", "$expand"}
+_UNSUPPORTED = re.compile(r'Query parameter \\?"([^"\\]+)\\?" is not supported')
+_TASKS_HINT = ("The Tasks API is plain REST, not OData: it takes projectId and no $filter, $select "
+               "or $top. Use calm_resource(resource='tasks', operation='list', project_id=<uuid>, "
+               "data={'timebox': ..., 'team': ..., 'summarize_by': ['Timebox', 'Responsible Team']}) "
+               "for filtered lists and totals.")
+
+
+def _unsupported_option(exc: Exception, params: dict | None) -> str | None:
+    """The params key SAP refused as unsupported, when leaving it out is safe."""
+    match = _UNSUPPORTED.search(str(exc))
+    if not (match and params):
+        return None
+    name = match.group(1).lower()
+    return next((k for k in params if k.lower() == name and name in _DROPPABLE), None)
 
 
 def register(mcp: FastMCP) -> None:
@@ -47,24 +67,43 @@ def register(mcp: FastMCP) -> None:
                 "api/calm-projects/v1/projects" (list projects → get project UUIDs),
                 "api/calm-tasks/v1/tasks/{id}" (one task),
                 "api/calm-projects/v1/projects/{id}" (one project).
-            params: optional query parameters, e.g. {"$top": 50}.
+            params: optional query parameters, e.g. {"projectId": "<uuid>"}. OData
+                options ($top, $skip, $select, $orderby) work on OData services only;
+                where SAP doesn't support one it is left out and the answer says so.
 
-        Returns the parsed JSON response.
+        Returns the parsed JSON response. A read SAP refuses (400 / 403 / 404) comes
+        back as {"status": ..., "message": ...} instead of an error.
         """
         if not path:
             raise ValueError("path is required")
         h = get_calm_headers(ctx)
+        ignored: list[str] = []
         try:
-            return client.api_read(token=h.token, path=path, params=params, base_url=h.base_url)
-        except RuntimeError as exc:
-            if "calm-tasks" in path and "Required request parameter 'projectId'" in str(exc):
-                raise RuntimeError(
-                    f"{exc}\nHint: the Tasks API is plain REST, not OData — it does not accept "
-                    "$filter or $select. Use calm_resource(resource='tasks', operation='list', "
-                    "project_id=<uuid>, data={'timebox': ..., 'team': ..., 'summarize_by': "
-                    "['Timebox', 'Responsible Team']}) for filtered lists and totals."
-                ) from exc
-            raise
+            while True:
+                try:
+                    result = client.api_read(token=h.token, path=path, params=params, base_url=h.base_url)
+                    break
+                except RuntimeError as exc:
+                    key = _unsupported_option(exc, params)
+                    if key is None:
+                        raise
+                    ignored.append(key)
+                    params = {k: v for k, v in (params or {}).items() if k != key}
+        except (ValueError, RuntimeError) as exc:
+            answer = _unanswerable_read("item", "get", path, exc)
+            if answer is None:
+                raise
+            answer["hint"] = (_TASKS_HINT if "calm-tasks" in path else
+                              "Check the path, the IDs in it and the parameters; prefer calm_resource "
+                              "for the resources it covers.")
+            return answer
+        if not ignored:
+            return result
+        paged = any(k.lower() in ("$top", "$skip") for k in params or {})
+        return {"Ignored Parameters": ignored,
+                "Note": (f"SAP's API here does not support {', '.join(ignored)}, so it was left out"
+                         + ("." if paged else " and this is the complete answer — no paging needed.")),
+                "Result": result}
 
     @mcp.tool()
     def calm_api_write(
