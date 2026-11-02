@@ -816,7 +816,9 @@ def _cap_rows(resource: str, result: Any) -> Any:
     counts, and how to narrow or page — never a list too long to read right."""
     key = None
     if isinstance(result, dict):
-        key = next((k for k in ("Tasks", "Items") if isinstance(result.get(k), list)), None)
+        # The rows of a shaped answer: Tasks / Items, or the OData list's own name.
+        key = next((k for k, v in result.items() if isinstance(v, list) and k not in ("Grouped By", "Groups")
+                    and ("Total Matching" in result or k in ("Tasks", "Items"))), None)
         rows = result.get(key) if key else None
     else:
         rows = result
@@ -843,6 +845,63 @@ def _cap_rows(resource: str, result: Any) -> Any:
     check.update({"Returned": 0, "Not Returned": total})
     out["Check"] = check
     return out
+
+
+_ANALYTICS_IDS = ("taskGUID", "taskID", "featureGUID", "featureID", "project")
+
+
+def _analytics_summary(rows: list[dict], by: Any) -> dict:
+    """Analytics grouped on the server. A task has one row per tag / workstream,
+    so each group counts a task — and adds its metrics (story points, effort) —
+    once, never once per row."""
+    names = sorted({k for r in rows for k in r if k != "Metrics"})
+    wanted = client._as_list(by)
+    if not wanted:
+        raise ValueError("summarize_by needs one or more dimension names")
+    fields = []
+    for f in wanted:
+        hit = next((n for n in names if client._squash(n) == client._squash(f)), None)
+        if hit is None and rows:
+            raise ValueError(f"analytics rows have no dimension '{f}'. Group on: {', '.join(names)}")
+        fields.append(hit or f)
+    ident = next((k for k in _ANALYTICS_IDS if any(r.get(k) for r in rows)), None)
+
+    def metrics(r: dict) -> dict:
+        out = {}
+        for k, v in (r.get("Metrics") or {}).items():
+            try:
+                out[k] = float(v)
+            except (TypeError, ValueError):
+                pass
+        return out
+
+    def add(acc: dict, r: dict) -> None:
+        for k, v in metrics(r).items():
+            if k != "counter":
+                acc[k] = acc.get(k, 0.0) + v
+
+    groups: dict = {}
+    total: dict = {}
+    seen_all: set = set()
+    for i, r in enumerate(rows):
+        key = tuple(_group_key(r.get(f)) for f in fields)
+        g = groups.setdefault(key, {"ids": set(), "rows": 0, "sums": {}})
+        g["rows"] += 1
+        item = r.get(ident) if ident else i
+        if item not in g["ids"]:
+            g["ids"].add(item)
+            add(g["sums"], r)
+        if item not in seen_all:
+            seen_all.add(item)
+            add(total, r)
+    out = [{**{f: ("(none)" if v is None else v) for f, v in zip(fields, key)},
+            "Items": len(g["ids"]), "Rows": g["rows"], **{k: round(v, 2) for k, v in g["sums"].items()}}
+           for key, g in sorted(groups.items(), key=lambda kv: tuple(client._natural(v) for v in kv[0]))]
+    return {"Grouped By": fields, "Groups": out, "Total Items": len(seen_all),
+            "Totals": {k: round(v, 2) for k, v in total.items()},
+            "Check": {"Rows Read": len(rows), "Distinct Items": len(seen_all), "Counted By": ident or "row"},
+            "Note": ("Analytics has one row per task and tag / workstream (a daily snapshot): each group "
+                     "counts an item and adds its metrics once. For live task counts use tasks list.")}
 
 
 def _filter_report(unmatched: dict) -> str:
@@ -1335,7 +1394,10 @@ def register(mcp: FastMCP) -> None:
                 - analytics: list only. data={provider (DP_TASKS default,
                     DP_PROJECTS, DP_FEATURES; DP_TESTS = test execution status,
                     needs calm-api.tests.read), top (cap rows; default = all pages),
-                    filter ({dimension: value}, e.g. {"statusText": "Done"})}; pass
+                    filter ({dimension: value}, e.g. {"statusText": "Done"}), skip,
+                    summarize_by (dimensions → per group: Items = distinct tasks,
+                    Rows, and story points / effort summed once per task; use it
+                    for story-point / effort rollups)}; pass
                     project_id to filter to one project. Rows are flattened dimensions (statusText, status,
                     phase, team, workstream, priority, dueDate, overdue, requirement,
                     taskID, …) plus a Metrics dict (counter, storyPoints, effort).
@@ -2820,19 +2882,25 @@ def register(mcp: FastMCP) -> None:
                 where = d.get("filter") or d.get("where")
                 if where is not None and not isinstance(where, dict):
                     raise ValueError('data.filter must be an object of dimension: value, e.g. {"timebox": "Sprint 1"}')
+                summarize = d.get("summarize_by")
+                skip, top = _page_bounds({k: d[k] for k in ("top", "skip", "offset") if d.get(k) is not None})
+                if summarize is not None and (top or skip):
+                    raise ValueError("top / skip do not apply to summarize_by (a summary is already small) — drop them")
                 try:
                     rows = client.get_analytics(
                         h.token,
                         provider=provider,
                         base_url=h.base_url,
-                        top=int(d["top"]) if d.get("top") is not None else None,
+                        top=skip + top if top is not None else None,
                         project_id=project_id or d.get("project_id"),
                         raw_filter=d.get("raw_filter"),
                         where=where,
                     )
                     if where and not rows:
                         _check_analytics_dims(h, provider, where)
-                    return rows
+                    if summarize is not None:
+                        return _analytics_summary(rows, summarize)
+                    return rows[skip:]
                 except RuntimeError as exc:
                     if "is not defined in type" in str(exc):
                         # The DataSet stores dimensions pivoted, so SAP can't filter on them.

@@ -214,3 +214,51 @@ def test_api_read_never_returns_a_list_too_long_to_count(monkeypatch):
     assert out["Total Rows"] == LIST_ROW_LIMIT + 1 and out["Returned"] == 0 and "summarize_by" in out["hint"]
     with patch("src.calm.client.api_read", return_value={"value": rows[:100]}):
         assert read("api/x/v1/Things", Ctx(), params={"$top": 100}) == {"value": rows[:100]}
+
+
+# --------------------------------------------------------------------------- #
+# Analytics: one row per task x tag x workstream -> rollups count a task once
+# --------------------------------------------------------------------------- #
+
+def _an(task, tag, status="Open", sp="3"):
+    return {"Provider": "DP_TASKS", "taskGUID": task, "taskID": task, "tag": tag, "statusText": status,
+            "Metrics": {"counter": "1", "storyPoints": sp, "effort": "2.00"}}
+
+
+ANALYTICS = [_an("t1", "SIT"), _an("t1", "UAT"), _an("t2", "SIT", "Done", "5"), _an("t3", None, "Done", "8")]
+
+
+def _analytics(calm, **data):
+    with patch("src.calm.client.get_analytics", return_value=list(ANALYTICS)) as ga:
+        return calm(Ctx(), resource="analytics", operation="list", project_id="p1", data=data), ga
+
+
+def test_analytics_rollup_counts_each_task_once(calm):
+    out, _ = _analytics(calm, summarize_by="statusText")
+    groups = {g["statusText"]: g for g in out["Groups"]}
+    assert groups["Open"]["Items"] == 1 and groups["Open"]["Rows"] == 2 and groups["Open"]["storyPoints"] == 3
+    assert groups["Done"]["Items"] == 2 and groups["Done"]["storyPoints"] == 13
+    assert out["Total Items"] == 3 and out["Totals"]["storyPoints"] == 16 and out["Totals"]["effort"] == 6
+    assert out["Check"] == {"Rows Read": 4, "Distinct Items": 3, "Counted By": "taskGUID"}
+
+
+def test_analytics_rollup_by_tag_counts_a_task_in_each_of_its_tags(calm):
+    out, _ = _analytics(calm, summarize_by="TAG")
+    assert {(g["tag"], g["Items"]) for g in out["Groups"]} == {("SIT", 2), ("UAT", 1), ("(none)", 1)}
+    assert out["Total Items"] == 3
+
+
+def test_analytics_pages_and_refuses_unknown_dimensions(calm):
+    out, ga = _analytics(calm, top=2, skip=1)
+    assert ga.call_args.kwargs["top"] == 3 and len(out) == 3  # mock ignores top; the slice starts at skip
+    out, _ = _analytics(calm, summarize_by="colour")
+    assert out["status"] == "invalid_request" and "statusText" in out["message"]
+
+
+def test_odata_shaped_answer_is_capped_too(calm):
+    from src.calm.tools.unified import LIST_ROW_LIMIT
+    docs = {"Total Matching": LIST_ROW_LIMIT + 5, "Returned": LIST_ROW_LIMIT + 5,
+            "Documents": [{"ID": f"d{i}", "Status": "Draft"} for i in range(LIST_ROW_LIMIT + 5)]}
+    with patch("src.calm.odata_service.list_rows", return_value=docs):
+        out = calm(Ctx(), resource="documents", operation="list", project_id="p1", data={"top": 1000})
+    assert out["Returned"] == 0 and "Documents" not in out and out["Total Matching"] == LIST_ROW_LIMIT + 5
