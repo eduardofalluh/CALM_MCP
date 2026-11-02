@@ -29,8 +29,8 @@ _DROPPABLE = {"$top", "$skip", "$select", "$orderby", "$count", "$expand"}
 _UNSUPPORTED = re.compile(r'Query parameter \\?"([^"\\]+)\\?" is not supported')
 _TASKS_HINT = ("The Tasks API is plain REST, not OData: it takes projectId and no $filter, $select "
                "or $top. Use calm_resource(resource='tasks', operation='list', project_id=<uuid>, "
-               "data={'timebox': ..., 'team': ..., 'summarize_by': ['Timebox', 'Responsible Team']}) "
-               "for filtered lists and totals.")
+               "data={'assignee': ..., 'status': ..., 'overdue': True, 'timebox': ..., 'team': ..., "
+               "'summarize_by': ['AssigneeName', 'Status']}) for filtered lists and exact totals.")
 
 
 def _unsupported_option(exc: Exception, params: dict | None) -> str | None:
@@ -58,9 +58,11 @@ def register(mcp: FastMCP) -> None:
 
         Do NOT use it to list, filter, count or sum tasks: the Tasks API
         (api/calm-tasks/v1/tasks) is plain REST, not OData — it takes projectId as
-        a query parameter and rejects $filter / $select. Use
+        a query parameter and rejects $filter / $select / $top, and a whole
+        project's tasks are too many to count by hand. Use
         calm_resource(resource="tasks", operation="list", project_id=...,
-        data={"timebox": ..., "team": ..., "summarize_by": [...]}) instead.
+        data={"assignee": ..., "status": ..., "overdue": true, "timebox": ...,
+        "team": ..., "summarize_by": [...]}) instead: it counts exactly, server-side.
 
         Args:
             path: API-relative path from the tenant base URL, e.g.

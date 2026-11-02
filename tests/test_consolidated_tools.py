@@ -98,7 +98,7 @@ class TestUnifiedToolRequirements:
         ]
         result = _tool_fn()(mock_ctx, resource="requirements", operation="list", project_id="P001")
         assert len(result) == 1
-        mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type="Requirement")
+        mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type="Requirement", tag=None)
 
 
 class TestUnifiedToolTeams:

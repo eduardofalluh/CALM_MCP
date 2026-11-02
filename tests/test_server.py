@@ -256,6 +256,7 @@ def _fake_get(url, *a, **kw):
         return _FakeResp(json.dumps([
             {"id": "R1", "displayId": "3-60729", "title": "Req A", "type": "CALMREQU", "status": "CIPREQUOPEN"},
             {"id": "K1", "title": "Task B", "type": "CALMTASK", "status": "CIPTKOPEN",
+             "dueDate": "2020-01-31", "assigneeName": "Person Alpha", "assigneeId": "U1",
              "responsibleTeamId": "TEAM1", "timeboxId": "TB1", "effort": 8.0},
         ]))
 
@@ -443,12 +444,33 @@ async def main() -> int:
                   isinstance(found, dict) and found.get("Total Matching") == 1
                   and found.get("Tasks") == [{"ID": "K1", "Title": "Task B"}], f"got {found}")
             res = await _call(session, "tasks", "list", project_id="P001",
-                              data={"search": "task b", "status": "Open"})
+                              data={"search": "task b", "colour": "Open"})
             refused = _payload(res)
             check("tasks list answers an unknown data key (no tool error, nothing listed)",
                   res.is_error is not True and isinstance(refused, dict)
                   and refused.get("status") == "invalid_request"
                   and "does not support" in refused.get("message", ""), f"got {str(refused)[:160]}")
+            res = await _call(session, "tasks", "list", project_id="P001",
+                              data={"assignee": "alpha", "overdue": True, "summarize_by": ["AssigneeName", "Status"]})
+            late = _payload(res)
+            check("overdue tasks of one person: exact count with a Check",
+                  res.is_error is not True and late.get("Total Tasks") == 1
+                  and late.get("Groups", [{}])[0].get("AssigneeName") == "Person Alpha"
+                  and late.get("Check", {}).get("Tasks Read") == 2
+                  and late.get("Check", {}).get("Groups Add Up") is True, f"got {late}")
+            res = await _call(session, "tasks", "list", project_id="P001",
+                              data={"assignee": "Persn Alpa", "overdue": True})
+            typo = _payload(res)
+            check("a person with no tasks is answered with the names present",
+                  res.is_error is not True and typo.get("status") == "invalid_request"
+                  and "Person Alpha" in typo.get("message", ""), f"got {str(typo)[:200]}")
+            res = await _call(session, "requirements", "list", project_id="P001",
+                              data={"overdue": True, "summarize_by": "Status"})
+            reqs = _payload(res)
+            check("requirements list takes the same filters (none overdue, 1 without due date)",
+                  res.is_error is not True and reqs.get("Total Tasks") == 0
+                  and reqs.get("Check", {}).get("Tasks Read") == 1
+                  and reqs.get("Check", {}).get("Tasks Without Due Date") == 1, f"got {reqs}")
             res = await _call(session, "requirements", "list")
             missing = _payload(res)
             check("a read missing project_id answers what is missing (no tool error)",

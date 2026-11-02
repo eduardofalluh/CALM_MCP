@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
 
 from fastmcp import Context, FastMCP
@@ -66,8 +67,16 @@ def _is_not_authorized(exc: Exception) -> bool:
 
 # data keys tasks list understands; anything else is refused, never ignored: an
 # ignored filter silently returns the whole project (thousands of rows).
-_TASK_LIST_OPTIONS = ("tag", "timebox", "team", "search", "top", "fields", "summarize_by")
-_TASK_LIST_ALIASES = {"query": "search", "title": "search", "limit": "top", "sprint": "timebox"}
+_TASK_LIST_OPTIONS = ("tag", "timebox", "team", "search", "top", "fields", "summarize_by", "filter",
+                      "assignee", "status", "priority", "overdue", "due_before", "due_after",
+                      "due_from", "due_to", "as_of")
+_TASK_LIST_ALIASES = {"query": "search", "title": "search", "limit": "top", "sprint": "timebox",
+                      "where": "filter", "filters": "filter", "responsible": "assignee",
+                      "assigned_to": "assignee", "assignee_name": "assignee", "owner": "assignee",
+                      "person": "assignee", "processor": "assignee", "is_overdue": "overdue"}
+# Shortcuts for the most asked-for fields of data.filter.
+_TASK_FILTER_SHORTCUTS = {"assignee": "AssigneeName", "status": "Status", "priority": "Priority"}
+_DUE_KEYS = ("due_before", "due_after", "due_from", "due_to")
 TASK_SEARCH_DEFAULT_TOP = 25
 
 
@@ -87,7 +96,8 @@ def _task_list_options(d: dict, project_id: str | None, task_type: str | None):
             else:
                 task_type = value
             continue
-        name = _TASK_LIST_ALIASES.get(key, key)
+        flat = str(key).strip().lower().replace(" ", "_")
+        name = _TASK_LIST_ALIASES.get(flat, flat)
         if name not in _TASK_LIST_OPTIONS:
             unknown.append(key)
         elif name in opts and opts[name] != value:
@@ -97,11 +107,36 @@ def _task_list_options(d: dict, project_id: str | None, task_type: str | None):
     if unknown:
         raise ValueError(
             f"tasks list does not support data key(s) {unknown}. Supported: tag, timebox, "
-            "team, search (text matched against title / ID / display ID / external ID, best "
-            "matches first — use it for lookups and duplicate checks), top (max rows to "
-            "return), fields (row fields to return), summarize_by. Pass the task type as the "
-            "task_type argument."
+            "team, assignee, status, priority, overdue, due_before, due_after, due_from, due_to, "
+            "as_of, filter ({field: value} on any task field), search (text matched against "
+            "title / ID / display ID / external ID, best matches first — use it for lookups and "
+            "duplicate checks), top (max rows to return), fields (row fields to return), "
+            "summarize_by. Pass the task type as the task_type argument."
         )
+    where = opts.pop("filter", None) or {}
+    if not isinstance(where, dict):
+        raise ValueError("filter must be an object: {field: value or [values]}, e.g. "
+                         "{\"Status\": [\"Open\", \"Blocked\"], \"Priority\": \"High\"}")
+    where = {client.task_filter_field(k): v for k, v in where.items()}
+    for short, field in _TASK_FILTER_SHORTCUTS.items():
+        if short in opts:
+            value = opts.pop(short)
+            if field in where and where[field] != value:
+                raise ValueError(f"data has both '{short}' and filter.{field} with different values")
+            where[field] = value
+    if where:
+        opts["where"] = where
+    if "overdue" in opts:
+        flag = opts["overdue"]
+        flag = {"true": True, "yes": True, "false": False, "no": False}.get(str(flag).strip().lower(), flag)
+        if not isinstance(flag, bool):
+            raise ValueError(f"overdue must be true or false (got {opts['overdue']!r})")
+        opts["overdue"] = flag
+    if "as_of" in opts and "overdue" not in opts:
+        raise ValueError("as_of is the day overdue is judged on — pass it with overdue")
+    for key in (*_DUE_KEYS, "as_of"):
+        if key in opts:
+            opts[key] = client.api_date(opts[key], key)
     if "top" in opts:
         top = opts["top"]
         if isinstance(top, float) and top.is_integer():
@@ -902,6 +937,18 @@ def register(mcp: FastMCP) -> None:
                 → resource="tasks", operation="list", project_id=X,
                 data={"tag":"<TAG>"}  (returns the whole tag FAMILY — the exact
                 tag PLUS every "<TAG> - <area>" sub-tag — and never truncates)
+          - "how many tasks are overdue for <person>", "<person>'s open
+            tasks", "blocked tasks due this month" — ANY count of tasks or
+            requirements by person, status, priority or due date
+                → resource="tasks" (or "requirements"), operation="list",
+                project_id=X, data={"assignee": "<name or email>",
+                "overdue": true, "summarize_by": ["AssigneeName", "Status"]}
+                Overdue = due before today and not Done / Not Relevant
+                (CALM's own rule). "Total Tasks" is the exact count over EVERY
+                task of the project and "Check" proves nothing was dropped
+                (Tasks Read, Matched, Groups Add Up). NEVER list rows and count
+                them yourself: a long list is trimmed before you see it and the
+                count comes out wrong. Report the server's numbers as given.
           - "task counts / effort per sprint and per team", "sprint planning",
             any count or effort total over tasks
                 → resource="tasks", operation="list", project_id=X,
@@ -914,6 +961,7 @@ def register(mcp: FastMCP) -> None:
                 hand and never use calm_api_read for this.
           - "requirements in project X"
                 → resource="requirements", operation="list", project_id=X
+                (takes the same data filters and summarize_by as tasks list)
           - ONE item by its ID — "show requirement 3-60729", "open task 3-1234",
             "project Alpha", "sprint 4"
                 → operation="get", resource_id=<UUID, display ID or exact name>
@@ -940,11 +988,14 @@ def register(mcp: FastMCP) -> None:
                 (needs scope calm-api.testplans.read)
           - a tester's ACTUAL RESULT on a step is NOT exposed by any SAP Cloud ALM
             public API — say so; it is only visible in the Test Execution app.
-          - "readiness %", "status breakdown", "how many tasks done",
-            "effort/story points rollup"       → resource="analytics",
-                data={"provider":"DP_TASKS"}, project_id=X  (group rows by
-                "statusText"; providers: DP_TASKS, DP_PROJECTS; DP_FEATURES needs
-                calm-api.features.read)
+          - "readiness %", "status breakdown", "how many tasks done"
+                → resource="tasks", operation="list", project_id=X,
+                data={"summarize_by": ["Status"]}  (live and exact: every task,
+                counted once; readiness % = Done / Total Tasks)
+          - "story points rollup"            → resource="analytics",
+                data={"provider":"DP_TASKS"}, project_id=X  (providers: DP_TASKS,
+                DP_PROJECTS; DP_FEATURES needs calm-api.features.read). Analytics
+                rows are NOT tasks — see analytics below.
           - "comments on task / requirement X"  → resource="task_comments",
                 operation="list", resource_id=<its ID or display ID>, project_id=P
           - "user stories / tasks linked to requirement X"
@@ -1050,7 +1101,16 @@ def register(mcp: FastMCP) -> None:
                     Status Code, Type Code, Version, Created, Last Changed, …); the
                     long document text is only on get.
                 - tasks list: data={tag, timebox (sprint name/ID or list),
-                    team (team name/ID or list), search (text: matches title,
+                    team (team name/ID or list), assignee (the Responsible: name,
+                    first or last name, or email; a value matching two people is
+                    answered as ambiguous, never added together), status (label(s),
+                    e.g. ["Blocked", "In Progress"]), priority, overdue (true:
+                    due before today and not Done / Not Relevant; false: the
+                    rest), as_of (the day overdue is judged on; default today,
+                    UTC), due_before / due_after (exclusive) and due_from /
+                    due_to (inclusive) dates, filter ({field: value or [values]}
+                    on any row field, e.g. {"Scope": "FICO"}; null = not set),
+                    search (text: matches title,
                     ID, Display ID, External ID — best matches first, reworded
                     titles included; USE IT for lookups and duplicate checks
                     instead of listing every task), top (max rows; default 25
@@ -1069,9 +1129,12 @@ def register(mcp: FastMCP) -> None:
                     Effort, Tasks Without Effort, Note} plus "Warning" (names that
                     could not be resolved) and "Filter Values With No Tasks"
                     (a filter value that matched nothing, with the values present)
-                    when they apply. With search or top, or when a filter value
+                    when they apply, plus "Filters" (what was applied) and "Check"
+                    {Tasks Read, Matched, Groups Add Up, Tasks Without Due Date}.
+                    With search, top or any filter above, or when a filter value
                     matched nothing, rows come as {Total Matching, Returned,
-                    Search, Note, Filter Values With No Tasks, Tasks: [rows]}.
+                    Filters, Check, Search, Note, Filter Values With No Tasks,
+                    Tasks: [rows]} — Total Matching is the exact count.
                     Any other data key is refused with the supported list.
                 - tasks get: resource_id = the task's ID (UUID), or its display ID /
                     external ID together with project_id. Returns one task row —
@@ -1090,7 +1153,10 @@ def register(mcp: FastMCP) -> None:
                     project_id to filter to one project. Rows are flattened dimensions (statusText, status,
                     phase, team, workstream, priority, dueDate, overdue, requirement,
                     taskID, …) plus a Metrics dict (counter, storyPoints, effort).
-                    Readiness % = count where statusText=="Done" / total rows.
+                    NEVER count analytics rows as tasks: a task has one row per tag
+                    and workstream, the data is yesterday's snapshot, and not every
+                    task is in it. For task counts use tasks list (summarize_by and
+                    its filters — live, every task once); here, count distinct taskID.
                 - team_roles: list only. resource_id = team_id (from resource=
                     'teams'). Returns each role with Member Count + Members.
                 - feature_status / feature_priorities: list only, no data —
@@ -1487,6 +1553,8 @@ def register(mcp: FastMCP) -> None:
                 all_rows = client.get_tasks(
                     project_id, h.token, h.base_url, task_type=task_type, tag=opts.get("tag")
                 )
+                read = len(all_rows)
+                all_rows = list({r.get("ID") or id(r): r for r in all_rows}.values())
                 timebox, team = opts.get("timebox"), opts.get("team")
                 cannot = client.unresolved_filters(all_rows, timebox=timebox, team=team)
                 if cannot:
@@ -1501,18 +1569,50 @@ def register(mcp: FastMCP) -> None:
                 unmatched = client.unmatched_filters(all_rows, timebox=timebox, team=team)
                 if unmatched:
                     client.classify_unmatched(unmatched, project_id, h.token, h.base_url)
+                filters: dict = {}
+                if opts.get("where"):
+                    # Judged on the whole project, so "nobody by that name" and "two
+                    # people by that name" are told apart from "none in this sprint".
+                    matched, missed = client.where_tasks(all_rows, opts["where"])
+                    keep = {id(r) for r in matched}
+                    rows = [r for r in rows if id(r) in keep]
+                    unmatched.update(missed)
+                    filters.update(opts["where"])
+                bounds = {k: opts[k] for k in _DUE_KEYS if k in opts}
+                no_due = sum(1 for r in rows if not r.get("DueDate")) if ("overdue" in opts or bounds) else 0
+                if "overdue" in opts:
+                    as_of = (date.fromisoformat(opts["as_of"]) if opts.get("as_of")
+                             else datetime.now(timezone.utc).date())
+                    rows = client.overdue_tasks(rows, opts["overdue"], as_of)
+                    filters.update(overdue=opts["overdue"], as_of=as_of.isoformat())
+                if bounds:
+                    rows, _ = client.due_between(rows, bounds)
+                    filters.update(bounds)
                 search = opts.get("search")
                 if search is not None:
                     rows = client.search_tasks(rows, search)
+                # Proof nothing was dropped on the way: every task SAP returned was
+                # read, and the answer counts the ones that match, server-side.
+                check: dict = {"Tasks Read": read, "Matched": len(rows)}
+                if read != len(all_rows):
+                    check["Duplicate Rows Removed"] = read - len(all_rows)
+                if no_due:
+                    check["Tasks Without Due Date"] = no_due
+                    check["Note"] = ("A task with no due date is never overdue and never in a due-date "
+                                     "range; these are counted here so none goes missing unseen.")
                 if summarize:
                     result = client.summarize_tasks(rows, opts["summarize_by"])
+                    if filters:
+                        result["Filters"] = filters
                     if search is not None:
                         result["Search"] = search
                     if unmatched:
                         result["Filter Values With No Tasks"] = unmatched
+                    check["Groups Add Up"] = sum(g["Tasks"] for g in result["Groups"]) == result["Total Tasks"] == len(rows)
+                    result["Check"] = check
                     return result
                 if unmatched and not rows and client.unknown_filter_values(unmatched):
-                    raise ValueError("No tasks match the timebox/team filter. " + _filter_report(unmatched))
+                    raise ValueError("No tasks match the filter. " + _filter_report(unmatched))
                 top = opts.get("top")
                 if top is None and search is not None:
                     top = TASK_SEARCH_DEFAULT_TOP
@@ -1521,10 +1621,13 @@ def register(mcp: FastMCP) -> None:
                     rows = rows[:top]
                 if opts.get("fields") is not None:
                     rows = client.select_task_fields(rows, opts["fields"])
-                if top is None and not unmatched:
+                if top is None and not unmatched and not filters:
                     return rows
                 # Shaped answer: say how much there is, not just what fits.
                 result = {"Total Matching": total, "Returned": len(rows)}
+                if filters:
+                    result["Filters"] = filters
+                result["Check"] = {**check, "Returned": len(rows), "Not Returned": total - len(rows)}
                 if search is not None:
                     result["Search"] = search
                 if len(rows) < total:
@@ -1604,8 +1707,8 @@ def register(mcp: FastMCP) -> None:
             if operation == "list":
                 if not project_id:
                     raise ValueError("project_id is required for requirements")
-                # Requirements are tasks with type="Requirement"
-                return client.get_tasks(project_id, h.token, h.base_url, task_type="Requirement")
+                # Requirements are tasks with type="Requirement": same filters and counts.
+                return _calm_resource(h, "tasks", "list", project_id, None, "Requirement", d, user_email)
             elif operation == "create":
                 ensure_writes_enabled()
                 if not project_id:

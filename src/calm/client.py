@@ -886,6 +886,136 @@ def unresolved_filters(rows: list[dict], timebox: Any = None, team: Any = None) 
     return report
 
 
+# A finished task is never overdue. Overdue = due date before today and not in
+# one of these: matches CALM's own analytics 'overdue' flag on all 26,511 tasks
+# of the test tenant (checked 2026-11-02).
+TASK_FINAL_STATUSES = ("Done", "Not Relevant")
+_DATE_FIELDS = ("DueDate", "StartDate", "Created", "Last Changed")
+_FIELD_ALIASES = {
+    "assignee": "AssigneeName", "responsible": "AssigneeName", "assignedto": "AssigneeName",
+    "owner": "AssigneeName", "person": "AssigneeName", "processor": "AssigneeName",
+    "team": "Responsible Team", "sprint": "Timebox", "tag": "Tags", "duedate": "DueDate",
+    "due": "DueDate", "approval": "ApprovalState", "role": "Assigned Role",
+}
+
+
+def task_filter_field(key: Any) -> str:
+    """A filter key ("status", "assignee", "Responsible Team") -> its row field."""
+    fields = tuple(_format_task({}))
+    squashed = _squash(key)
+    field = next((f for f in fields if _squash(f) == squashed), None) or _FIELD_ALIASES.get(squashed)
+    if field is None:
+        raise ValueError(f"Cannot filter tasks on '{key}'. Fields: {', '.join(fields)}")
+    return field
+
+
+def _person_words(value: Any) -> set[str]:
+    text = str(value).strip().lower()
+    if "@" in text:
+        text = text.split("@", 1)[0]
+    return set(re.findall(r"[^\W_]+", text))
+
+
+def _wanted(field: str, value: Any) -> Any:
+    """A filter value in the form the row holds it (labels, dates); None = not set."""
+    if value is None or _norm(value) in ("(none)", "none", "unassigned"):
+        return None
+    if field == "Status":
+        word = _squash(value)
+        return TASK_STATUS_MAP.get(str(value).strip().upper()) or next(
+            (lbl.title() for lbl, alts in _STATUS_WORDS.items() if word == _squash(lbl) or word in alts), value)
+    if field == "Priority":
+        return TASK_PRIORITY_MAP.get(str(value).strip(), value)
+    if field in _DATE_FIELDS:
+        return api_date(value, field)
+    return value
+
+
+def _field_matches(row: dict, field: str, want: Any) -> bool:
+    value = row.get(field)
+    if want is None:
+        return value in (None, "", [])
+    if field == "AssigneeName":
+        words = _person_words(want)
+        return (bool(words) and words <= _person_words(value or "")) or _norm(want) == _norm(row.get("AssigneeID") or "")
+    if field in _DATE_FIELDS:
+        return str(value or "")[:10] == want
+    if isinstance(value, list):
+        return any(_norm(v) == _norm(want) for v in value)
+    id_value = row.get(_NAME_ID.get(field, ""))
+    return any(v is not None and _norm(v) == _norm(want) for v in (value, id_value))
+
+
+def where_tasks(rows: list[dict], where: dict) -> tuple[list[dict], dict]:
+    """Keep the tasks matching every field in ``where`` ({field: value or list of
+    values}; a list matches any of them). Returns (rows, report): the report names
+    each value no task in ``rows`` carries, with the values that are there, so a
+    misspelt name never reads as "0 tasks".
+
+    A person (AssigneeName) is matched by name or email, words in any order
+    ("Dirk", "radeke dirk", "dirk.radeke@x.com"); a value naming two different
+    people raises Ambiguous rather than adding their tasks together. Tasks of a
+    matched person whose name SAP left empty are kept through their AssigneeID.
+    """
+    report: dict[str, Any] = {}
+    out = rows
+    for key, values in where.items():
+        field = task_filter_field(key)
+        raws = values if isinstance(values, list) else [values]
+        keep: set[int] = set()
+        missing = []
+        for raw in raws:
+            want = _wanted(field, raw)
+            hits = [r for r in rows if _field_matches(r, field, want)]
+            if field == "AssigneeName" and want is not None:
+                people: dict[Any, Any] = {}
+                for r in hits:
+                    people.setdefault(r.get("AssigneeID") or r.get("AssigneeName"), r.get("AssigneeName"))
+                if len(people) > 1:
+                    names = sorted({str(n) for n in people.values()})
+                    raise Ambiguous(f"'{raw}' matches {len(people)} people: {', '.join(names[:10])} "
+                                    "— pass the full name or email.", names[:10])
+                ids = {r.get("AssigneeID") for r in hits if r.get("AssigneeID")}
+                hit = {id(r) for r in hits}
+                hits = [r for r in rows if id(r) in hit or r.get("AssigneeID") in ids]
+            if not hits:
+                missing.append(raw)
+            keep.update(id(r) for r in hits)
+        out = [r for r in out if id(r) in keep]
+        if missing:
+            present: set = set()
+            for r in rows:
+                v = r.get(field)
+                present.update(v if isinstance(v, list) else [_label(r, field)])
+            report[key] = {"no tasks for": missing,
+                           "values present": sorted(present - {None}, key=_natural)[:100]}
+    return out, report
+
+
+def overdue_tasks(rows: list[dict], overdue: bool, as_of: date) -> list[dict]:
+    """Tasks that are (overdue=False: are not) overdue on ``as_of``: due before
+    that day and not Done / Not Relevant — CALM's own rule."""
+    day = as_of.isoformat()
+
+    def late(r: dict) -> bool:
+        return bool(r.get("DueDate")) and str(r["DueDate"])[:10] < day and r.get("Status") not in TASK_FINAL_STATUSES
+
+    return [r for r in rows if late(r) == overdue]
+
+
+_DUE_BOUNDS = {"due_before": lambda d, v: d < v, "due_after": lambda d, v: d > v,
+               "due_from": lambda d, v: d >= v, "due_to": lambda d, v: d <= v}
+
+
+def due_between(rows: list[dict], bounds: dict) -> tuple[list[dict], int]:
+    """Tasks whose due date meets every bound ({due_before / due_after: exclusive,
+    due_from / due_to: inclusive; "YYYY-MM-DD"}), and how many were left out only
+    because they have no due date."""
+    dated = [r for r in rows if r.get("DueDate")]
+    kept = [r for r in dated if all(_DUE_BOUNDS[k](str(r["DueDate"])[:10], v) for k, v in bounds.items())]
+    return kept, len(rows) - len(dated)
+
+
 # Words too common to tell two task titles apart.
 _SEARCH_STOPWORDS = frozenset(
     "a an and are as at be by can could for from has have how if in into is it of "

@@ -116,9 +116,9 @@ def _row(i, title, **kw):
 def test_unknown_data_key_is_refused_before_any_read(calm):
     with patch("src.calm.client.get_tasks") as gt:
         msg = _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
-                            data={"status": "Open"}))
+                            data={"colour": "Open"}))
     gt.assert_not_called()
-    assert "'status'" in msg and "search" in msg and "top" in msg and "summarize_by" in msg
+    assert "'colour'" in msg and "search" in msg and "top" in msg and "summarize_by" in msg
 
 
 def test_none_values_and_top_level_args_in_data_are_accepted(calm):
