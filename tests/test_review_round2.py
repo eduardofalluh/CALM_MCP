@@ -156,7 +156,7 @@ def test_bad_search_is_refused(calm, search):
 
 def test_top_with_summarize_by_is_refused(calm):
     _refused(calm(Ctx(), resource="tasks", operation="list", project_id="p1",
-                  data={"summarize_by": ["Status"], "top": 5}), "top does not apply")
+                  data={"summarize_by": ["Status"], "top": 5}), "top / skip do not apply")
 
 
 def test_top_limits_rows_and_says_how_many_exist(calm):
@@ -167,7 +167,7 @@ def test_top_limits_rows_and_says_how_many_exist(calm):
     assert out["Total Matching"] == 10 and out["Returned"] == 3
     assert out["Tasks"] == [{"ID": "id-0", "Title": "T0"}, {"ID": "id-1", "Title": "T1"},
                             {"ID": "id-2", "Title": "T2"}]
-    assert "first 3 of 10" in out["Note"]
+    assert "1-3 of 10" in out["Note"] and out["Next Skip"] == 3
 
 
 def test_plain_list_unchanged_without_new_options(calm):

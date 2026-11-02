@@ -21,7 +21,7 @@ from fastmcp import Context, FastMCP
 
 from src.calm import client
 from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
-from src.calm.tools.unified import _unanswerable_read
+from src.calm.tools.unified import LIST_ROW_LIMIT, _unanswerable_read
 
 # Query options that only shape or page an answer: leaving one out can't change
 # what the answer is about ($filter can, so it is never dropped).
@@ -99,6 +99,18 @@ def register(mcp: FastMCP) -> None:
                               "Check the path, the IDs in it and the parameters; prefer calm_resource "
                               "for the resources it covers.")
             return answer
+        rows = result.get("value") if isinstance(result, dict) else result
+        paged = any(str(k).lower() in ("$top", "%24top") for k in params or {})
+        if isinstance(rows, list) and len(rows) > LIST_ROW_LIMIT and not paged:
+            # Too long to read or count right: the exact total and the way to the rows.
+            return {"Total Rows": len(rows), "Returned": 0,
+                    "Rows Not Returned": (
+                        f"{len(rows)} rows — more than {LIST_ROW_LIMIT}, too many to read or count reliably, "
+                        "so none are returned; the total is exact. Answer 'how many' from it, or count with "
+                        "calm_resource summarize_by."),
+                    "hint": _TASKS_HINT if "calm-tasks" in path else
+                            f"Page with $top (at most {LIST_ROW_LIMIT}) and $skip, or use calm_resource "
+                            "with filters / summarize_by."}
         if not ignored:
             return result
         paged = any(k.lower() in ("$top", "$skip") for k in params or {})

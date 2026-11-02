@@ -450,6 +450,11 @@ async def main() -> int:
                   res.is_error is not True and isinstance(refused, dict)
                   and refused.get("status") == "invalid_request"
                   and "does not support" in refused.get("message", ""), f"got {str(refused)[:160]}")
+            res = await _call(session, "tasks", "list", project_id="P001", data={"top": 1, "skip": 1})
+            page = _payload(res)
+            check("tasks list pages with top + skip",
+                  res.is_error is not True and page.get("Total Matching") == 2 and page.get("Returned") == 1
+                  and page.get("Tasks", [{}])[0].get("ID") == "K1" and "Next Skip" not in page, f"got {page}")
             res = await _call(session, "tasks", "list", project_id="P001",
                               data={"assignee": "alpha", "overdue": True, "summarize_by": ["AssigneeName", "Status"]})
             late = _payload(res)
@@ -519,6 +524,19 @@ async def main() -> int:
             teams_empty = _list(await _call(session, "teams", "list", project_id="P404"))
             check("unknown project teams returns empty list (not an error)",
                   isinstance(teams_empty, list) and teams_empty == [], f"got {teams_empty}")
+
+            res = await _call(session, "teams", "list", project_id="P001",
+                              data={"name": "development team", "summarize_by": "Name"})
+            counted = _payload(res)
+            check("any list filters and counts on the server, with a Check",
+                  res.is_error is not True and counted.get("Total") == 1
+                  and counted.get("Check", {}).get("Rows Read") == 1
+                  and counted.get("Check", {}).get("Groups Add Up") is True, f"got {counted}")
+            res = await _call(session, "teams", "list", project_id="P001", data={"colour": "red"})
+            refused = _payload(res)
+            check("a list never ignores a data key: unknown field answered with the fields",
+                  res.is_error is not True and refused.get("status") == "invalid_request"
+                  and "Name" in refused.get("message", ""), f"got {str(refused)[:200]}")
 
             procs = _list(await _call(session, "processes", "list"))
             check("combined processes returns BP + SP", isinstance(procs, list) and len(procs) == 2,

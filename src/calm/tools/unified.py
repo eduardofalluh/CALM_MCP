@@ -69,11 +69,12 @@ def _is_not_authorized(exc: Exception) -> bool:
 # ignored filter silently returns the whole project (thousands of rows).
 _TASK_LIST_OPTIONS = ("tag", "timebox", "team", "search", "top", "fields", "summarize_by", "filter",
                       "assignee", "status", "priority", "overdue", "due_before", "due_after",
-                      "due_from", "due_to", "as_of")
+                      "due_from", "due_to", "as_of", "skip")
 _TASK_LIST_ALIASES = {"query": "search", "title": "search", "limit": "top", "sprint": "timebox",
                       "where": "filter", "filters": "filter", "responsible": "assignee",
                       "assigned_to": "assignee", "assignee_name": "assignee", "owner": "assignee",
-                      "person": "assignee", "processor": "assignee", "is_overdue": "overdue"}
+                      "person": "assignee", "processor": "assignee", "is_overdue": "overdue",
+                      "offset": "skip"}
 # Shortcuts for the most asked-for fields of data.filter.
 _TASK_FILTER_SHORTCUTS = {"assignee": "AssigneeName", "status": "Status", "priority": "Priority"}
 _DUE_KEYS = ("due_before", "due_after", "due_from", "due_to")
@@ -675,6 +676,175 @@ def _unanswerable_read(resource: str, operation: str, resource_id: Any, exc: Exc
     return None
 
 
+# Data keys a list reads itself; on every other list resource the remaining keys
+# filter, count or page the rows it returns — never ignored. None: the list takes
+# any of its fields itself (the OData services), so only summarize_by is added.
+_LIST_OWN_KEYS: dict[str, Any] = {
+    "test_cases": {"tag", "title_contains"}, "team_roles": {"team_id"},
+    "task_relations": {"task_id"}, "task_comments": {"task_id"}, "task_tags": {"task_id"},
+    "test_actions": {"test_case_id"}, "test_activities": {"test_case_id"},
+    "test_case_links": {"test_case_id"}, "documents": None, "automated_test_cases": None,
+}
+_OWN_LIST_RESOURCES = ("tasks", "requirements", "analytics")  # their own filters and counts
+_ISO_DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+def _cell_matches(value: Any, want: Any) -> bool:
+    if want is None or client._norm(want) in ("(none)", "none"):
+        return value in (None, "", [])
+    if isinstance(value, list):
+        return any(_cell_matches(v, want) for v in value)
+    have, wanted = client._norm(value), client._norm(want)
+    return value is not None and (have == wanted or (bool(_ISO_DAY.match(wanted)) and have[:10] == wanted))
+
+
+def _group_key(value: Any) -> Any:
+    if isinstance(value, list):
+        return ", ".join(sorted(map(str, value))) or None
+    return None if value in ("", None) else value
+
+
+def _list_answer(resource: str, rows: Any, opts: dict) -> Any:
+    """Filter, count and page a list the server read in full, with a Check, so an
+    agent never counts a long list itself (a long list is trimmed before the model
+    reads it, and its count comes out short)."""
+    if not isinstance(rows, list):
+        if isinstance(rows, dict):
+            return {**rows, "Not Applied": {k: "this answer is not a list of rows; drop top / search "
+                                               "to count the whole list" for k in opts}}
+        return rows
+    items = [r for r in rows if isinstance(r, dict)]
+    opts = dict(opts)
+    where = opts.pop("filter", None) or opts.pop("where", None) or {}
+    if not isinstance(where, dict):
+        raise ValueError('filter must be an object: {field: value or [values]}, e.g. {"Status": "Active"}')
+    summarize = opts.pop("summarize_by", None)
+    top = opts.pop("top", None) or opts.pop("limit", None)
+    paging = {"top": top, "skip": opts.pop("skip", None) or opts.pop("offset", None) or 0}
+    fields = opts.pop("fields", None)
+    search = opts.pop("search", None) or opts.pop("query", None)
+    where = {**where, **opts}  # any other key filters on that field
+    names = sorted({k for r in items for k in r})
+
+    def field(key: Any) -> str:
+        found = next((n for n in names if client._squash(n) == client._squash(key)), None)
+        if found is None:
+            raise ValueError(f"{resource} rows have no field '{key}'. Filter or group on: {', '.join(names)}")
+        return found
+
+    applied: dict = {}
+    unmatched: dict = {}
+    matched = items
+    if items:
+        for key, values in where.items():
+            col = field(key)
+            wants = values if isinstance(values, list) else [values]
+            missing = [w for w in wants if not any(_cell_matches(r.get(col), w) for r in items)]
+            matched = [r for r in matched if any(_cell_matches(r.get(col), w) for w in wants)]
+            applied[col] = values
+            if missing:
+                present = {_group_key(v) for r in items
+                           for v in (r.get(col) if isinstance(r.get(col), list) else [r.get(col)])}
+                unmatched[col] = {"no items for": missing,
+                                  "values present": sorted(present - {None}, key=client._natural)[:100]}
+    if search is not None:
+        text = client._norm(search)
+        matched = [r for r in matched if any(text in client._norm(r.get(k) or "")
+                                             for k in ("Name", "Title", "ID", "Display ID"))]
+        applied["search"] = search
+    check: dict = {"Rows Read": len(items), "Matched": len(matched)}
+    if summarize is not None:
+        by = [field(f) for f in client._as_list(summarize)] if items else client._as_list(summarize)
+        if not by:
+            raise ValueError("summarize_by needs one or more field names")
+        groups: dict = {}
+        for r in matched:
+            key = tuple(_group_key(r.get(f)) for f in by)
+            groups[key] = groups.get(key, 0) + 1
+        out = [{**{f: ("(none)" if v is None else v) for f, v in zip(by, key)}, "Count": n}
+               for key, n in sorted(groups.items(), key=lambda kv: tuple(client._natural(v) for v in kv[0]))]
+        check["Groups Add Up"] = sum(groups.values()) == len(matched)
+        result: dict = {"Grouped By": by, "Groups": out, "Total": len(matched)}
+    else:
+        if top is not None and (isinstance(top, bool) or not str(top).strip().isdigit() or int(top) < 1):
+            raise ValueError(f"top must be a whole number of at least 1 (got {top!r})")
+        skip, top = _page_bounds({k: v for k, v in paging.items() if v is not None})
+        if unmatched and not matched:
+            raise ValueError(f"No {resource} match the filter. " + "; ".join(
+                f"{k}: no items for {v['no items for']} — values present: {v['values present']}"
+                for k, v in unmatched.items()))
+        shown = matched[skip:skip + top] if top else matched[skip:]
+        if fields is not None:
+            wanted = [field(f) for f in client._as_list(fields)] if items else []
+            shown = [{f: r.get(f) for f in wanted} for r in shown]
+        result = {"Total Matching": len(matched), "Returned": len(shown)}
+        if skip or len(shown) < len(matched) - skip:
+            result["Showing"] = f"{skip + 1 if shown else skip}-{skip + len(shown)} of {len(matched)}"
+            if skip + len(shown) < len(matched):
+                result["Next Skip"] = skip + len(shown)
+        check.update({"Returned": len(shown), "Not Returned": len(matched) - len(shown)})
+        result["Items"] = shown
+    if applied:
+        result["Filters"] = applied
+    if unmatched:
+        result["Filter Values With No Items"] = unmatched
+    result["Check"] = check
+    return result
+
+
+# Most rows one answer carries. A longer list is read and counted wrongly by the
+# agent (Lutron, 2026-11-02: 7,756 tasks as rows -> 23 counted, 25 real), so
+# beyond this the answer gives exact totals and counts instead, never the rows.
+LIST_ROW_LIMIT = 300
+_PAGE_HOW = ("Get the rows you need: narrow with filters (tasks / requirements: assignee, status, "
+             "priority, overdue, due_from / due_to, timebox, team, filter={field: value}; any other "
+             "list: filter={field: value}), count with summarize_by (exact, server-side), or page "
+             f"with top (at most {LIST_ROW_LIMIT}) and skip.")
+
+
+def _page_bounds(opts: dict) -> tuple[int, int | None]:
+    """skip / top from data, top capped at LIST_ROW_LIMIT."""
+    skip = opts.get("skip", opts.get("offset", 0)) or 0
+    if isinstance(skip, bool) or not str(skip).strip().isdigit():
+        raise ValueError(f"skip must be a whole number of 0 or more (got {skip!r})")
+    top = opts.get("top")
+    return int(skip), (min(int(top), LIST_ROW_LIMIT) if top is not None else None)
+
+
+def _cap_rows(resource: str, result: Any) -> Any:
+    """A list answer with more than LIST_ROW_LIMIT rows: the exact totals and
+    counts, and how to narrow or page — never a list too long to read right."""
+    key = None
+    if isinstance(result, dict):
+        key = next((k for k in ("Tasks", "Items") if isinstance(result.get(k), list)), None)
+        rows = result.get(key) if key else None
+    else:
+        rows = result
+    if not isinstance(rows, list) or len(rows) <= LIST_ROW_LIMIT:
+        return result
+    out = {k: v for k, v in result.items() if k != key} if isinstance(result, dict) else {}
+    total = out.get("Total Matching", len(rows))
+    out["Total Matching"] = total
+    out["Returned"] = 0
+    out["Rows Not Returned"] = (
+        f"{total} {resource} match — more than {LIST_ROW_LIMIT}, too many to read or count "
+        "reliably, so no rows are returned. Nothing was dropped and the totals here are exact. "
+        "Answer 'how many' from these totals or summarize_by, never by counting rows.")
+    by = [f for f in ("Type", "Status") if any(isinstance(r, dict) and f in r for r in rows)]
+    if by:
+        counts: dict = {}
+        for r in rows:
+            k = tuple(_group_key(r.get(f)) if isinstance(r, dict) else None for f in by)
+            counts[k] = counts.get(k, 0) + 1
+        out["Counts"] = [{**{f: ("(none)" if v is None else v) for f, v in zip(by, k)}, "Count": n}
+                         for k, n in sorted(counts.items(), key=lambda kv: tuple(client._natural(v) for v in kv[0]))]
+    out["How To Get Rows"] = _PAGE_HOW
+    check = dict(out.get("Check") or {"Rows Read": len(rows), "Matched": total})
+    check.update({"Returned": 0, "Not Returned": total})
+    out["Check"] = check
+    return out
+
+
 def _filter_report(unmatched: dict) -> str:
     parts = []
     for k, v in unmatched.items():
@@ -1100,6 +1270,22 @@ def register(mcp: FastMCP) -> None:
                     every field under a Title-Case label (ID, Display ID, Title,
                     Status Code, Type Code, Version, Created, Last Changed, …); the
                     long document text is only on get.
+                - ANY list (test_cases, documents, features, scopes, timeboxes,
+                    teams, processes, projects, tags, project_users, comments,
+                    steps, …): data={filter ({field: value or [values]}; null =
+                    not set), summarize_by (fields → exact Count per group +
+                    Total), top, fields, search}, and any other key filters on
+                    that row field — e.g. test_cases data={"Status": "Failed",
+                    "summarize_by": "Priority"}. Nothing is ignored: a field the
+                    rows don't have is refused with the field list, a value no row
+                    has is reported with the values present. Filtered / counted
+                    answers carry "Check" {Rows Read, Matched, Returned, Not
+                    Returned, Groups Add Up}. For ANY "how many", use summarize_by
+                    and report its numbers — never count rows yourself.
+                    An answer carries at most 300 rows: when more match, it gives
+                    the exact Total Matching, Counts (by Type / Status) and how to
+                    narrow — no rows. Page with top (max 300) and skip ("Next
+                    Skip" says where to continue).
                 - tasks list: data={tag, timebox (sprint name/ID or list),
                     team (team name/ID or list), assignee (the Responsible: name,
                     first or last name, or email; a value matching two people is
@@ -1328,8 +1514,9 @@ def register(mcp: FastMCP) -> None:
         # Credentials / tenant first: a fault there is a real failure, never an answer.
         h = get_calm_headers(ctx)
         try:
-            return _calm_resource(h, resource, operation, project_id, resource_id, task_type,
-                                  data, user_email)
+            result = _calm_resource(h, resource, operation, project_id, resource_id, task_type,
+                                    data, user_email)
+            return _cap_rows(resource, result) if operation == "list" else result
         except (client.NotFound, client.Ambiguous) as exc:
             # A read that finds nothing (or several) is an answer, not a fault;
             # writes keep failing so they never act on the wrong item.
@@ -1351,7 +1538,9 @@ def register(mcp: FastMCP) -> None:
         acting_email = user_email or h.user_email
 
         # The item's ID inside data (data.id) instead of resource_id.
-        if not resource_id and operation in ("get", "update", "delete"):
+        if not resource_id and (operation in ("get", "update", "delete") or (
+                operation == "list" and resource in _LIST_OWN_KEYS and resource not in
+                ("test_cases", "documents", "automated_test_cases"))):
             for key in ("id", "resource_id") + (("task_id", "requirement_id")
                                                 if resource in ("tasks", "requirements") else ()):
                 if d.get(key):
@@ -1480,6 +1669,18 @@ def register(mcp: FastMCP) -> None:
                 raise ValueError("Nothing was changed — no value given could be written: "
                                  + "; ".join(f"{k}: {why}" for k, why in not_written.items()))
 
+        # Any list: options the resource doesn't read itself filter, count and page
+        # the full list here, with a Check — never silently ignored.
+        if operation == "list" and resource not in _OWN_LIST_RESOURCES:
+            own = _LIST_OWN_KEYS.get(resource, set())
+            extra = {k: v for k, v in d.items() if v is not None and k != "project_id"
+                     and (k == "summarize_by" if own is None else k not in own)}
+            if extra:
+                rest = {k: v for k, v in d.items() if k not in extra}
+                rows = _calm_resource(h, resource, operation, project_id, resource_id, task_type,
+                                      rest, user_email)
+                return _list_answer(resource, rows, extra)
+
         # Route to appropriate client function based on resource type
         if resource == "projects":
             if operation == "list":
@@ -1545,9 +1746,9 @@ def register(mcp: FastMCP) -> None:
                 summarize = opts.get("summarize_by") is not None
                 if summarize:
                     client.check_summary_fields(opts["summarize_by"])
-                    if "top" in opts:
-                        raise ValueError("top does not apply to summarize_by (a summary is "
-                                         "already small) — drop top")
+                    if "top" in opts or "skip" in opts:
+                        raise ValueError("top / skip do not apply to summarize_by (a summary is "
+                                         "already small) — drop them")
                 if opts.get("fields") is not None:
                     client.select_task_fields([], opts["fields"])
                 all_rows = client.get_tasks(
@@ -1613,29 +1814,30 @@ def register(mcp: FastMCP) -> None:
                     return result
                 if unmatched and not rows and client.unknown_filter_values(unmatched):
                     raise ValueError("No tasks match the filter. " + _filter_report(unmatched))
-                top = opts.get("top")
+                skip, top = _page_bounds(opts)
                 if top is None and search is not None:
                     top = TASK_SEARCH_DEFAULT_TOP
                 total = len(rows)
-                if top is not None:
-                    rows = rows[:top]
+                rows = rows[skip:skip + top] if top is not None else rows[skip:]
                 if opts.get("fields") is not None:
                     rows = client.select_task_fields(rows, opts["fields"])
-                if top is None and not unmatched and not filters:
+                if top is None and not unmatched and not filters and not skip:
                     return rows
                 # Shaped answer: say how much there is, not just what fits.
-                result = {"Total Matching": total, "Returned": len(rows)}
+                result: dict = {"Total Matching": total, "Returned": len(rows)}
                 if filters:
                     result["Filters"] = filters
                 result["Check"] = {**check, "Returned": len(rows), "Not Returned": total - len(rows)}
                 if search is not None:
                     result["Search"] = search
-                if len(rows) < total:
+                if skip or len(rows) < total:
                     result["Note"] = (
-                        f"Showing the first {len(rows)} of {total} matching tasks"
+                        f"Showing tasks {skip + 1 if rows else skip}-{skip + len(rows)} of {total} matching"
                         + (" (best matches first)" if search is not None else "")
-                        + ". Raise top or narrow the filters to see more."
+                        + ". Narrow the filters, or page on with skip."
                     )
+                    if skip + len(rows) < total:
+                        result["Next Skip"] = skip + len(rows)
                 elif search is not None and not total:
                     result["Note"] = "No task in this project matches the search."
                 if unmatched:
