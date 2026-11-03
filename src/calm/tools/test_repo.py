@@ -22,11 +22,57 @@ Keys are quoted strings: TestCases('<uuid>').
 
 from __future__ import annotations
 
+from typing import Any
+
 from fastmcp import Context, FastMCP
 
-from src.calm import tm_client
+from src.calm import client, tm_client
 from src.calm.dependencies import writes_enabled
 from src.calm.tm_dependencies import get_tm_headers, tm_configured, tm_writes_enabled
+from src.calm.tools.unified import LIST_ROW_LIMIT, _group_key
+
+_TM_HOW = ("Narrow with filter (OData $filter, e.g. \"priority_code eq '10'\"), count with summarize_by "
+           f"or count=true, or page with top (at most {LIST_ROW_LIMIT}) and skip.")
+
+
+def _counted(result: Any, summarize_by: Any = None, whole: bool = True) -> Any:
+    """A TM list answer the agent can't miscount: counts made here over the whole
+    read, the exact total, and never more than LIST_ROW_LIMIT rows (a longer list
+    is read and counted wrongly by the agent)."""
+    if not isinstance(result, dict) or not isinstance(result.get("items"), list):
+        if summarize_by is not None:
+            raise ValueError("summarize_by needs a list of rows; this answer is not one")
+        return result
+    items = [r for r in result["items"] if isinstance(r, dict)]
+    if summarize_by is not None:
+        if not whole:
+            raise ValueError("summarize_by counts the whole set — drop top / skip")
+        names = sorted({k for r in items for k in r})
+        fields = []
+        for f in client._as_list(summarize_by):
+            hit = next((n for n in names if client._squash(n) == client._squash(f)), None)
+            if hit is None and items:
+                raise ValueError(f"rows have no field '{f}'. Group on: {', '.join(names)}")
+            fields.append(hit or f)
+        if not fields:
+            raise ValueError("summarize_by needs one or more field names")
+        groups: dict = {}
+        for r in items:
+            key = tuple(_group_key(r.get(f)) for f in fields)
+            groups[key] = groups.get(key, 0) + 1
+        out = [{**{f: ("(none)" if v is None else v) for f, v in zip(fields, key)}, "Count": n}
+               for key, n in sorted(groups.items(), key=lambda kv: tuple(client._natural(v) for v in kv[0]))]
+        return {"Grouped By": fields, "Groups": out, "Total": len(items),
+                "Check": {"Rows Read": len(items), "Groups Add Up": sum(groups.values()) == len(items)}}
+    total = len(items) if whole else result.get("count")
+    if len(items) <= LIST_ROW_LIMIT:
+        return {**result, "Total": total} if total is not None else result
+    out = {k: v for k, v in result.items() if k not in ("items", "next_link")}
+    return {**out, "Total": total if total is not None else f"more than {len(items)}", "Returned": 0,
+            "Rows Not Returned": (f"{len(items)} rows — more than {LIST_ROW_LIMIT}, too many to read or count "
+                                  "reliably, so none are returned; the total is exact. Answer 'how many' "
+                                  "from it or from summarize_by, never by counting rows."),
+            "How To Get Rows": _TM_HOW}
 
 
 def register(mcp: FastMCP) -> None:
@@ -91,6 +137,7 @@ def register(mcp: FastMCP) -> None:
         skip: int | None = None,
         count: bool = False,
         updated_since: str | None = None,
+        summarize_by: list[str] | str | None = None,
     ) -> dict:
         """List test cases from the OPTIONAL BTP Test Management OData repository
         (NOT SAP Cloud ALM native — for CALM's own test cases use
@@ -107,6 +154,13 @@ def register(mcp: FastMCP) -> None:
                 "2026-08-01T00:00:00Z"). Adds `updated_at gt <ts>` to the filter
                 and orders by updated_at; keep the highest updated_at you
                 processed and pass it as the next watermark.
+            summarize_by: field(s) to count by, over every matching test case
+                (e.g. ["priority_code"]) — exact counts made by the server. Use it
+                for ANY "how many"; never count rows yourself.
+
+        Without top / skip the whole set is read and "Total" is exact. An answer
+        carries at most 300 rows: beyond that it gives the Total and how to narrow
+        or page instead.
 
         Fields: id, external_id, title, testing_requirement_id, project_id,
         scope_id, solution_process_id, priority_code (10=Very High … 40=Low),
@@ -114,11 +168,11 @@ def register(mcp: FastMCP) -> None:
         postconditions[], assumptions[], created_at, updated_at.
         """
         h = get_tm_headers(ctx)
-        return tm_client.get_test_cases(
+        return _counted(tm_client.get_test_cases(
             h.token, h.base_url,
             filter=filter, select=select, expand=expand, orderby=orderby,
             top=top, skip=skip, count=count, updated_since=updated_since,
-        )
+        ), summarize_by, whole=top is None and skip is None)
 
     @mcp.tool()
     def get_tm_test_case_full(test_case_id: str, ctx: Context) -> dict:
@@ -141,6 +195,7 @@ def register(mcp: FastMCP) -> None:
         expand_test_cases: bool = False,
         top: int | None = None,
         count: bool = False,
+        summarize_by: list[str] | str | None = None,
     ) -> dict:
         """List testing requirements from the OPTIONAL BTP Test Management OData
         repository (NOT SAP Cloud ALM native — for CALM requirements use
@@ -148,13 +203,16 @@ def register(mcp: FastMCP) -> None:
 
         Fields: id, tr_id (e.g. "TR-0001"), wricef, short_desc, created_at,
         updated_at. Set expand_test_cases=true to include each requirement's
-        linked test cases.
+        linked test cases. summarize_by (e.g. ["wricef"]) gives exact counts
+        made by the server — use it for any "how many". Without top "Total" is
+        exact; an answer carries at most 300 rows (beyond that: the Total and
+        how to narrow).
         """
         h = get_tm_headers(ctx)
-        return tm_client.get_requirements(
+        return _counted(tm_client.get_requirements(
             h.token, h.base_url,
             filter=filter, expand_test_cases=expand_test_cases, top=top, count=count,
-        )
+        ), summarize_by, whole=top is None)
 
     @mcp.tool()
     def tm_odata_read(entity_set: str, ctx: Context, query: str | None = None) -> dict:
@@ -174,4 +232,5 @@ def register(mcp: FastMCP) -> None:
         if not entity_set:
             raise ValueError("entity_set is required")
         h = get_tm_headers(ctx)
-        return tm_client.odata_read(h.token, h.base_url, entity_set, query=query)
+        paged = any(p in (query or "") for p in ("$top", "$skip", "%24top", "%24skip"))
+        return _counted(tm_client.odata_read(h.token, h.base_url, entity_set, query=query), whole=not paged)
