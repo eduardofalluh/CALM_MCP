@@ -359,6 +359,7 @@ def get_requirements(
     expand_test_cases: bool = False,
     top: int | None = None,
     count: bool = False,
+    skip: int | None = None,
 ) -> Any:
     """List testing requirements (tr_id, wricef, short_desc), optionally with
     their linked test cases expanded."""
@@ -369,11 +370,13 @@ def get_requirements(
         params["$expand"] = "testCases"
     if top is not None:
         params["$top"] = str(top)
+    if skip is not None:
+        params["$skip"] = str(skip)
     if count:
         params["$count"] = "true"
     req_url = f"{base_url.rstrip('/')}/Requirements"
-    # No explicit $top → page the full collection; an explicit $top is caller-driven.
-    if top is None:
+    # No explicit $top / $skip → page the full collection; explicit paging is caller-driven.
+    if top is None and skip is None:
         return _get_all(req_url, token, params=params or None)
     return _normalize(_get(req_url, token, params=params or None))
 

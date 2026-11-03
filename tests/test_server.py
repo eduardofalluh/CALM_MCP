@@ -839,6 +839,13 @@ async def main() -> int:
             res = await session.call_tool("get_tm_requirements", {})
             check("get_tm_requirements ok", res.is_error is not True,
                   f"err {res.content[0].text if res.content else ''}")
+            res = await session.call_tool("get_tm_test_cases", {"summarize_by": "scenario_type"})
+            tm_sum = _payload(res)
+            check("tm test cases: counts made by the server, checked against SAP's count",
+                  res.is_error is not True and tm_sum.get("Total") == 1
+                  and tm_sum.get("Groups") == [{"scenario_type": "positive", "Count": 1}]
+                  and tm_sum.get("Check", {}).get("SAP Count") == 1 and "Warning" not in tm_sum,
+                  f"got {tm_sum}")
 
             res = await session.call_tool("tm_odata_read", {"entity_set": "TestCases"})
             check("tm_odata_read ok", res.is_error is not True,

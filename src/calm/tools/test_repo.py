@@ -29,13 +29,30 @@ from fastmcp import Context, FastMCP
 from src.calm import client, tm_client
 from src.calm.dependencies import writes_enabled
 from src.calm.tm_dependencies import get_tm_headers, tm_configured, tm_writes_enabled
-from src.calm.tools.unified import LIST_ROW_LIMIT, _group_key
+from src.calm.tools.unified import LIST_ROW_LIMIT, _group_key, _unanswerable_read
 
 _TM_HOW = ("Narrow with filter (OData $filter, e.g. \"priority_code eq '10'\"), count with summarize_by "
            f"or count=true, or page with top (at most {LIST_ROW_LIMIT}) and skip.")
 
 
-def _counted(result: Any, summarize_by: Any = None, whole: bool = True) -> Any:
+def _answer(name: str, operation: str, read):
+    """A read SAP refuses as asked (400 / 403 / 404, or an option given wrongly)
+    comes back as an answer saying so; credential faults and outages still fail."""
+    try:
+        return read()
+    except (ValueError, RuntimeError) as exc:
+        answer = _unanswerable_read(name, operation, None, exc)
+        if answer is None:
+            raise
+        return answer
+
+
+def _top(top: Any) -> Any:
+    return min(int(top), LIST_ROW_LIMIT) if top is not None else None
+
+
+def _counted(result: Any, summarize_by: Any = None, whole: bool = True,
+             top: int | None = None, skip: int | None = None) -> Any:
     """A TM list answer the agent can't miscount: counts made here over the whole
     read, the exact total, and never more than LIST_ROW_LIMIT rows (a longer list
     is read and counted wrongly by the agent)."""
@@ -62,17 +79,47 @@ def _counted(result: Any, summarize_by: Any = None, whole: bool = True) -> Any:
             groups[key] = groups.get(key, 0) + 1
         out = [{**{f: ("(none)" if v is None else v) for f, v in zip(fields, key)}, "Count": n}
                for key, n in sorted(groups.items(), key=lambda kv: tuple(client._natural(v) for v in kv[0]))]
-        return {"Grouped By": fields, "Groups": out, "Total": len(items),
-                "Check": {"Rows Read": len(items), "Groups Add Up": sum(groups.values()) == len(items)}}
+        summary = {"Grouped By": fields, "Groups": out, "Total": len(items),
+                   "Check": _check(result, len(items), {"Groups Add Up": sum(groups.values()) == len(items)})}
+        return _warn_short(summary, result, len(items))
     total = len(items) if whole else result.get("count")
-    if len(items) <= LIST_ROW_LIMIT:
-        return {**result, "Total": total} if total is not None else result
-    out = {k: v for k, v in result.items() if k not in ("items", "next_link")}
-    return {**out, "Total": total if total is not None else f"more than {len(items)}", "Returned": 0,
-            "Rows Not Returned": (f"{len(items)} rows — more than {LIST_ROW_LIMIT}, too many to read or count "
-                                  "reliably, so none are returned; the total is exact. Answer 'how many' "
-                                  "from it or from summarize_by, never by counting rows."),
-            "How To Get Rows": _TM_HOW}
+    if len(items) > LIST_ROW_LIMIT:
+        out = {k: v for k, v in result.items() if k not in ("items", "next_link")}
+        out.update({"Total": total if total is not None else f"more than {len(items)}", "Returned": 0,
+                    "Rows Not Returned": (f"{len(items)} rows — more than {LIST_ROW_LIMIT}, too many to read or "
+                                          "count reliably, so none are returned; the total is exact. Answer "
+                                          "'how many' from it or from summarize_by, never by counting rows."),
+                    "How To Get Rows": _TM_HOW,
+                    "Check": _check(result, len(items), {"Returned": 0, "Not Returned": len(items)})})
+        return _warn_short(out, result, len(items)) if whole else out
+    out = dict(result)
+    if total is not None:
+        out["Total"] = total
+    if whole:
+        out["Check"] = _check(result, len(items), {"Returned": len(items), "Not Returned": 0})
+        return _warn_short(out, result, len(items))
+    start = skip or 0
+    out["Check"] = {"Returned": len(items), **({"Not Returned": max(total - start - len(items), 0)}
+                                               if isinstance(total, int) else {})}
+    if top and len(items) == top and not (isinstance(total, int) and start + len(items) >= total):
+        out["Next Skip"] = start + len(items)
+    return out
+
+
+def _check(result: dict, read: int, extra: dict) -> dict:
+    check = {"Rows Read": read, **extra}
+    if isinstance(result.get("count"), int):
+        check["SAP Count"] = result["count"]
+    return check
+
+
+def _warn_short(out: dict, result: dict, read: int) -> dict:
+    """Flag a whole read that came back with fewer rows than SAP says exist."""
+    count = result.get("count")
+    if isinstance(count, int) and count != read:
+        out["Warning"] = (f"SAP reports {count} rows but {read} were read — this answer may be "
+                          "incomplete. Ask again; if it repeats, report it.")
+    return out
 
 
 def register(mcp: FastMCP) -> None:
@@ -132,7 +179,7 @@ def register(mcp: FastMCP) -> None:
         zero or stale counts mean the inbound feed has not run.
         """
         h = get_tm_headers(ctx)
-        return tm_client.get_statistics(h.token, h.base_url)
+        return _answer("tm_statistics", "get", lambda: tm_client.get_statistics(h.token, h.base_url))
 
     @mcp.tool()
     def get_tm_test_cases(
@@ -166,9 +213,11 @@ def register(mcp: FastMCP) -> None:
                 (e.g. ["priority_code"]) — exact counts made by the server. Use it
                 for ANY "how many"; never count rows yourself.
 
-        Without top / skip the whole set is read and "Total" is exact. An answer
-        carries at most 300 rows: beyond that it gives the Total and how to narrow
-        or page instead.
+        Without top / skip the whole set is read, "Total" is exact and "Check"
+        compares the rows read with SAP's own count. An answer carries at most
+        300 rows: beyond that it gives the Total and how to narrow or page
+        instead (top max 300, skip; "Next Skip" says where to continue). A
+        filter SAP rejects comes back as an answer saying why.
 
         Fields: id, external_id, title, testing_requirement_id, project_id,
         scope_id, solution_process_id, priority_code (10=Very High … 40=Low),
@@ -176,11 +225,12 @@ def register(mcp: FastMCP) -> None:
         postconditions[], assumptions[], created_at, updated_at.
         """
         h = get_tm_headers(ctx)
-        return _counted(tm_client.get_test_cases(
+        whole, top = top is None and skip is None, _top(top)
+        return _answer("tm_test_cases", "list", lambda: _counted(tm_client.get_test_cases(
             h.token, h.base_url,
             filter=filter, select=select, expand=expand, orderby=orderby,
-            top=top, skip=skip, count=count, updated_since=updated_since,
-        ), summarize_by, whole=top is None and skip is None)
+            top=top, skip=skip, count=count or whole, updated_since=updated_since,
+        ), summarize_by, whole=whole, top=top, skip=skip))
 
     @mcp.tool()
     def get_tm_test_case_full(test_case_id: str, ctx: Context) -> dict:
@@ -194,7 +244,7 @@ def register(mcp: FastMCP) -> None:
         if not test_case_id:
             raise ValueError("test_case_id is required")
         h = get_tm_headers(ctx)
-        return tm_client.get_test_case_full(h.token, h.base_url, test_case_id)
+        return _answer("tm_test_cases", "get", lambda: tm_client.get_test_case_full(h.token, h.base_url, test_case_id))
 
     @mcp.tool()
     def get_tm_requirements(
@@ -204,6 +254,7 @@ def register(mcp: FastMCP) -> None:
         top: int | None = None,
         count: bool = False,
         summarize_by: list[str] | str | None = None,
+        skip: int | None = None,
     ) -> dict:
         """List testing requirements from the OPTIONAL BTP Test Management OData
         repository (NOT SAP Cloud ALM native — for CALM requirements use
@@ -212,15 +263,17 @@ def register(mcp: FastMCP) -> None:
         Fields: id, tr_id (e.g. "TR-0001"), wricef, short_desc, created_at,
         updated_at. Set expand_test_cases=true to include each requirement's
         linked test cases. summarize_by (e.g. ["wricef"]) gives exact counts
-        made by the server — use it for any "how many". Without top "Total" is
-        exact; an answer carries at most 300 rows (beyond that: the Total and
-        how to narrow).
+        made by the server — use it for any "how many". Without top / skip
+        "Total" is exact and "Check" compares the rows read with SAP's own
+        count; an answer carries at most 300 rows (beyond that: the Total and
+        how to narrow). Page with top (max 300) and skip ("Next Skip").
         """
         h = get_tm_headers(ctx)
-        return _counted(tm_client.get_requirements(
-            h.token, h.base_url,
-            filter=filter, expand_test_cases=expand_test_cases, top=top, count=count,
-        ), summarize_by, whole=top is None)
+        whole, top = top is None and skip is None, _top(top)
+        return _answer("tm_requirements", "list", lambda: _counted(tm_client.get_requirements(
+            h.token, h.base_url, filter=filter, expand_test_cases=expand_test_cases,
+            top=top, count=count or whole, skip=skip,
+        ), summarize_by, whole=whole, top=top, skip=skip))
 
     @mcp.tool()
     def tm_odata_read(entity_set: str, ctx: Context, query: str | None = None) -> dict:
@@ -241,4 +294,8 @@ def register(mcp: FastMCP) -> None:
             raise ValueError("entity_set is required")
         h = get_tm_headers(ctx)
         paged = any(p in (query or "") for p in ("$top", "$skip", "%24top", "%24skip"))
-        return _counted(tm_client.odata_read(h.token, h.base_url, entity_set, query=query), whole=not paged)
+        collection = not paged and "(" not in entity_set and not entity_set.startswith("$")
+        if collection and "$count" not in (query or ""):
+            query = f"{query}&$count=true" if query else "$count=true"  # lets the Check compare SAP's total
+        return _answer("tm_odata", "get", lambda: _counted(
+            tm_client.odata_read(h.token, h.base_url, entity_set, query=query), whole=not paged))

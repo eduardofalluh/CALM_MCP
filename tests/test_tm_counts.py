@@ -68,11 +68,44 @@ def test_a_page_uses_sap_s_count_as_the_total(tools):
 
 
 def test_summarize_needs_the_whole_set_and_real_fields(tools):
+    # Answers, not tool errors — the same rule as every CALM read.
     with patch("src.calm.tm_client.get_test_cases", return_value=_cases(3)):
-        with pytest.raises(ValueError, match="drop top"):
-            tools["get_tm_test_cases"](Ctx(), top=2, summarize_by="priority_code")
-        with pytest.raises(ValueError, match="priority_code"):
-            tools["get_tm_test_cases"](Ctx(), summarize_by="colour")
+        out = tools["get_tm_test_cases"](Ctx(), top=2, summarize_by="priority_code")
+        assert out["status"] == "invalid_request" and "drop top" in out["message"]
+        out = tools["get_tm_test_cases"](Ctx(), summarize_by="colour")
+        assert out["status"] == "invalid_request" and "priority_code" in out["message"]
+
+
+def test_a_whole_read_is_checked_against_sap_s_count(tools):
+    with patch("src.calm.tm_client.get_test_cases", return_value={**_cases(4), "count": 4}) as gt:
+        out = tools["get_tm_test_cases"](Ctx())
+    assert gt.call_args.kwargs["count"] is True  # always ask SAP for its total
+    assert out["Check"] == {"Rows Read": 4, "Returned": 4, "Not Returned": 0, "SAP Count": 4}
+    assert "Warning" not in out
+    with patch("src.calm.tm_client.get_test_cases", return_value={**_cases(4), "count": 6}):
+        out = tools["get_tm_test_cases"](Ctx(), summarize_by="priority_code")
+    assert "6 rows but 4 were read" in out["Warning"] and out["Check"]["SAP Count"] == 6
+
+
+def test_pages_are_capped_and_say_where_to_continue(tools):
+    full_page = {"items": _cases(LIST_ROW_LIMIT)["items"], "count": 700}
+    with patch("src.calm.tm_client.get_test_cases", return_value=full_page) as gt:
+        out = tools["get_tm_test_cases"](Ctx(), top=1000, skip=300, count=True)
+    assert gt.call_args.kwargs["top"] == LIST_ROW_LIMIT
+    assert out["Next Skip"] == 300 + LIST_ROW_LIMIT and out["Check"]["Not Returned"] == 700 - 600
+    with patch("src.calm.tm_client.get_requirements", return_value={"items": [], "count": 0}) as gr:
+        tools["get_tm_requirements"](Ctx(), top=10, skip=20)
+    assert gr.call_args.kwargs["skip"] == 20 and gr.call_args.kwargs["top"] == 10
+
+
+def test_a_read_sap_refuses_is_an_answer_but_a_credential_fault_fails(tools):
+    bad = RuntimeError("TM OData request failed: HTTP 400 at https://x/TestCases — {\"error\":\"bad filter\"}")
+    with patch("src.calm.tm_client.get_test_cases", side_effect=bad):
+        out = tools["get_tm_test_cases"](Ctx(), filter="nope eq 1")
+    assert out["status"] == "invalid_request" and "bad filter" in out["message"]
+    with patch("src.calm.tm_client.get_test_cases", side_effect=RuntimeError("TM OData request failed: HTTP 401")):
+        with pytest.raises(RuntimeError, match="401"):
+            tools["get_tm_test_cases"](Ctx())
 
 
 def test_raw_read_is_capped_too(tools):
