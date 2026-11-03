@@ -83,7 +83,8 @@ def register(mcp: FastMCP) -> None:
 
         Reports whether the connection is configured (TM_* env vars or x-tm-*
         headers) and, when it is, probes the service's unauthenticated /health
-        endpoint (which also reports PostgreSQL reachability). Use Statistics
+        endpoint (which also reports PostgreSQL reachability) and one signed-in
+        read: "authorized" false means the credential can't read data. Use Statistics
         afterwards to judge whether the CALM→repository feed is populated.
         Never fails when unconfigured — this feature is additive and optional.
         """
@@ -110,6 +111,13 @@ def register(mcp: FastMCP) -> None:
         except Exception as exc:  # keep diagnostics non-fatal
             result["reachable"] = False
             result["error"] = str(exc)[:300]
+        # /health needs no sign-in: prove the credential can read data too.
+        try:
+            tm_client.get_test_cases(h.token, h.base_url, top=1, select="id")
+            result["authorized"] = True
+        except Exception as exc:  # noqa: BLE001 — a diagnostic never fails
+            result["authorized"] = False
+            result["authorization_error"] = str(exc)[:300]
         return result
 
     @mcp.tool()

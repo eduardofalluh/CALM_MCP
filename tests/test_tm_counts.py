@@ -81,3 +81,23 @@ def test_raw_read_is_capped_too(tools):
     assert out["Returned"] == 0 and out["Total"] == LIST_ROW_LIMIT + 1
     with patch("src.calm.tm_client.odata_read", return_value={"value": "x"}):
         assert tools["tm_odata_read"]("TestCases('a')", Ctx()) == {"value": "x"}
+
+
+def test_health_says_whether_the_credential_can_read(monkeypatch):
+    # Live 2026-11-03: /health answered (no sign-in needed) while every read got 401.
+    monkeypatch.setenv("TM_BASE_URL", "https://tm.example.hana.ondemand.com/odata/v4/test-management")
+    monkeypatch.setenv("TM_TOKEN", "tm-tok")
+    from fastmcp import FastMCP
+
+    from src.calm.tools.test_repo import register
+
+    mcp = FastMCP("t")
+    register(mcp)
+    health = asyncio.run(mcp.get_tool("tm_health")).fn
+    with patch("src.calm.tm_client.service_health", return_value={"status": "UP"}), \
+            patch("src.calm.tm_client.get_test_cases", side_effect=RuntimeError("TM OData request failed: HTTP 401")):
+        out = health(Ctx())
+    assert out["reachable"] is True and out["authorized"] is False and "401" in out["authorization_error"]
+    with patch("src.calm.tm_client.service_health", return_value={"status": "UP"}), \
+            patch("src.calm.tm_client.get_test_cases", return_value={"items": []}):
+        assert health(Ctx())["authorized"] is True
