@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import re
+from collections import Counter
 from datetime import date, datetime, timezone
 from typing import Any, Literal, Optional
 
@@ -1172,8 +1173,10 @@ def register(mcp: FastMCP) -> None:
                 → resource="tasks" (or "requirements"), operation="list",
                 project_id=X, data={"assignee": "<name or email>",
                 "overdue": true, "summarize_by": ["AssigneeName", "Status"]}
-                Overdue = due before today and not Done / Not Relevant
-                (CALM's own rule). "Total Tasks" is the exact count over EVERY
+                Overdue = due before today, not Done / Not Relevant, not
+                obsolete, not a quality gate / checklist item (CALM's own rule;
+                Check shows what was left out and "By Type", to match a CALM view
+                filtered by type). "Total Tasks" is the exact count over EVERY
                 task of the project and "Check" proves nothing was dropped
                 (Tasks Read, Matched, Groups Add Up). NEVER list rows and count
                 them yourself: a long list is trimmed before you see it and the
@@ -1349,9 +1352,9 @@ def register(mcp: FastMCP) -> None:
                     team (team name/ID or list), assignee (the Responsible: name,
                     first or last name, or email; a value matching two people is
                     answered as ambiguous, never added together), status (label(s),
-                    e.g. ["Blocked", "In Progress"]), priority, overdue (true:
-                    due before today and not Done / Not Relevant; false: the
-                    rest), as_of (the day overdue is judged on; default today,
+                    e.g. ["Blocked", "In Progress", "In Review"]), priority, overdue
+                    (true: due before today, not Done / Not Relevant, not
+                    obsolete; false: the rest), as_of (the day overdue is judged on; default today,
                     UTC), due_before / due_after (exclusive) and due_from /
                     due_to (inclusive) dates, filter ({field: value or [values]}
                     on any row field, e.g. {"Scope": "FICO"}; null = not set),
@@ -1843,10 +1846,23 @@ def register(mcp: FastMCP) -> None:
                     filters.update(opts["where"])
                 bounds = {k: opts[k] for k in _DUE_KEYS if k in opts}
                 no_due = sum(1 for r in rows if not r.get("DueDate")) if ("overdue" in opts or bounds) else 0
+                left_out: dict = {}
                 if "overdue" in opts:
                     as_of = (date.fromisoformat(opts["as_of"]) if opts.get("as_of")
                              else datetime.now(timezone.utc).date())
-                    rows = client.overdue_tasks(rows, opts["overdue"], as_of)
+                    # Asked for by type (task_type="Quality Gate"): then they count.
+                    wanted = client.TASK_TYPE_MAP.get(client.resolve_task_type_code(task_type)) if task_type else None
+                    skip_types = tuple(t for t in client.OVERDUE_SKIPPED_TYPES if t != wanted)
+                    # Past due but never overdue in CALM: say how many, never drop them unseen.
+                    day = as_of.isoformat()
+                    past_due = [r for r in rows if r.get("DueDate") and str(r["DueDate"])[:10] < day
+                                and r.get("Status") not in client.TASK_FINAL_STATUSES]
+                    left_out = {k: v for k, v in (
+                        ("Obsolete Not Counted", sum(1 for r in past_due if r.get("Obsolete"))),
+                        ("Quality Gates / Checklist Items Not Counted",
+                         sum(1 for r in past_due if not r.get("Obsolete") and r.get("Type") in skip_types)),
+                    ) if v}
+                    rows = client.overdue_tasks(rows, opts["overdue"], as_of, skip_types)
                     filters.update(overdue=opts["overdue"], as_of=as_of.isoformat())
                 if bounds:
                     rows, _ = client.due_between(rows, bounds)
@@ -1859,6 +1875,9 @@ def register(mcp: FastMCP) -> None:
                 check: dict = {"Tasks Read": read, "Matched": len(rows)}
                 if read != len(all_rows):
                     check["Duplicate Rows Removed"] = read - len(all_rows)
+                if filters or summarize:
+                    check["By Type"] = dict(sorted(Counter(str(r.get("Type")) for r in rows).items()))
+                check.update(left_out)
                 if no_due:
                     check["Tasks Without Due Date"] = no_due
                     check["Note"] = ("A task with no due date is never overdue and never in a due-date "

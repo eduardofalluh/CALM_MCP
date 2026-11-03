@@ -82,6 +82,7 @@ def _api_field_names(fields: dict) -> dict:
 
 TASK_STATUS_MAP = {
     "CIPTKOPEN": "Open", "CIPTKINP": "In Progress", "CIPTKBLK": "Blocked",
+    "CIPTKREV": "In Review",  # seen live 2026-11-03 (Lutron and the test tenant)
     "CIPTKCLOSE": "Done", "CIPTKNO": "Not Relevant",
     "CIPUSOPEN": "Open", "CIPUSINP": "In Progress", "CIPUSBLK": "Blocked",
     "CIPUSCLOSE": "Done", "CIPUSNO": "Not Relevant",
@@ -138,12 +139,12 @@ TASK_TYPE_REVERSE_MAP = {label.lower(): code for code, label in TASK_TYPE_MAP.it
 # Human status label -> CALM code, grouped by task type code.
 STATUS_CODE_BY_TYPE = {
     "CALMTASK": {"open": "CIPTKOPEN", "in progress": "CIPTKINP", "blocked": "CIPTKBLK",
-                 "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
+                 "in review": "CIPTKREV", "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
     "CALMTMPL": {"open": "CIPTKOPEN", "in progress": "CIPTKINP", "blocked": "CIPTKBLK",
-                 "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
+                 "in review": "CIPTKREV", "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
     # Sub-tasks (CALMST) use the task (CIPTK*) status codes, not user-story codes.
     "CALMST": {"open": "CIPTKOPEN", "in progress": "CIPTKINP", "blocked": "CIPTKBLK",
-               "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
+               "in review": "CIPTKREV", "done": "CIPTKCLOSE", "not relevant": "CIPTKNO"},
     "CALMUS": {"open": "CIPUSOPEN", "in progress": "CIPUSINP", "blocked": "CIPUSBLK",
                "done": "CIPUSCLOSE", "not relevant": "CIPUSNO"},
     "CALMREQU": {"open": "CIPREQUOPEN", "in progress": "CIPREQUINP", "blocked": "CIPREQUBLK",
@@ -193,6 +194,7 @@ def resolve_task_type_code(value: str) -> str:
 _STATUS_WORDS = {
     "open": ("new", "todo", "notstarted"),
     "in progress": ("inprogress", "wip", "ongoing", "started", "inwork"),
+    "in review": ("inreview", "review", "underreview", "reviewing"),
     "done": ("closed", "complete", "completed", "resolved", "finished"),
     "not relevant": ("notrelevant", "na", "notapplicable", "irrelevant"),
 }
@@ -890,6 +892,20 @@ def unresolved_filters(rows: list[dict], timebox: Any = None, team: Any = None) 
 # one of these: matches CALM's own analytics 'overdue' flag on all 26,511 tasks
 # of the test tenant (checked 2026-11-02).
 TASK_FINAL_STATUSES = ("Done", "Not Relevant")
+_STATUS_SUFFIXES = (("OPEN", "Open"), ("INP", "In Progress"), ("BLK", "Blocked"), ("REV", "In Review"),
+                    ("CLOSE", "Done"), ("DONE", "Done"), ("NR", "Not Relevant"), ("NO", "Not Relevant"))
+
+
+def status_label(code: Any) -> Any:
+    """A task status code as CALM labels it. A code not in TASK_STATUS_MAP is
+    labelled by its ending (CIP<type>REV = In Review), so a status SAP adds is
+    still readable and still counted as finished or not correctly."""
+    if code in TASK_STATUS_MAP:
+        return TASK_STATUS_MAP[code]
+    text = str(code or "")
+    if text.startswith("CIP"):
+        return next((label for suffix, label in _STATUS_SUFFIXES if text.endswith(suffix)), code)
+    return code
 _DATE_FIELDS = ("DueDate", "StartDate", "Created", "Last Changed")
 _FIELD_ALIASES = {
     "assignee": "AssigneeName", "responsible": "AssigneeName", "assignedto": "AssigneeName",
@@ -922,7 +938,8 @@ def _wanted(field: str, value: Any) -> Any:
         return None
     if field == "Status":
         word = _squash(value)
-        return TASK_STATUS_MAP.get(str(value).strip().upper()) or next(
+        code = str(value).strip().upper()
+        return (status_label(code) if code.startswith("CIP") else None) or next(
             (lbl.title() for lbl, alts in _STATUS_WORDS.items() if word == _squash(lbl) or word in alts), value)
     if field == "Priority":
         return TASK_PRIORITY_MAP.get(str(value).strip(), value)
@@ -992,13 +1009,22 @@ def where_tasks(rows: list[dict], where: dict) -> tuple[list[dict], dict]:
     return out, report
 
 
-def overdue_tasks(rows: list[dict], overdue: bool, as_of: date) -> list[dict]:
+# Never counted as overdue unless asked for by type: CALM's own overdue measure
+# leaves them out (its analytics doesn't track them at all).
+OVERDUE_SKIPPED_TYPES = ("Quality Gate", "Checklist Item")
+
+
+def overdue_tasks(rows: list[dict], overdue: bool, as_of: date, skip_types: tuple = OVERDUE_SKIPPED_TYPES) -> list[dict]:
     """Tasks that are (overdue=False: are not) overdue on ``as_of``: due before
-    that day and not Done / Not Relevant — CALM's own rule."""
+    that day, not Done / Not Relevant, not obsolete and not a quality gate /
+    checklist item — CALM's own rule (checked live 2026-11-03: on every task
+    CALM's analytics tracks, the same set as its overdue flag)."""
     day = as_of.isoformat()
 
     def late(r: dict) -> bool:
-        return bool(r.get("DueDate")) and str(r["DueDate"])[:10] < day and r.get("Status") not in TASK_FINAL_STATUSES
+        return (bool(r.get("DueDate")) and str(r["DueDate"])[:10] < day
+                and r.get("Status") not in TASK_FINAL_STATUSES and not r.get("Obsolete")
+                and r.get("Type") not in skip_types)
 
     return [r for r in rows if late(r) == overdue]
 
@@ -1984,7 +2010,7 @@ def _format_task(
         "External ID (FRICEF)": item.get("externalId"),
         "Title": item.get("title"),
         "Type": TASK_TYPE_MAP.get(item.get("type"), item.get("type")),
-        "Status": TASK_STATUS_MAP.get(item.get("status"), item.get("status")),
+        "Status": status_label(item.get("status")),
         # parentId links a task/user story to its parent work item (e.g. a requirement).
         "Parent ID": item.get("parentId"),
         "StartDate": item.get("startDate"),
@@ -2014,6 +2040,8 @@ def _format_task(
         "Assigned Role": item.get("assignedRoleName"),
         "Created": item.get("createdTimestamp"),
         "Last Changed": item.get("lastChangedTimestamp"),
+        # The finer state CALM shows beside the status (e.g. "TO_BE_APPROVED").
+        "Sub-status": item.get("subStatus"),
     }
 
 

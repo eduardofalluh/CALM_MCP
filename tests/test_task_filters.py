@@ -185,3 +185,42 @@ def test_where_tasks_report_lists_tags_present():
     kept, report = client.where_tasks(rows, {"Tags": ["SIT", "OCM"]})
     assert [r["ID"] for r in kept] == ["id-1"]
     assert report["Tags"] == {"no tasks for": ["OCM"], "values present": ["SIT", "SIT - FI", "UAT"]}
+
+
+# --------------------------------------------------------------------------- #
+# Lutron 2026-11-03: a person with 5 "overdue" tasks had none in CALM. CALM never
+# counts obsolete tasks (hidden; its analytics skips every one), and a status
+# code missing from the map (CIPTKREV, "In Review") showed as a raw code.
+# --------------------------------------------------------------------------- #
+
+def test_an_obsolete_task_is_never_overdue_and_the_check_says_so(calm):
+    rows = [_row(1, "Open", PAST, "Person Gamma", "u-g", Obsolete=True),
+            _row(2, "Open", PAST, "Person Gamma", "u-g", Obsolete=True),
+            _row(3, "Open", PAST, "Person Gamma", "u-g", Obsolete=False)]
+    out, _ = _list(calm, rows, assignee="Person Gamma", overdue=True, summarize_by="Status")
+    assert out["Total Tasks"] == 1 and out["Check"]["Obsolete Not Counted"] == 2
+    assert out["Check"]["By Type"] == {"Project Task": 1}
+
+
+def test_status_codes_get_labels_and_review_counts_as_open_work(calm):
+    from src.calm import client
+    assert client.status_label("CIPTKREV") == "In Review"
+    assert client.status_label("CIPUSREV") == "In Review"   # a code SAP may add: labelled by its ending
+    assert client.status_label("CIPXYDONE") == "Done"
+    assert client.status_label("ZCUSTOM") == "ZCUSTOM"
+    row = client._format_task({"id": "t", "status": "CIPTKREV", "subStatus": "TO_BE_APPROVED"})
+    assert row["Status"] == "In Review" and row["Sub-status"] == "TO_BE_APPROVED"
+    rows = [_row(1, "In Review", PAST, "Person Alpha", "u-a"), _row(2, "Done", PAST, "Person Alpha", "u-a")]
+    out, _ = _list(calm, rows, overdue=True, status="review", summarize_by="Status")
+    assert out["Total Tasks"] == 1 and out["Groups"][0]["Status"] == "In Review"
+    assert client.resolve_status_code("In Review", "CALMTASK") == "CIPTKREV"
+
+
+def test_quality_gates_and_checklist_items_are_not_overdue_unless_asked_for(calm):
+    rows = [_row(1, "Open", PAST, "Person Gamma", "u-g", Type="Checklist Item"),
+            _row(2, "Open", PAST, "Person Gamma", "u-g", Type="Quality Gate"),
+            _row(3, "Open", PAST, "Person Gamma", "u-g")]
+    out, _ = _list(calm, rows, assignee="Person Gamma", overdue=True, summarize_by="Type")
+    assert out["Total Tasks"] == 1 and out["Check"]["Quality Gates / Checklist Items Not Counted"] == 2
+    out, _ = _list(calm, rows[1:2], task_type="Quality Gate", overdue=True, summarize_by="Type")
+    assert out["Total Tasks"] == 1 and "Quality Gates / Checklist Items Not Counted" not in out["Check"]
