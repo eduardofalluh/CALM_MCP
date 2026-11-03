@@ -224,3 +224,93 @@ def test_quality_gates_and_checklist_items_are_not_overdue_unless_asked_for(calm
     assert out["Total Tasks"] == 1 and out["Check"]["Quality Gates / Checklist Items Not Counted"] == 2
     out, _ = _list(calm, rows[1:2], task_type="Quality Gate", overdue=True, summarize_by="Type")
     assert out["Total Tasks"] == 1 and "Quality Gates / Checklist Items Not Counted" not in out["Check"]
+
+
+# --------------------------------------------------------------------------- #
+# Audit 2026-11-03 against CALM's own labels over 9,325 tasks: obsolete tasks
+# (13% of all tasks) are never counted by CALM, workstreams show as names, and
+# a sprint task's phase is the phase whose dates contain the sprint.
+# --------------------------------------------------------------------------- #
+
+def test_obsolete_tasks_are_left_out_of_lists_and_counts_and_reported(calm):
+    rows = [_row(1), _row(2, Obsolete=True), _row(3, Obsolete=True)]
+    out, _ = _list(calm, rows)
+    assert out["Total Matching"] == 1 and out["Check"]["Obsolete Not Counted"] == 2
+    out, _ = _list(calm, rows, summarize_by="Status")
+    assert out["Total Tasks"] == 1 and out["Check"]["Obsolete Not Counted"] == 2
+    out, _ = _list(calm, rows, include_obsolete=True)
+    assert out == rows  # asked for everything: the plain list, as before
+    out, _ = _list(calm, rows, filter={"Obsolete": True}, summarize_by="Status")
+    assert out["Total Tasks"] == 2
+
+
+def test_done_false_means_not_finished(calm):
+    rows = [_row(1, "Open"), _row(2, "In Progress"), _row(3, "Blocked"), _row(4, "Done"), _row(5, "Not Relevant")]
+    out, _ = _list(calm, rows, done=False, summarize_by="Status")
+    assert out["Total Tasks"] == 3 and out["Filters"]["done"] is False
+    out, _ = _list(calm, rows, done="yes", summarize_by="Status")
+    assert out["Total Tasks"] == 2
+
+
+def test_phase_of_a_timebox_follows_calm():
+    from src.calm import client
+    phases = [{"ID": "p1", "Name": "Explore", "Type": 1, "StartDate": "2026-06-08", "EndDate": "2026-07-17"},
+              {"ID": "p2", "Name": "Realize", "Type": 1, "StartDate": "2026-07-20", "EndDate": "2026-11-27"}]
+    assert client._phase_of({"Type": 2, "StartDate": "2026-08-03"}, phases) == "Realize"
+    assert client._phase_of(phases[0], phases) == "Explore"
+    assert client._phase_of({"Type": 2, "StartDate": "2025-01-01"}, phases) is None  # no phase says: unknown
+    assert client._phase_of({"Type": 2, "StartDate": "2026-08-03"}, [{"Name": "Realize", "Type": 1}]) is None
+
+
+def test_rows_carry_names_types_phase_and_story_points():
+    from src.calm import client
+    tbs = [{"ID": "s1", "Name": "Sprint 2", "Type": 2, "StartDate": "2026-08-03", "EndDate": "2026-08-14"},
+           {"ID": "ph", "Name": "Realize", "Type": 1, "StartDate": "2026-07-20", "EndDate": "2026-11-27"}]
+    raw = [{"id": "t1", "type": "CALMUS", "status": "CIPUSOPEN", "timeboxId": "s1", "workstream": "WS002", "storyPoints": 5}]
+    with patch("src.calm.client._get_all", return_value=raw), \
+            patch("src.calm.client.get_timeboxes", return_value=tbs), \
+            patch("src.calm.client.get_workstreams", return_value=[{"ID": "WS002", "Name": "Project Management"}]):
+        row = client.get_tasks("p1", "tok", "https://x.alm.cloud.sap")[0]
+    assert (row["Timebox"], row["Timebox Type"], row["Phase"]) == ("Sprint 2", "Sprint", "Realize")
+    assert (row["Workstream"], row["Workstream ID"], row["Story Points"]) == ("Project Management", "WS002", 5)
+    summary = client.summarize_tasks([row, {**row, "Story Points": 3}], ["Phase"])
+    assert summary["Groups"][0]["Story Points"] == 8 and summary["Total Story Points"] == 8
+
+
+def test_workstream_filters_by_name_or_code(calm):
+    rows = [_row(1, Workstream="Project Management", **{"Workstream ID": "WS002"}),
+            _row(2, Workstream="Integration", **{"Workstream ID": "WS004"})]
+    for value in ("project management", "WS002"):
+        out, _ = _list(calm, rows, filter={"Workstream": value}, summarize_by="Workstream")
+        assert out["Total Tasks"] == 1
+
+
+def test_a_missing_scope_name_is_looked_up():
+    from src.calm import client
+    raw = [{"id": "t1", "type": "CALMTASK", "status": "CIPTKOPEN", "scopeId": "sc1", "scopeName": None}]
+    with patch("src.calm.client._get_all", return_value=raw), \
+            patch("src.calm.client.get_scopes", return_value=[{"ID": "sc1", "Name": "Procure to Pay"}]):
+        assert client.get_tasks("p1", "tok", "https://x.alm.cloud.sap")[0]["Scope"] == "Procure to Pay"
+
+
+def test_a_task_in_several_workstreams():
+    # Live 2026-11-03: SAP sends "WS004,WS008"; the MCP looked that up as one code.
+    from src.calm import client
+    names = {"WS003": "Application Design and Configuration", "WS004": "Integration"}
+    row = client._format_task({"id": "t", "workstream": "WS003,WS004", "effort": 2}, workstream_names=names)
+    assert row["Workstream"] == ["Application Design and Configuration", "Integration"]
+    assert row["Workstream ID"] == ["WS003", "WS004"]
+    one = client._format_task({"id": "u", "workstream": "WS004", "effort": 1}, workstream_names=names)
+    assert (one["Workstream"], one["Workstream ID"]) == ("Integration", "WS004")
+    s = client.summarize_tasks([row, one], ["Workstream"])
+    assert {(g["Workstream"], g["Tasks"]) for g in s["Groups"]} == {("Application Design and Configuration", 1), ("Integration", 2)}
+    assert s["Total Tasks"] == 2 and s["Group Memberships"] == 3 and s["Total Effort"] == 3
+    kept, _ = client.where_tasks([row, one], {"Workstream": "WS003"})
+    assert [r["ID"] for r in kept] == ["t"]
+
+
+def test_workstream_summary_check_still_adds_up(calm):
+    rows = [_row(1, Workstream=["Integration", "Analytics"], **{"Workstream ID": ["WS004", "WS005"]}),
+            _row(2, Workstream="Integration", **{"Workstream ID": "WS004"})]
+    out, _ = _list(calm, rows, summarize_by="Workstream")
+    assert out["Total Tasks"] == 2 and out["Group Memberships"] == 3 and out["Check"]["Groups Add Up"] is True

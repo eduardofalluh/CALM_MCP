@@ -133,10 +133,11 @@ RAW = {
 
 
 def test_previously_dropped_fields_are_returned():
-    row = client._format_task(RAW)
+    row = client._format_task(RAW, workstream_names={"WS006": "Extensibility"})
     assert (row["Priority"], row["Scope ID"], row["Scope"], row["Workstream"], row["Assigned Role"],
-            row["Created"], row["Last Changed"]) == (
-        "High", "s1", "Finance", "WS006", "Consultant", "2026-07-01T10:00:00Z", "2026-10-20T08:00:00Z")
+            row["Created"], row["Last Changed"], row["Workstream ID"]) == (
+        "High", "s1", "Finance", "Extensibility", "Consultant", "2026-07-01T10:00:00Z", "2026-10-20T08:00:00Z",
+        "WS006")
 
 
 def test_unknown_priority_code_passes_through():
@@ -256,11 +257,17 @@ def test_name_lookups_are_single_short_attempts():
         budgets.append(http_retry._budget.get())
         return [{"ID": "tf", "Name": "Consulting - Finance"}]
 
+    def workstreams(*a, **kw):
+        budgets.append(http_retry._budget.get())
+        return [{"ID": "WS006", "Name": "Extensibility"}]
+
     with patch("src.calm.client._get_all", return_value=[{**RAW, "responsibleTeamId": "tf"}]), \
-         patch("src.calm.client.get_project_teams", teams):
+         patch("src.calm.client.get_project_teams", teams), \
+         patch("src.calm.client.get_workstreams", workstreams):
         rows = client.get_tasks("p1", "tok", BASE)
     assert rows[0]["Responsible Team"] == "Consulting - Finance"
-    assert budgets == [(1, http_retry.BEST_EFFORT_TIMEOUT)]
+    assert rows[0]["Workstream"] == "Extensibility" and rows[0]["Workstream ID"] == "WS006"
+    assert budgets == [(1, http_retry.BEST_EFFORT_TIMEOUT)] * 2
     assert http_retry._budget.get() is None  # restored for the rest of the call
 
 

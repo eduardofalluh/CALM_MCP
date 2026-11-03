@@ -70,12 +70,13 @@ def _is_not_authorized(exc: Exception) -> bool:
 # ignored filter silently returns the whole project (thousands of rows).
 _TASK_LIST_OPTIONS = ("tag", "timebox", "team", "search", "top", "fields", "summarize_by", "filter",
                       "assignee", "status", "priority", "overdue", "due_before", "due_after",
-                      "due_from", "due_to", "as_of", "skip")
+                      "due_from", "due_to", "as_of", "skip", "include_obsolete", "done")
 _TASK_LIST_ALIASES = {"query": "search", "title": "search", "limit": "top", "sprint": "timebox",
                       "where": "filter", "filters": "filter", "responsible": "assignee",
                       "assigned_to": "assignee", "assignee_name": "assignee", "owner": "assignee",
                       "person": "assignee", "processor": "assignee", "is_overdue": "overdue",
-                      "offset": "skip"}
+                      "offset": "skip", "show_obsolete": "include_obsolete", "finished": "done",
+                      "completed": "done", "is_done": "done"}
 # Shortcuts for the most asked-for fields of data.filter.
 _TASK_FILTER_SHORTCUTS = {"assignee": "AssigneeName", "status": "Status", "priority": "Priority"}
 _DUE_KEYS = ("due_before", "due_after", "due_from", "due_to")
@@ -128,12 +129,13 @@ def _task_list_options(d: dict, project_id: str | None, task_type: str | None):
             where[field] = value
     if where:
         opts["where"] = where
-    if "overdue" in opts:
-        flag = opts["overdue"]
-        flag = {"true": True, "yes": True, "false": False, "no": False}.get(str(flag).strip().lower(), flag)
-        if not isinstance(flag, bool):
-            raise ValueError(f"overdue must be true or false (got {opts['overdue']!r})")
-        opts["overdue"] = flag
+    for key in ("overdue", "include_obsolete", "done"):
+        if key in opts:
+            flag = opts[key]
+            flag = {"true": True, "yes": True, "false": False, "no": False}.get(str(flag).strip().lower(), flag)
+            if not isinstance(flag, bool):
+                raise ValueError(f"{key} must be true or false (got {opts[key]!r})")
+            opts[key] = flag
     if "as_of" in opts and "overdue" not in opts:
         raise ValueError("as_of is the day overdue is judged on — pass it with overdue")
     for key in (*_DUE_KEYS, "as_of"):
@@ -1354,8 +1356,12 @@ def register(mcp: FastMCP) -> None:
                     answered as ambiguous, never added together), status (label(s),
                     e.g. ["Blocked", "In Progress", "In Review"]), priority, overdue
                     (true: due before today, not Done / Not Relevant, not
-                    obsolete; false: the rest), as_of (the day overdue is judged on; default today,
-                    UTC), due_before / due_after (exclusive) and due_from /
+                    obsolete; false: the rest), done (false: not finished — use it
+                    for "open" in the everyday sense; status "Open" is CALM's Open
+                    status only), include_obsolete (obsolete tasks are left out of
+                    every list and count by default, as CALM does; Check says how
+                    many), as_of (the day overdue is judged on; pass the user's
+                    local date — default today, UTC), due_before / due_after (exclusive) and due_from /
                     due_to (inclusive) dates, filter ({field: value or [values]}
                     on any row field, e.g. {"Scope": "FICO"}; null = not set),
                     search (text: matches title,
@@ -1371,7 +1377,12 @@ def register(mcp: FastMCP) -> None:
                     Status, Parent ID, StartDate, DueDate, AssigneeName,
                     AssigneeID, ApprovalState, Obsolete, Effort, Tags,
                     Responsible Team (+ID), Timebox (+ID), Priority, Scope (+ID),
-                    Workstream (a code), Assigned Role, Created, Last Changed.
+                    Workstream (name; code in Workstream ID — the task's one
+                    workstream as SAP's task API gives it, while CALM analytics may
+                    list a task under several), Assigned Role, Created, Last
+                    Changed, Sub-status, Timebox Type (Sprint / Phase / Milestone),
+                    Phase (a sprint's phase is the phase whose dates contain it;
+                    empty when the phases have no dates), Story Points.
                     With summarize_by the result is {Grouped By, Groups: [{<fields>,
                     Tasks, Effort, Tasks Without Effort}], Total Tasks, Total
                     Effort, Tasks Without Effort, Note} plus "Warning" (names that
@@ -1832,6 +1843,7 @@ def register(mcp: FastMCP) -> None:
                         + ". Try again in a moment, or filter by ID."
                     )
                 rows = client.filter_tasks(all_rows, timebox=timebox, team=team)
+                left_out: dict = {}
                 unmatched = client.unmatched_filters(all_rows, timebox=timebox, team=team)
                 if unmatched:
                     client.classify_unmatched(unmatched, project_id, h.token, h.base_url)
@@ -1844,9 +1856,11 @@ def register(mcp: FastMCP) -> None:
                     rows = [r for r in rows if id(r) in keep]
                     unmatched.update(missed)
                     filters.update(opts["where"])
+                if "done" in opts:  # done=false: anything not finished ("open" in the everyday sense)
+                    rows = [r for r in rows if (r.get("Status") in client.TASK_FINAL_STATUSES) == opts["done"]]
+                    filters["done"] = opts["done"]
                 bounds = {k: opts[k] for k in _DUE_KEYS if k in opts}
                 no_due = sum(1 for r in rows if not r.get("DueDate")) if ("overdue" in opts or bounds) else 0
-                left_out: dict = {}
                 if "overdue" in opts:
                     as_of = (date.fromisoformat(opts["as_of"]) if opts.get("as_of")
                              else datetime.now(timezone.utc).date())
@@ -1870,6 +1884,14 @@ def register(mcp: FastMCP) -> None:
                 search = opts.get("search")
                 if search is not None:
                     rows = client.search_tasks(rows, search)
+                # CALM hides obsolete tasks and never counts them (its analytics skips
+                # all of them): leave them out unless asked for, and say how many.
+                hidden = 0
+                if not opts.get("include_obsolete") and "Obsolete" not in (opts.get("where") or {}):
+                    hidden = sum(1 for r in rows if r.get("Obsolete"))
+                    rows = [r for r in rows if not r.get("Obsolete")]
+                if hidden:
+                    left_out["Obsolete Not Counted"] = left_out.get("Obsolete Not Counted", 0) + hidden
                 # Proof nothing was dropped on the way: every task SAP returned was
                 # read, and the answer counts the ones that match, server-side.
                 check: dict = {"Tasks Read": read, "Matched": len(rows)}
@@ -1890,7 +1912,9 @@ def register(mcp: FastMCP) -> None:
                         result["Search"] = search
                     if unmatched:
                         result["Filter Values With No Tasks"] = unmatched
-                    check["Groups Add Up"] = sum(g["Tasks"] for g in result["Groups"]) == result["Total Tasks"] == len(rows)
+                    check["Groups Add Up"] = (sum(g["Tasks"] for g in result["Groups"])
+                                              == result.get("Group Memberships", len(rows))
+                                              and result["Total Tasks"] == len(rows))
                     result["Check"] = check
                     return result
                 if unmatched and not rows and client.unknown_filter_values(unmatched):
@@ -1902,7 +1926,7 @@ def register(mcp: FastMCP) -> None:
                 rows = rows[skip:skip + top] if top is not None else rows[skip:]
                 if opts.get("fields") is not None:
                     rows = client.select_task_fields(rows, opts["fields"])
-                if top is None and not unmatched and not filters and not skip:
+                if top is None and not unmatched and not filters and not skip and not hidden:
                     return rows
                 # Shaped answer: say how much there is, not just what fits.
                 result: dict = {"Total Matching": total, "Returned": len(rows)}

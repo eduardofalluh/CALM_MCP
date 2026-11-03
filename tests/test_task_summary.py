@@ -87,11 +87,11 @@ def test_summary_by_sprint_and_team_is_exact():
                                ["Timebox", "Responsible Team"])
     assert s["Grouped By"] == ["Timebox", "Responsible Team"]
     assert s["Groups"] == [
-        {"Timebox": "Sprint 1", "Responsible Team": "Consulting - Finance", "Tasks": 2, "Effort": 12.0, "Tasks Without Effort": 0},
-        {"Timebox": "Sprint 1", "Responsible Team": "(none)", "Tasks": 1, "Effort": 0.0, "Tasks Without Effort": 1},
-        {"Timebox": "Sprint 2", "Responsible Team": "Business - PTP", "Tasks": 1, "Effort": 1.5, "Tasks Without Effort": 0},
-        {"Timebox": "Sprint 2", "Responsible Team": "Consulting  - ABAP", "Tasks": 1, "Effort": 16.0, "Tasks Without Effort": 0},
-        {"Timebox": "Sprint 10", "Responsible Team": "Consulting - Finance", "Tasks": 1, "Effort": 2.0, "Tasks Without Effort": 0},
+        {"Timebox": "Sprint 1", "Responsible Team": "Consulting - Finance", "Tasks": 2, "Effort": 12.0, "Tasks Without Effort": 0, "Story Points": 0.0},
+        {"Timebox": "Sprint 1", "Responsible Team": "(none)", "Tasks": 1, "Effort": 0.0, "Tasks Without Effort": 1, "Story Points": 0.0},
+        {"Timebox": "Sprint 2", "Responsible Team": "Business - PTP", "Tasks": 1, "Effort": 1.5, "Tasks Without Effort": 0, "Story Points": 0.0},
+        {"Timebox": "Sprint 2", "Responsible Team": "Consulting  - ABAP", "Tasks": 1, "Effort": 16.0, "Tasks Without Effort": 0, "Story Points": 0.0},
+        {"Timebox": "Sprint 10", "Responsible Team": "Consulting - Finance", "Tasks": 1, "Effort": 2.0, "Tasks Without Effort": 0, "Story Points": 0.0},
     ]
     assert (s["Total Tasks"], s["Total Effort"], s["Tasks Without Effort"]) == (6, 31.5, 1)
 
@@ -103,7 +103,7 @@ def test_sprints_sort_naturally_and_unassigned_last():
 
 def test_numeric_string_effort_is_summed():
     s = client.summarize_tasks(client.filter_tasks(ROWS, team="Consulting - OTC"), "Responsible Team")
-    assert s["Groups"] == [{"Responsible Team": "Consulting - OTC", "Tasks": 2, "Effort": 8.0, "Tasks Without Effort": 0}]
+    assert s["Groups"] == [{"Responsible Team": "Consulting - OTC", "Tasks": 2, "Effort": 8.0, "Tasks Without Effort": 0, "Story Points": 0.0}]
 
 
 def test_totals_match_the_rows():

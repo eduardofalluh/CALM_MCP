@@ -432,7 +432,7 @@ async def main() -> int:
                   isinstance(summary, dict) and summary.get("Total Tasks") == 2
                   and summary.get("Total Effort") == 8.0
                   and {"Timebox": "Sprint 1", "Responsible Team": "Development Team", "Tasks": 1,
-                       "Effort": 8.0, "Tasks Without Effort": 0} in summary.get("Groups", []),
+                       "Effort": 8.0, "Tasks Without Effort": 0, "Story Points": 0.0} in summary.get("Groups", []),
                   f"got {summary}")
             one_sprint = _list(await _call(session, "tasks", "list", project_id="P001",
                                            data={"timebox": "sprint 1"}))

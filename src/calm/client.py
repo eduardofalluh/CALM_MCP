@@ -16,6 +16,7 @@ import re
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from itertools import product
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
@@ -701,14 +702,8 @@ def get_tasks(
         items = [it for it in items if it.get("type") == type_code]
     if tag:
         items = [it for it in items if _tag_in_family(it.get("tags"), tag)]
-    # Resolve team / sprint names once per call, and only when some task carries
-    # the ID, so plain task lists cost no extra request.
-    team_names = timebox_names = None
-    if any(it.get("responsibleTeamId") for it in items):
-        team_names = _id_name_map(lambda: get_project_teams(project_id, token, base_url), "team")
-    if any(it.get("timeboxId") for it in items):
-        timebox_names = _id_name_map(lambda: get_timeboxes(project_id, token, base_url), "timebox")
-    return [_format_task(item, team_names, timebox_names) for item in items]
+    context = _task_context(items, project_id, token, base_url)
+    return [_format_task(item, **context) for item in items]
 
 
 def get_task(
@@ -732,12 +727,7 @@ def get_task(
         if not isinstance(item, dict) or not item:
             raise NotFound(f"No task with ID {ident}")
         project = item.get("projectId") or project_id
-        team_names = timebox_names = None
-        if project and item.get("responsibleTeamId"):
-            team_names = _id_name_map(lambda: get_project_teams(project, token, base_url), "team")
-        if project and item.get("timeboxId"):
-            timebox_names = _id_name_map(lambda: get_timeboxes(project, token, base_url), "timebox")
-        return _format_task(item, team_names, timebox_names)
+        return _format_task(item, **(_task_context([item], project, token, base_url) if project else {}))
     if not project_id:
         raise ValueError(
             f"'{ident}' is not a task UUID; to look a task up by its display ID or "
@@ -767,12 +757,13 @@ def get_task(
 # Formatted task fields a summary may group by.
 TASK_SUMMARY_FIELDS = (
     "Timebox", "Responsible Team", "Type", "Status", "AssigneeName",
-    "Priority", "Scope", "Workstream", "Assigned Role",
+    "Priority", "Scope", "Workstream", "Assigned Role", "Phase", "Timebox Type", "Sub-status",
 )
 
 # Named fields whose ID is also on the row: a name missing while the ID is set
 # means the name lookup failed, which is not the same as "not assigned".
-_NAME_ID = {"Timebox": "Timebox ID", "Responsible Team": "Responsible Team ID", "Scope": "Scope ID"}
+_NAME_ID = {"Timebox": "Timebox ID", "Responsible Team": "Responsible Team ID", "Scope": "Scope ID",
+            "Workstream": "Workstream ID"}
 
 
 def _norm(value: Any) -> str:
@@ -957,10 +948,9 @@ def _field_matches(row: dict, field: str, want: Any) -> bool:
         return (bool(words) and words <= _person_words(value or "")) or _norm(want) == _norm(row.get("AssigneeID") or "")
     if field in _DATE_FIELDS:
         return str(value or "")[:10] == want
-    if isinstance(value, list):
-        return any(_norm(v) == _norm(want) for v in value)
     id_value = row.get(_NAME_ID.get(field, ""))
-    return any(v is not None and _norm(v) == _norm(want) for v in (value, id_value))
+    values = [*(value if isinstance(value, list) else [value]), *(id_value if isinstance(id_value, list) else [id_value])]
+    return any(v is not None and _norm(_unwrap_unresolved(v)) == _norm(want) for v in values)
 
 
 def where_tasks(rows: list[dict], where: dict) -> tuple[list[dict], dict]:
@@ -1129,34 +1119,48 @@ def summarize_tasks(rows: list[dict], by: Any) -> dict:
     """
     fields = check_summary_fields(by)
     groups: dict[tuple, list] = {}
-    unresolved = 0
+    unresolved = memberships = 0
     for r in rows:
-        key = tuple(_label(r, f) for f in fields)
-        unresolved += any(isinstance(v, str) and v.startswith("(unresolved: ") for v in key)
-        g = groups.setdefault(key, [0, 0.0, 0])
-        g[0] += 1
+        values = [_label(r, f) for f in fields]
+        # A task in several workstreams counts in each, as CALM does.
+        keys = list(product(*[(v if isinstance(v, list) and v else [None if isinstance(v, list) else v])
+                              for v in values]))
+        memberships += len(keys)
         effort = _effort(r.get("Effort"))
-        if effort is None:
-            g[2] += 1
-        else:
-            g[1] += effort
+        points = _effort(r.get("Story Points")) or 0.0
+        for key in keys:
+            unresolved += any(isinstance(v, str) and v.startswith("(unresolved: ") for v in key)
+            g = groups.setdefault(key, [0, 0.0, 0, 0.0])
+            g[0] += 1
+            if effort is None:
+                g[2] += 1
+            else:
+                g[1] += effort
+            g[3] += points
     out = []
     for key in sorted(groups, key=lambda k: tuple(_natural(v) for v in k)):
-        count, effort, no_effort = groups[key]
+        count, effort, no_effort, points = groups[key]
         row: dict[str, Any] = {f: ("(none)" if v is None else v) for f, v in zip(fields, key)}
-        row.update({"Tasks": count, "Effort": round(effort, 2), "Tasks Without Effort": no_effort})
+        row.update({"Tasks": count, "Effort": round(effort, 2), "Tasks Without Effort": no_effort,
+                    "Story Points": round(points, 2)})
         out.append(row)
+    efforts = [_effort(r.get("Effort")) for r in rows]
     result: dict[str, Any] = {
         "Grouped By": fields,
         "Groups": out,
         "Total Tasks": len(rows),
-        "Total Effort": round(sum(g[1] for g in groups.values()), 2),
-        "Tasks Without Effort": sum(g[2] for g in groups.values()),
+        "Total Effort": round(sum(e for e in efforts if e is not None), 2),
+        "Tasks Without Effort": sum(1 for e in efforts if e is None),
+        "Total Story Points": round(sum(_effort(r.get("Story Points")) or 0.0 for r in rows), 2),
         "Note": (
             "Computed by the MCP server from every matching task. Effort is summed as "
             "stored in SAP Cloud ALM; '(none)' means not assigned."
         ),
     }
+    if memberships != len(rows):
+        result["Group Memberships"] = memberships
+        result["Note"] += (f" {memberships - len(rows)} extra group memberships: a task in several "
+                           "workstreams counts in each group, once in the totals.")
     if unresolved:
         result["Warning"] = (
             f"{unresolved} task(s) are grouped as '(unresolved: <id>)': their team or "
@@ -1992,10 +1996,25 @@ def get_project_customization(project_id: str, token: str, base_url: str | None 
 # can bypass label mapping if a tenant differs.
 # ---------------------------------------------------------------------------
 
+def _workstreams(raw: Any, names: dict | None) -> tuple[Any, Any]:
+    """(names, codes) for a task's workstream value: one name and code, or lists
+    when SAP sends several ("WS004,WS008"). An unknown code in a list is shown as
+    "(unresolved: <code>)"; a single unknown one as None, like teams and sprints."""
+    codes = [c.strip() for c in str(raw or "").split(",") if c.strip()]
+    if not codes:
+        return None, None
+    if len(codes) == 1:
+        return (names or {}).get(codes[0]), codes[0]
+    return [(names or {}).get(c) or f"(unresolved: {c})" for c in codes], codes
+
+
 def _format_task(
     item: dict,
     team_names: dict | None = None,
     timebox_names: dict | None = None,
+    workstream_names: dict | None = None,
+    timebox_info: dict | None = None,
+    scope_names: dict | None = None,
 ) -> dict:
     """Format a single raw task the same way get_tasks() formats a list item.
 
@@ -2034,14 +2053,21 @@ def _format_task(
         # not report by priority, scope, workstream or recent change.
         "Priority": TASK_PRIORITY_MAP.get(str(item.get("priorityId")), item.get("priorityId")),
         "Scope ID": item.get("scopeId"),
-        "Scope": item.get("scopeName"),
-        # A customization code (e.g. "WS006"); its names aren't in the public API.
-        "Workstream": item.get("workstream"),
+        "Scope": item.get("scopeName") or (scope_names or {}).get(item.get("scopeId")),
+        # The name, as CALM shows it (the code is "Workstream ID"); a task in
+        # several workstreams (SAP sends "WS004,WS008") gets the list of them.
+        "Workstream": _workstreams(item.get("workstream"), workstream_names)[0],
         "Assigned Role": item.get("assignedRoleName"),
         "Created": item.get("createdTimestamp"),
         "Last Changed": item.get("lastChangedTimestamp"),
         # The finer state CALM shows beside the status (e.g. "TO_BE_APPROVED").
         "Sub-status": item.get("subStatus"),
+        "Workstream ID": _workstreams(item.get("workstream"), workstream_names)[1],
+        # A timebox is a sprint, a phase or a milestone; a sprint's phase is the
+        # phase whose dates contain it, as CALM shows "Sprint 2 / Realize".
+        "Timebox Type": (timebox_info or {}).get(item.get("timeboxId"), {}).get("type"),
+        "Phase": (timebox_info or {}).get(item.get("timeboxId"), {}).get("phase"),
+        "Story Points": item.get("storyPoints"),
     }
 
 
@@ -2056,6 +2082,52 @@ def select_task_fields(rows: list[dict], fields: Any) -> list[dict]:
         raise ValueError(f"fields must be one or more of {', '.join(TASK_FIELDS)} (got {bad or wanted})")
     keep = ["ID"] + [f for f in wanted if f != "ID"]
     return [{k: r.get(k) for k in keep} for r in rows]
+
+
+_TIMEBOX_TYPE_LABEL = {0: "Milestone", 1: "Phase", 2: "Sprint"}
+
+
+def get_workstreams(project_id: str, token: str, base_url: str | None = None) -> list[dict]:
+    """The project's workstreams: code -> name (e.g. WS002 -> "Project Management")."""
+    items = _get(f"{_base_url(base_url)}/api/calm-tasks/v1/workstreams?projectId={project_id}", token) or []
+    return [{"ID": i.get("id"), "Name": i.get("name"), "Custom": i.get("isCustom")} for i in items if isinstance(i, dict)]
+
+
+def _phase_of(tb: dict, phases: list[dict]) -> Any:
+    """A timebox's phase: itself when it is a phase, else the one phase whose
+    dates contain it (CALM's rule, checked live); None when no phase has dates
+    that tell — never a guess."""
+    if tb.get("Type") == 1:
+        return tb.get("Name")
+    day = str(tb.get("StartDate") or tb.get("EndDate") or "")[:10]
+    hits = [p for p in phases if day and p.get("StartDate") and p.get("EndDate")
+            and str(p["StartDate"])[:10] <= day <= str(p["EndDate"])[:10]]
+    return hits[0].get("Name") if len(hits) == 1 else None
+
+
+def _task_context(items: list, project_id: str, token: str, base_url: str | None) -> dict:
+    """Names for the IDs on task rows (teams, timeboxes, workstreams) plus each
+    timebox's type and phase — read once per call, only for IDs present, and
+    never failing the task read (a failed lookup leaves the name empty)."""
+    out: dict = {}
+    if any(it.get("responsibleTeamId") for it in items):
+        out["team_names"] = _id_name_map(lambda: get_project_teams(project_id, token, base_url), "team")
+    if any(it.get("timeboxId") for it in items):
+        try:
+            with http_retry.best_effort():
+                tbs = [t for t in get_timeboxes(project_id, token, base_url) if isinstance(t, dict)]
+        except Exception as exc:  # noqa: BLE001 — best-effort enrichment
+            log.debug("task timebox lookup skipped: %s", type(exc).__name__)
+            tbs = []
+        phases = [t for t in tbs if t.get("Type") == 1]
+        out["timebox_names"] = {t["ID"]: t.get("Name") for t in tbs if t.get("ID")}
+        out["timebox_info"] = {t["ID"]: {"type": _TIMEBOX_TYPE_LABEL.get(t.get("Type"), t.get("Type")),
+                                         "phase": _phase_of(t, phases)} for t in tbs if t.get("ID")}
+    if any(it.get("workstream") for it in items):
+        out["workstream_names"] = _id_name_map(lambda: get_workstreams(project_id, token, base_url), "workstream")
+    if any(it.get("scopeId") and not it.get("scopeName") for it in items):  # SAP sometimes omits the name
+        out["scope_names"] = _id_name_map(lambda: get_scopes(token, base_url), "scope")
+    return out
 
 
 def _id_name_map(fetch, what: str) -> dict:

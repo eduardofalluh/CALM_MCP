@@ -40,7 +40,8 @@ def _raw(**over):
 # _format_task
 # --------------------------------------------------------------------------- #
 
-LATER_KEYS = ["Priority", "Scope ID", "Scope", "Workstream", "Assigned Role", "Created", "Last Changed", "Sub-status"]
+LATER_KEYS = ["Priority", "Scope ID", "Scope", "Workstream", "Assigned Role", "Created", "Last Changed", "Sub-status",
+              "Workstream ID", "Timebox Type", "Phase", "Story Points"]
 
 
 def test_existing_fields_unchanged_and_new_fields_appended():
