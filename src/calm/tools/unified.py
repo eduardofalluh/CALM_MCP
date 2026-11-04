@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 from collections import Counter
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Literal, Optional
 
 from fastmcp import Context, FastMCP
@@ -1360,8 +1360,11 @@ def register(mcp: FastMCP) -> None:
                     for "open" in the everyday sense; status "Open" is CALM's Open
                     status only), include_obsolete (obsolete tasks are left out of
                     every list and count by default, as CALM does; Check says how
-                    many), as_of (the day overdue is judged on; pass the user's
-                    local date — default today, UTC), due_before / due_after (exclusive) and due_from /
+                    many), as_of (the day overdue is judged on: overdue
+                    = due BEFORE that day, so a task due yesterday IS overdue
+                    today. Leave it out for "overdue now" — default today, UTC;
+                    never set it to yesterday to "exclude today". "Due yesterday"
+                    is a different question: due_from = due_to = that date), due_before / due_after (exclusive) and due_from /
                     due_to (inclusive) dates, filter ({field: value or [values]}
                     on any row field, e.g. {"Scope": "FICO"}; null = not set),
                     search (text: matches title,
@@ -1878,6 +1881,15 @@ def register(mcp: FastMCP) -> None:
                     ) if v}
                     rows = client.overdue_tasks(rows, opts["overdue"], as_of, skip_types)
                     filters.update(overdue=opts["overdue"], as_of=as_of.isoformat())
+                    # The rule in words, so an answer is reported under CALM's meaning and
+                    # never quietly redefined (Lutron, 2026-11-04: as_of moved back a day,
+                    # then "overdue" swapped for "due yesterday").
+                    filters["Overdue Means"] = (
+                        f"due before {as_of.isoformat()} (due {(as_of - timedelta(days=1)).isoformat()} or "
+                        "earlier) and not Done / Not Relevant, not obsolete, not a quality gate or checklist "
+                        "item — CALM's own rule. A task due yesterday is overdue today."
+                        if opts["overdue"] else
+                        f"the rest: not overdue on {as_of.isoformat()} under CALM's rule")
                 if bounds:
                     rows, _ = client.due_between(rows, bounds)
                     filters.update(bounds)

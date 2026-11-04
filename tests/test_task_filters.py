@@ -84,7 +84,9 @@ def test_overdue_count_for_one_person_is_exact(calm):
                    summarize_by=["AssigneeName", "Status"])
     assert out["Total Tasks"] == 25
     assert {(g["Status"], g["Tasks"]) for g in out["Groups"]} == {("Blocked", 4), ("In Progress", 21)}
-    assert out["Filters"] == {"AssigneeName": "Person Alpha", "overdue": True, "as_of": "2026-11-02"}
+    assert {k: v for k, v in out["Filters"].items() if k != "Overdue Means"} == {
+        "AssigneeName": "Person Alpha", "overdue": True, "as_of": "2026-11-02"}
+    assert out["Filters"]["Overdue Means"].startswith("due before 2026-11-02 (due 2026-11-01 or earlier)")
     check = out["Check"]
     assert check["Tasks Read"] == 32 and check["Matched"] == 25 and check["Groups Add Up"] is True
     assert check["Tasks Without Due Date"] == 1
