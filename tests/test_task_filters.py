@@ -218,14 +218,25 @@ def test_status_codes_get_labels_and_review_counts_as_open_work(calm):
     assert client.resolve_status_code("In Review", "CALMTASK") == "CIPTKREV"
 
 
-def test_quality_gates_and_checklist_items_are_not_overdue_unless_asked_for(calm):
+def test_requirements_quality_gates_and_checklist_items_are_not_overdue_tasks(calm):
+    # Lutron 2026-11-04: Arpit Gupta's 2 "overdue tasks" were requirements; CALM: 0.
     rows = [_row(1, "Open", PAST, "Person Gamma", "u-g", Type="Checklist Item"),
             _row(2, "Open", PAST, "Person Gamma", "u-g", Type="Quality Gate"),
-            _row(3, "Open", PAST, "Person Gamma", "u-g")]
+            _row(3, "In Progress", PAST, "Person Gamma", "u-g", Type="Requirement"),
+            _row(4, "In Progress", PAST, "Person Gamma", "u-g", Type="Requirement"),
+            _row(5, "Open", PAST, "Person Gamma", "u-g")]
     out, _ = _list(calm, rows, assignee="Person Gamma", overdue=True, summarize_by="Type")
-    assert out["Total Tasks"] == 1 and out["Check"]["Quality Gates / Checklist Items Not Counted"] == 2
+    assert out["Total Tasks"] == 1
+    assert out["Check"]["Types Not Counted As Overdue"] == {"Checklist Item": 1, "Quality Gate": 1, "Requirement": 2}
+    assert "not a requirement / quality gate / checklist item" in out["Filters"]["Overdue Means"]
     out, _ = _list(calm, rows[1:2], task_type="Quality Gate", overdue=True, summarize_by="Type")
-    assert out["Total Tasks"] == 1 and "Quality Gates / Checklist Items Not Counted" not in out["Check"]
+    assert out["Total Tasks"] == 1 and out["Check"].get("Types Not Counted As Overdue") is None
+    with patch("src.calm.client.get_tasks", return_value=rows[2:4]), \
+            patch("src.calm.tools.unified.datetime") as dt:
+        dt.now.return_value.date.return_value = TODAY
+        out = calm(Ctx(), resource="requirements", operation="list", project_id="p1",
+                   data={"overdue": True, "summarize_by": "Status"})
+    assert out["Total Tasks"] == 2  # asked for requirements: they count
 
 
 # --------------------------------------------------------------------------- #

@@ -1176,7 +1176,8 @@ def register(mcp: FastMCP) -> None:
                 project_id=X, data={"assignee": "<name or email>",
                 "overdue": true, "summarize_by": ["AssigneeName", "Status"]}
                 Overdue = due before today, not Done / Not Relevant, not
-                obsolete, not a quality gate / checklist item (CALM's own rule;
+                obsolete, not a requirement / quality gate / checklist item —
+                resource="requirements" counts overdue requirements (CALM's own rule;
                 Check shows what was left out and "By Type", to match a CALM view
                 filtered by type). "Total Tasks" is the exact count over EVERY
                 task of the project and "Check" proves nothing was dropped
@@ -1356,7 +1357,8 @@ def register(mcp: FastMCP) -> None:
                     answered as ambiguous, never added together), status (label(s),
                     e.g. ["Blocked", "In Progress", "In Review"]), priority, overdue
                     (true: due before today, not Done / Not Relevant, not
-                    obsolete; false: the rest), done (false: not finished — use it
+                    obsolete, not a requirement / quality gate / checklist item
+                    unless asked for by task_type or resource; false: the rest), done (false: not finished — use it
                     for "open" in the everyday sense; status "Open" is CALM's Open
                     status only), include_obsolete (obsolete tasks are left out of
                     every list and count by default, as CALM does; Check says how
@@ -1874,20 +1876,25 @@ def register(mcp: FastMCP) -> None:
                     day = as_of.isoformat()
                     past_due = [r for r in rows if r.get("DueDate") and str(r["DueDate"])[:10] < day
                                 and r.get("Status") not in client.TASK_FINAL_STATUSES]
-                    left_out = {k: v for k, v in (
-                        ("Obsolete Not Counted", sum(1 for r in past_due if r.get("Obsolete"))),
-                        ("Quality Gates / Checklist Items Not Counted",
-                         sum(1 for r in past_due if not r.get("Obsolete") and r.get("Type") in skip_types)),
-                    ) if v}
+                    obsolete = sum(1 for r in past_due if r.get("Obsolete"))
+                    if obsolete:
+                        left_out["Obsolete Not Counted"] = obsolete
+                    other = Counter(str(r.get("Type")) for r in past_due
+                                    if not r.get("Obsolete") and r.get("Type") in skip_types)
+                    if other:
+                        left_out["Types Not Counted As Overdue"] = dict(sorted(other.items()))
                     rows = client.overdue_tasks(rows, opts["overdue"], as_of, skip_types)
                     filters.update(overdue=opts["overdue"], as_of=as_of.isoformat())
                     # The rule in words, so an answer is reported under CALM's meaning and
                     # never quietly redefined (Lutron, 2026-11-04: as_of moved back a day,
                     # then "overdue" swapped for "due yesterday").
+                    not_types = " / ".join(t.lower() for t in skip_types)
                     filters["Overdue Means"] = (
                         f"due before {as_of.isoformat()} (due {(as_of - timedelta(days=1)).isoformat()} or "
-                        "earlier) and not Done / Not Relevant, not obsolete, not a quality gate or checklist "
-                        "item — CALM's own rule. A task due yesterday is overdue today."
+                        "earlier) and not Done / Not Relevant, not obsolete"
+                        + (f", not a {not_types} (CALM's task overdue measure leaves them out; "
+                           "resource='requirements' counts overdue requirements)" if skip_types else "")
+                        + " — CALM's own rule. A task due yesterday is overdue today."
                         if opts["overdue"] else
                         f"the rest: not overdue on {as_of.isoformat()} under CALM's rule")
                 if bounds:

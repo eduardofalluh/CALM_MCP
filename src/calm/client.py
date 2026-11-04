@@ -999,15 +999,16 @@ def where_tasks(rows: list[dict], where: dict) -> tuple[list[dict], dict]:
     return out, report
 
 
-# Never counted as overdue unless asked for by type: CALM's own overdue measure
-# leaves them out (its analytics doesn't track them at all).
-OVERDUE_SKIPPED_TYPES = ("Quality Gate", "Checklist Item")
+# Never counted as overdue tasks unless asked for by type: CALM's own task
+# overdue measure leaves them out (its task analytics doesn't track them at all).
+# Lutron 2026-11-04: a person's only "overdue tasks" were 2 requirements; CALM: 0.
+OVERDUE_SKIPPED_TYPES = ("Requirement", "Quality Gate", "Checklist Item")
 
 
 def overdue_tasks(rows: list[dict], overdue: bool, as_of: date, skip_types: tuple = OVERDUE_SKIPPED_TYPES) -> list[dict]:
     """Tasks that are (overdue=False: are not) overdue on ``as_of``: due before
-    that day, not Done / Not Relevant, not obsolete and not a quality gate /
-    checklist item — CALM's own rule (checked live 2026-11-03: on every task
+    that day, not Done / Not Relevant, not obsolete and not a requirement /
+    quality gate / checklist item unless asked for by type — CALM's own rule (checked live 2026-11-03: on every task
     CALM's analytics tracks, the same set as its overdue flag)."""
     day = as_of.isoformat()
 
