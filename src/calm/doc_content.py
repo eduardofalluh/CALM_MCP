@@ -5,6 +5,8 @@ CALM keeps a document's body as rich text (HTML). A Word file is a zip of XML,
 read here with the standard library: headings, paragraphs, bold / italic,
 bulleted and numbered lists, tables, links and code blocks are kept. Pictures
 can't travel in the text; they are counted and reported, never dropped unseen.
+A diagram written as Mermaid or draw.io source is kept as its source, with a
+link that draws it.
 """
 
 from __future__ import annotations
@@ -13,10 +15,13 @@ import base64
 import binascii
 import html
 import io
+import json
 import re
 import zipfile
+import zlib
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 from xml.etree import ElementTree as ET
 
 # Reading a file by path is only safe when the MCP runs on the user's own machine
@@ -39,6 +44,15 @@ def body(content: Any = None, file_path: Any = None, file_base64: Any = None,
     """(html, report, original file) from exactly one of: content text, a local
     file path, or a file sent as base64. The original file comes back so it can
     be attached to the CALM document as well."""
+    out, report, original = _body(content, file_path, file_base64, file_name)
+    out, count = diagrams(out)
+    if count:
+        report["Diagrams"] = count
+    return out, report, original
+
+
+def _body(content: Any, file_path: Any, file_base64: Any,
+          file_name: Any) -> tuple[str, dict, tuple[str, bytes] | None]:
     given = [k for k, v in (("content", content), ("file_path", file_path), ("file_base64", file_base64))
              if v not in (None, "")]
     if len(given) != 1:
@@ -289,6 +303,64 @@ def _close_code(out: list, state: dict) -> None:
 def _close(out: list, state: dict) -> None:
     _close_code(out, state)
     _close_lists(out, state)
+
+
+# --------------------------------------------------------------------------- #
+# Diagrams
+# --------------------------------------------------------------------------- #
+# CALM's editor can't draw a diagram, so a Mermaid / draw.io diagram stays as its
+# source (editable in CALM) and gets a link that draws it in the browser. The
+# source rides in the link's #fragment, which browsers never send to the site.
+
+_MERMAID = re.compile(
+    r"(flowchart|graph)(\s+(TB|TD|BT|RL|LR))?\s*;?\s*$|(sequenceDiagram|classDiagram(-v2)?|stateDiagram(-v2)?"
+    r"|erDiagram|journey|gantt|pie|quadrantChart|requirementDiagram|gitGraph|C4Context|C4Container|C4Component"
+    r"|C4Dynamic|C4Deployment|mindmap|timeline|zenuml|sankey-beta|xychart-beta|block-beta|packet-beta|kanban"
+    r"|architecture-beta|radar-beta)\b")
+_PRE = re.compile(r"<pre\b[^>]*>(.*?)</pre>", re.I | re.S)
+
+
+def diagram_kind(source: str) -> str | None:
+    """"Mermaid" or "draw.io" when a code block's text is a diagram's source."""
+    text = source.strip()
+    if re.match(r"(<\?xml[^>]*>\s*)?<(mxfile|mxGraphModel)\b", text):
+        return "draw.io"
+    lines = [x.strip() for x in text.split("\n")]
+    if lines[0] == "---":  # Mermaid front matter (title / config)
+        lines = lines[lines.index("---", 1) + 1:] if "---" in lines[1:] else []
+    first = next((x for x in lines if x and not x.startswith("%%")), "")
+    return "Mermaid" if _MERMAID.match(first) else None
+
+
+def diagram_link(source: str, kind: str) -> str:
+    """A link that opens the diagram drawn: mermaid.live for Mermaid, the
+    draw.io app for draw.io (both decode the #fragment in the browser)."""
+    if kind == "Mermaid":
+        state = json.dumps({"code": source, "mermaid": json.dumps({"theme": "default"})})
+        packed = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        return "https://mermaid.live/view#pako:" + packed
+    deflate = zlib.compressobj(9, zlib.DEFLATED, -15)  # draw.io: raw deflate of the URI-encoded XML
+    packed = deflate.compress(quote(source, safe="-_.!~*'()").encode()) + deflate.flush()
+    return "https://app.diagrams.net/#R" + quote(base64.b64encode(packed).decode(), safe="")
+
+
+def diagrams(html_text: str) -> tuple[str, int]:
+    """Each code block holding a Mermaid / draw.io diagram gets an "Open
+    diagram N" link right after it; returns the HTML and how many."""
+    count = 0
+
+    def link(m: re.Match) -> str:
+        nonlocal count
+        source = re.sub(r"<br\s*/?>", "\n", m.group(1), flags=re.I)
+        source = html.unescape(re.sub(r"<[^>]+>", "", source)).strip()
+        kind = diagram_kind(source)
+        if not kind:
+            return m.group(0)
+        count += 1
+        return (f'{m.group(0)}<p><a href="{html.escape(diagram_link(source, kind))}">'
+                f"Open diagram {count} ({kind})</a></p>")
+
+    return _PRE.sub(link, html_text), count
 
 
 # --------------------------------------------------------------------------- #

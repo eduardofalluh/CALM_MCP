@@ -789,6 +789,13 @@ async def main() -> int:
                   res.is_error is not True and spec.get("Content", {}).get("Source") == "text (Markdown / text)"
                   and ("3-60729" in spec.get("Not Linked", {}) or "links / file" in spec.get("Not Written", {})),
                   f"got {spec}")
+            res = await _call(session, "documents", "create", project_id="P001", data={
+                "title": "Flow spec", "type": "SDD",
+                "content": "## Flow\n\n```mermaid\nflowchart LR\n  A[Order] --> B[Delivery]\n```\n\n![](media/image1.png)"})
+            drawn = _payload(res)
+            check("a spec's Mermaid diagram is counted and linked, a screenshot counted (none dropped)",
+                  res.is_error is not True and drawn.get("Content", {}).get("Diagrams") == 1
+                  and drawn.get("Content", {}).get("Pictures Not In Text") == 1, f"got {drawn}")
             import tempfile
             import zipfile as _zip
             with tempfile.TemporaryDirectory() as tmp:

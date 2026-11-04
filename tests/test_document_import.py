@@ -379,3 +379,80 @@ def test_pandoc_markdown_through_calm_resource(calm, sap):
     assert out["Content"] == {"Source": "text (Markdown / text)", "Pictures Not In Text": 2}
     assert "<h2>3. Naming Convention</h2>" in sap["create"][0]["content"]
     assert sap["link"][0][1] == "toURLReferences"
+
+
+# --- Diagrams: kept as Mermaid / draw.io source, with a link that draws them ---
+
+MERMAID = """---
+title: Order to cash
+---
+%% redrawn from Figure 2
+flowchart LR
+  A[Sales order] --> B{Credit check}
+  B -->|ok| C[Delivery & billing]
+  B -->|blocked| D["Credit release (FSCM)"]"""
+DRAWIO = ('<mxGraphModel><root><mxCell id="0"/><mxCell id="1" parent="0"/>'
+          '<mxCell id="2" value="Sales order &amp; quote" vertex="1" parent="1">'
+          '<mxGeometry x="40" y="40" width="120" height="60" as="geometry"/></mxCell></root></mxGraphModel>')
+
+
+def _drawn(link: str) -> str:
+    """What the site's own code reads from the link (mermaid.live: base64url ->
+    inflate -> JSON; draw.io: decodeURIComponent -> atob -> inflateRaw ->
+    decodeURIComponent)."""
+    import html as _html
+    import json
+    import zlib
+    from urllib.parse import unquote
+    link = _html.unescape(link)
+    if "#pako:" in link:
+        data = link.split("#pako:", 1)[1]
+        state = json.loads(zlib.decompress(base64.urlsafe_b64decode(data + "=" * (-len(data) % 4))))
+        assert json.loads(state["mermaid"]) == {"theme": "default"}
+        return state["code"]
+    data = base64.b64decode(unquote(link.split("#R", 1)[1]))
+    return unquote(zlib.decompressobj(-15).decompress(data).decode())
+
+
+def _links(out: str) -> list[str]:
+    import re
+    return re.findall(r'<a href="([^"]+)">Open diagram', out)
+
+
+def test_markdown_diagrams_keep_their_source_and_get_a_link_that_draws_them():
+    text = (f"# Process\n\nThe flow:\n\n```mermaid\n{MERMAID}\n```\n\n```drawio\n{DRAWIO}\n```\n\n"
+            "```\nSELECT * FROM vbak\n```\n\n![](media/screenshot.png)")
+    out, report, _ = doc_content.body(content=text)
+    assert report == {"Source": "text (Markdown / text)", "Pictures Not In Text": 1, "Diagrams": 2}
+    links = _links(out)
+    assert [_drawn(x) for x in links] == [MERMAID, DRAWIO]  # exactly the source, special characters included
+    assert links[0].startswith("https://mermaid.live/view#pako:")
+    assert links[1].startswith("https://app.diagrams.net/#R")
+    assert "Open diagram 1 (Mermaid)" in out and "Open diagram 2 (draw.io)" in out
+    assert "<pre>SELECT * FROM vbak</pre>\n" in out  # an ordinary code block gets no link
+    assert "flowchart LR" in out  # the source stays in CALM, editable
+
+
+def test_diagrams_in_html_and_word_get_links_too():
+    out, report, _ = doc_content.body(
+        content='<p>Flow</p><pre><code class="language-mermaid">graph TD<br>A--&gt;B</code></pre>')
+    assert report["Diagrams"] == 1 and _drawn(_links(out)[0]) == "graph TD\nA-->B"
+    word = _docx(_p("Flow") + _p("sequenceDiagram", mono=True) + _p("Buyer-&gt;&gt;SAP: PO", mono=True))
+    out, report, _ = doc_content.body(file_base64=base64.b64encode(word).decode(), file_name="Spec.docx")
+    assert report["Diagrams"] == 1 and _drawn(_links(out)[0]) == "sequenceDiagram\nBuyer->>SAP: PO"
+
+
+def test_only_diagram_sources_count_as_diagrams():
+    for text in ("graph theory notes", "piecewise", "<mxCellish/>", "", "flowchart is a word here"):
+        assert doc_content.diagram_kind(text) is None, text
+    for text in ("graph", "flowchart TD;", "%%{init: {}}%%\nerDiagram", "pie title Pets", "stateDiagram-v2",
+                 '<?xml version="1.0"?>\n<mxfile host="app.diagrams.net"></mxfile>'):
+        assert doc_content.diagram_kind(text), text
+
+
+def test_a_spec_with_diagrams_through_calm_resource(calm, sap):
+    out = calm(Ctx(), resource="documents", operation="create", project_id="P1",
+               data={"title": "Spec", "type": "Functional Specification",
+                     "content": f"## Flow\n\n```mermaid\n{MERMAID}\n```"})
+    assert out["Content"] == {"Source": "text (Markdown / text)", "Diagrams": 1}
+    assert _drawn(_links(sap["create"][0]["content"])[0]) == MERMAID

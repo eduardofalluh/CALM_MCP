@@ -1286,8 +1286,17 @@ def register(mcp: FastMCP) -> None:
                 Word file itself and attaches the original — always prefer it when
                 the file is on the user's machine (a synced SharePoint / OneDrive
                 folder counts). Otherwise (hosted MCP) convert the Word file to
-                Markdown yourself — e.g. `pandoc -t gfm spec.docx` — and pass ALL
-                of it as content; the MCP turns it into CALM's rich text. Do NOT pass text read
+                Markdown yourself — e.g. `pandoc -t gfm --extract-media=. spec.docx` —
+                and pass ALL of it as content; the MCP turns it into CALM's rich text.
+                Diagrams: CALM can't show a Word file's pictures. Look at each
+                picture; when it is a diagram (process flow, swimlane, architecture,
+                sequence, data model, org chart), write it IN ITS PLACE as a
+                ```mermaid block (draw.io XML: a ```drawio block), every box,
+                arrow and label exactly as in the picture. CALM keeps the source
+                and an "Open diagram" link that draws it ("Diagrams" in the
+                answer). Screenshots can't be redrawn: leave them as pictures
+                ("Pictures Not In Text"). Tell the user which pictures you redrew,
+                to check them against the original. Do NOT pass text read
                 through a SharePoint / Microsoft 365 connector: it comes from a PDF
                 conversion (page footers mixed in, words broken). Pass the file's
                 SharePoint link as "url" so the original, with its pictures, is one
@@ -1369,7 +1378,9 @@ def register(mcp: FastMCP) -> None:
                     a file's original is attached when the tenant allows it); any
                     other document field. update: the same keys, only what changes.
                     The answer has "Content" (source; "Pictures Not In Text" for a
-                    Word file's pictures, which only the attached original keeps),
+                    Word file's pictures, which only the attached original keeps;
+                    "Diagrams" for ```mermaid / ```drawio blocks, each kept as
+                    source with an "Open diagram" link that draws it),
                     "Linked", "Not Linked" and "Not Written" — nothing is dropped
                     silently. Field names come from the tenant's own schema.
                 # --- read resources with optional data filters ---
