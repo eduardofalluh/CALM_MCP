@@ -416,28 +416,32 @@ async def main() -> int:
             check("project status label mapped (O->Active)", projects[0]["Status"] == "Active",
                   f"got {projects[0]['Status']}")
 
-            tasks = _list(await _call(session, "tasks", "list", project_id="P001"))
-            check("tasks is a list of 2", isinstance(tasks, list) and len(tasks) == 2)
+            listed = _payload(await _call(session, "tasks", "list", project_id="P001"))
+            tasks = listed.get("Tasks", []) if isinstance(listed, dict) else []
+            check("a task is a task: 1 task listed, the requirement counted apart",
+                  [t.get("ID") for t in tasks] == ["K1"]
+                  and listed.get("Check", {}).get("Not Tasks, Not Included") == {"Requirement": 1}, f"got {listed}")
             k1 = next((t for t in tasks if t.get("ID") == "K1"), {})
             check("task carries team + sprint by name (per-sprint/per-team grouping)",
                   k1.get("Responsible Team") == "Development Team" and k1.get("Timebox") == "Sprint 1"
                   and k1.get("Responsible Team ID") == "TEAM1" and k1.get("Effort") == 8.0,
                   f"got {k1}")
-            r1 = next((t for t in tasks if t.get("ID") == "R1"), {})
-            check("task without team/sprint stays unassigned",
+            reqs_listed = _list(await _call(session, "requirements", "list", project_id="P001"))
+            r1 = next((t for t in reqs_listed if t.get("ID") == "R1"), {})
+            check("requirement without team/sprint stays unassigned (via resource=requirements)",
                   r1.get("Responsible Team") is None and r1.get("Timebox") is None, f"got {r1}")
             summary = _payload(await _call(session, "tasks", "list", project_id="P001",
                                            data={"summarize_by": ["Timebox", "Responsible Team"]}))
             check("tasks summarize_by returns the exact per-sprint/per-team table",
-                  isinstance(summary, dict) and summary.get("Total Tasks") == 2
+                  isinstance(summary, dict) and summary.get("Total Tasks") == 1
                   and summary.get("Total Effort") == 8.0
                   and {"Timebox": "Sprint 1", "Responsible Team": "Development Team", "Tasks": 1,
                        "Effort": 8.0, "Tasks Without Effort": 0, "Story Points": 0.0} in summary.get("Groups", []),
                   f"got {summary}")
-            one_sprint = _list(await _call(session, "tasks", "list", project_id="P001",
-                                           data={"timebox": "sprint 1"}))
+            one_sprint = _payload(await _call(session, "tasks", "list", project_id="P001",
+                                              data={"timebox": "sprint 1"}))
             check("tasks timebox filter keeps only that sprint",
-                  [t.get("ID") for t in one_sprint] == ["K1"], f"got {one_sprint}")
+                  [t.get("ID") for t in one_sprint.get("Tasks", [])] == ["K1"], f"got {one_sprint}")
             found = _payload(await _call(session, "tasks", "list", project_id="P001",
                                          data={"search": "task b", "fields": ["Title"]}))
             check("tasks search returns the match with totals (duplicate check)",
@@ -450,11 +454,11 @@ async def main() -> int:
                   res.is_error is not True and isinstance(refused, dict)
                   and refused.get("status") == "invalid_request"
                   and "does not support" in refused.get("message", ""), f"got {str(refused)[:160]}")
-            res = await _call(session, "tasks", "list", project_id="P001", data={"top": 1, "skip": 1})
+            res = await _call(session, "tasks", "list", project_id="P001", task_type="", data={"top": 1, "skip": 1})
             page = _payload(res)
             check("tasks list pages with top + skip",
-                  res.is_error is not True and page.get("Total Matching") == 2 and page.get("Returned") == 1
-                  and page.get("Tasks", [{}])[0].get("ID") == "K1" and "Next Skip" not in page, f"got {page}")
+                  res.is_error is not True and page.get("Total Matching") == 1 and page.get("Returned") == 0
+                  and page.get("Tasks") == [] and "Next Skip" not in page, f"got {page}")
             res = await _call(session, "tasks", "list", project_id="P001",
                               data={"assignee": "alpha", "overdue": True, "summarize_by": ["AssigneeName", "Status"]})
             late = _payload(res)
@@ -500,9 +504,9 @@ async def main() -> int:
             proj = _payload(await _call(session, "projects", "get", resource_id="test project a"))
             check("projects get by name returns the project",
                   isinstance(proj, dict) and proj.get("ID") == "P001", f"got {proj}")
-            by_name = _list(await _call(session, "tasks", "list", project_id="Test Project A"))
+            by_name = _payload(await _call(session, "tasks", "list", project_id="Test Project A"))
             check("project name in project_id resolves to the project (same tasks as by ID)",
-                  [t.get("ID") for t in by_name] == [t.get("ID") for t in tasks], f"got {by_name}")
+                  [t.get("ID") for t in by_name.get("Tasks", [])] == [t.get("ID") for t in tasks], f"got {by_name}")
             res = await _call(session, "tasks", "list", project_id="No Such Project")
             miss = _payload(res)
             check("unknown project name on a read is an answer naming the real projects (no tool error)",

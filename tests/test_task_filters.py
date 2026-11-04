@@ -218,25 +218,32 @@ def test_status_codes_get_labels_and_review_counts_as_open_work(calm):
     assert client.resolve_status_code("In Review", "CALMTASK") == "CIPTKREV"
 
 
-def test_requirements_quality_gates_and_checklist_items_are_not_overdue_tasks(calm):
+def test_a_task_is_a_task_other_items_are_counted_apart(calm):
     # Lutron 2026-11-04: Arpit Gupta's 2 "overdue tasks" were requirements; CALM: 0.
     rows = [_row(1, "Open", PAST, "Person Gamma", "u-g", Type="Checklist Item"),
             _row(2, "Open", PAST, "Person Gamma", "u-g", Type="Quality Gate"),
-            _row(3, "In Progress", PAST, "Person Gamma", "u-g", Type="Requirement"),
+            _row(3, "In Progress", PAST, "Person Gamma", "u-g", Type="Requirement", Title="Order intake"),
             _row(4, "In Progress", PAST, "Person Gamma", "u-g", Type="Requirement"),
+            _row(6, "Open", PAST, "Person Gamma", "u-g", Type="Defect"),
             _row(5, "Open", PAST, "Person Gamma", "u-g")]
     out, _ = _list(calm, rows, assignee="Person Gamma", overdue=True, summarize_by="Type")
-    assert out["Total Tasks"] == 1
-    assert out["Check"]["Types Not Counted As Overdue"] == {"Checklist Item": 1, "Quality Gate": 1, "Requirement": 2}
-    assert "not a requirement / quality gate / checklist item" in out["Filters"]["Overdue Means"]
+    assert out["Total Tasks"] == 1 and out["Groups"][0]["Type"] == "Project Task"
+    assert out["Check"]["Not Tasks, Not Included"] == {
+        "Checklist Item": 1, "Defect": 1, "Quality Gate": 1, "Requirement": 2}
+    assert "resource='requirements'" in out["Check"]["How To Include"]
+    out, _ = _list(calm, rows)  # a plain list says so too
+    assert out["Total Matching"] == 1 and out["Check"]["Not Tasks, Not Included"]["Requirement"] == 2
+    assert "Duplicate Rows Removed" not in out["Check"]  # items set apart are not duplicates
+    out, _ = _list(calm, rows, search="order intake")  # a duplicate check still sees the requirement
+    assert out["Check"]["Other Items Matching Search"][0]["Display ID"] == "3-3"
     out, _ = _list(calm, rows[1:2], task_type="Quality Gate", overdue=True, summarize_by="Type")
-    assert out["Total Tasks"] == 1 and out["Check"].get("Types Not Counted As Overdue") is None
+    assert out["Total Tasks"] == 1 and "Not Tasks, Not Included" not in out["Check"]  # asked for by type
     with patch("src.calm.client.get_tasks", return_value=rows[2:4]), \
             patch("src.calm.tools.unified.datetime") as dt:
         dt.now.return_value.date.return_value = TODAY
         out = calm(Ctx(), resource="requirements", operation="list", project_id="p1",
                    data={"overdue": True, "summarize_by": "Status"})
-    assert out["Total Tasks"] == 2  # asked for requirements: they count
+    assert out["Total Tasks"] == 2  # requirements, asked for as requirements
 
 
 # --------------------------------------------------------------------------- #

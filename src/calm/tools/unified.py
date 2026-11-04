@@ -1176,8 +1176,7 @@ def register(mcp: FastMCP) -> None:
                 project_id=X, data={"assignee": "<name or email>",
                 "overdue": true, "summarize_by": ["AssigneeName", "Status"]}
                 Overdue = due before today, not Done / Not Relevant, not
-                obsolete, not a requirement / quality gate / checklist item —
-                resource="requirements" counts overdue requirements (CALM's own rule;
+                obsolete (CALM's own rule;
                 Check shows what was left out and "By Type", to match a CALM view
                 filtered by type). "Total Tasks" is the exact count over EVERY
                 task of the project and "Check" proves nothing was dropped
@@ -1351,14 +1350,22 @@ def register(mcp: FastMCP) -> None:
                     the exact Total Matching, Counts (by Type / Status) and how to
                     narrow — no rows. Page with top (max 300) and skip ("Next
                     Skip" says where to continue).
+                - A TASK IS A TASK: tasks list (and every count from it) holds only
+                    CALM's task types — Project Task, User Story, Sub-task, Roadmap
+                    Task. Requirements, defects, risks, quality gates and checklist
+                    items are separate items: Check "Not Tasks, Not Included" counts
+                    them; get them with resource="requirements" or task_type.
+                - Ambiguous wording ("items", "work", "everything", "open" =
+                    status Open or not finished, which date counts): say which
+                    meaning you used, give the other from the Check numbers, and
+                    ask the user when it matters — never pick one silently.
                 - tasks list: data={tag, timebox (sprint name/ID or list),
                     team (team name/ID or list), assignee (the Responsible: name,
                     first or last name, or email; a value matching two people is
                     answered as ambiguous, never added together), status (label(s),
                     e.g. ["Blocked", "In Progress", "In Review"]), priority, overdue
                     (true: due before today, not Done / Not Relevant, not
-                    obsolete, not a requirement / quality gate / checklist item
-                    unless asked for by task_type or resource; false: the rest), done (false: not finished — use it
+                    obsolete; false: the rest), done (false: not finished — use it
                     for "open" in the everyday sense; status "Open" is CALM's Open
                     status only), include_obsolete (obsolete tasks are left out of
                     every list and count by default, as CALM does; Check says how
@@ -1837,6 +1844,15 @@ def register(mcp: FastMCP) -> None:
                 )
                 read = len(all_rows)
                 all_rows = list({r.get("ID") or id(r): r for r in all_rows}.values())
+                duplicates = read - len(all_rows)
+                # A task is a task: without task_type, only CALM's task types. Requirements,
+                # defects, risks, quality gates, checklist items are counted apart and
+                # reported (never mixed in, never dropped unseen).
+                others: list = []
+                if not task_type:
+                    others = [r for r in all_rows if r.get("Type") not in client.TASK_ITEM_TYPES]
+                    if others:
+                        all_rows = [r for r in all_rows if r.get("Type") in client.TASK_ITEM_TYPES]
                 timebox, team = opts.get("timebox"), opts.get("team")
                 cannot = client.unresolved_filters(all_rows, timebox=timebox, team=team)
                 if cannot:
@@ -1869,32 +1885,22 @@ def register(mcp: FastMCP) -> None:
                 if "overdue" in opts:
                     as_of = (date.fromisoformat(opts["as_of"]) if opts.get("as_of")
                              else datetime.now(timezone.utc).date())
-                    # Asked for by type (task_type="Quality Gate"): then they count.
-                    wanted = client.TASK_TYPE_MAP.get(client.resolve_task_type_code(task_type)) if task_type else None
-                    skip_types = tuple(t for t in client.OVERDUE_SKIPPED_TYPES if t != wanted)
                     # Past due but never overdue in CALM: say how many, never drop them unseen.
                     day = as_of.isoformat()
-                    past_due = [r for r in rows if r.get("DueDate") and str(r["DueDate"])[:10] < day
-                                and r.get("Status") not in client.TASK_FINAL_STATUSES]
-                    obsolete = sum(1 for r in past_due if r.get("Obsolete"))
+                    obsolete = sum(1 for r in rows if r.get("Obsolete") and r.get("DueDate")
+                                   and str(r["DueDate"])[:10] < day
+                                   and r.get("Status") not in client.TASK_FINAL_STATUSES)
                     if obsolete:
                         left_out["Obsolete Not Counted"] = obsolete
-                    other = Counter(str(r.get("Type")) for r in past_due
-                                    if not r.get("Obsolete") and r.get("Type") in skip_types)
-                    if other:
-                        left_out["Types Not Counted As Overdue"] = dict(sorted(other.items()))
-                    rows = client.overdue_tasks(rows, opts["overdue"], as_of, skip_types)
+                    rows = client.overdue_tasks(rows, opts["overdue"], as_of)
                     filters.update(overdue=opts["overdue"], as_of=as_of.isoformat())
                     # The rule in words, so an answer is reported under CALM's meaning and
                     # never quietly redefined (Lutron, 2026-11-04: as_of moved back a day,
                     # then "overdue" swapped for "due yesterday").
-                    not_types = " / ".join(t.lower() for t in skip_types)
                     filters["Overdue Means"] = (
                         f"due before {as_of.isoformat()} (due {(as_of - timedelta(days=1)).isoformat()} or "
-                        "earlier) and not Done / Not Relevant, not obsolete"
-                        + (f", not a {not_types} (CALM's task overdue measure leaves them out; "
-                           "resource='requirements' counts overdue requirements)" if skip_types else "")
-                        + " — CALM's own rule. A task due yesterday is overdue today."
+                        "earlier) and not Done / Not Relevant, not obsolete — CALM's own rule. A task due "
+                        "yesterday is overdue today."
                         if opts["overdue"] else
                         f"the rest: not overdue on {as_of.isoformat()} under CALM's rule")
                 if bounds:
@@ -1914,8 +1920,18 @@ def register(mcp: FastMCP) -> None:
                 # Proof nothing was dropped on the way: every task SAP returned was
                 # read, and the answer counts the ones that match, server-side.
                 check: dict = {"Tasks Read": read, "Matched": len(rows)}
-                if read != len(all_rows):
-                    check["Duplicate Rows Removed"] = read - len(all_rows)
+                if others:
+                    check["Not Tasks, Not Included"] = dict(sorted(Counter(str(r.get("Type")) for r in others).items()))
+                    if search is not None:
+                        hits = client.search_tasks(others, search)
+                        if hits:
+                            check["Other Items Matching Search"] = [
+                                {"Display ID": r.get("Display ID"), "Type": r.get("Type"), "Title": r.get("Title")}
+                                for r in hits[:10]]
+                    check["How To Include"] = ("resource='requirements' for requirements; task_type='Defect' / "
+                                               "'Risk' / 'Quality Gate' / 'Checklist Item' for the others")
+                if duplicates:
+                    check["Duplicate Rows Removed"] = duplicates
                 if filters or summarize:
                     check["By Type"] = dict(sorted(Counter(str(r.get("Type")) for r in rows).items()))
                 check.update(left_out)
@@ -1945,7 +1961,7 @@ def register(mcp: FastMCP) -> None:
                 rows = rows[skip:skip + top] if top is not None else rows[skip:]
                 if opts.get("fields") is not None:
                     rows = client.select_task_fields(rows, opts["fields"])
-                if top is None and not unmatched and not filters and not skip and not hidden:
+                if top is None and not unmatched and not filters and not skip and not hidden and not others:
                     return rows
                 # Shaped answer: say how much there is, not just what fits.
                 result: dict = {"Total Matching": total, "Returned": len(rows)}

@@ -75,7 +75,7 @@ class TestUnifiedToolProjects:
 class TestUnifiedToolTasks:
     @patch("src.calm.client.get_tasks")
     def test_list_tasks(self, mock_get_tasks, mock_ctx):
-        mock_get_tasks.return_value = [{"ID": "3-12345", "Title": "Test Task 1"}]
+        mock_get_tasks.return_value = [{"ID": "3-12345", "Title": "Test Task 1", "Type": "Project Task"}]
         result = _tool_fn()(mock_ctx, resource="tasks", operation="list", project_id="P001")
         assert len(result) == 1
         mock_get_tasks.assert_called_once_with("P001", TOKEN, BASE_URL, task_type=None, tag=None)

@@ -999,23 +999,22 @@ def where_tasks(rows: list[dict], where: dict) -> tuple[list[dict], dict]:
     return out, report
 
 
-# Never counted as overdue tasks unless asked for by type: CALM's own task
-# overdue measure leaves them out (its task analytics doesn't track them at all).
-# Lutron 2026-11-04: a person's only "overdue tasks" were 2 requirements; CALM: 0.
-OVERDUE_SKIPPED_TYPES = ("Requirement", "Quality Gate", "Checklist Item")
+# What CALM calls a task: the only types its Tasks app and task analytics count
+# (checked live 2026-11-04 over 9,325 tasks; the client's "Sprint Overdue Tasks"
+# view also filters on these 4). Requirements, defects, risks, quality gates and
+# checklist items are their own kinds of item, never mixed into "tasks".
+TASK_ITEM_TYPES = ("Project Task", "User Story", "Sub-task", "Roadmap Task")
 
 
-def overdue_tasks(rows: list[dict], overdue: bool, as_of: date, skip_types: tuple = OVERDUE_SKIPPED_TYPES) -> list[dict]:
+def overdue_tasks(rows: list[dict], overdue: bool, as_of: date) -> list[dict]:
     """Tasks that are (overdue=False: are not) overdue on ``as_of``: due before
-    that day, not Done / Not Relevant, not obsolete and not a requirement /
-    quality gate / checklist item unless asked for by type — CALM's own rule (checked live 2026-11-03: on every task
-    CALM's analytics tracks, the same set as its overdue flag)."""
+    that day, not Done / Not Relevant and not obsolete — CALM's own rule (checked
+    live: on every task CALM's analytics tracks, the same set as its overdue flag)."""
     day = as_of.isoformat()
 
     def late(r: dict) -> bool:
         return (bool(r.get("DueDate")) and str(r["DueDate"])[:10] < day
-                and r.get("Status") not in TASK_FINAL_STATUSES and not r.get("Obsolete")
-                and r.get("Type") not in skip_types)
+                and r.get("Status") not in TASK_FINAL_STATUSES and not r.get("Obsolete"))
 
     return [r for r in rows if late(r) == overdue]
 
