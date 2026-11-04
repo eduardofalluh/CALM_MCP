@@ -312,3 +312,70 @@ def test_update_can_only_add_links(calm, sap, monkeypatch):
                data={"requirement": ["3-61724"]})
     assert sap["update"] == [] and sap["link"][0][1] == "toTaskAssignments"
     assert out["Linked"][0]["Display ID"] == "3-61724"
+
+
+# What `pandoc -t gfm` makes of a Word guide like the connectivity guide: the
+# route Cowork takes with the hosted MCP (it converts the .docx, the MCP stores it).
+PANDOC_GFM = """# Enable SAP Cloud ALM API Connectivity for an Agent
+
+S/4 Public Cloud Practice — Setup Guide Version 1.4
+
+## 3. Naming Convention
+
+Throughout this guide the API application name is written as
+\\<client\\>-cloudalm-agent-api.
+
+<img src="media/image1.png" style="width:6.5in;height:3.2in" />
+
+![](media/image2.png)
+
+Update the following:
+
+{\\
+"xs-security": {\\
+"authorities": \\[\\]\\
+}\\
+}
+
+-   Note the exact scope name(s) from the error message.
+
+-   Open the existing instance and choose **Update**.
+
+    -   Keep every existing entry.
+
+1.  First step
+
+2.  Second step
+
+<table>
+<thead><tr class="header"><th>Scope</th><th>Unlocks</th></tr></thead>
+<tbody><tr class="odd"><td>documents.read</td><td>list and read</td></tr></tbody>
+</table>
+
+> **Note:** the existing key stays valid.
+
+------------------------------------------------------------------------
+"""
+
+
+def test_pandoc_markdown_of_a_word_guide_converts_cleanly():
+    out = doc_content.markdown_html(PANDOC_GFM)
+    assert "&lt;client&gt;-cloudalm-agent-api" in out and "\\\\" not in out  # escapes undone
+    assert out.count("[Picture") == 2 and doc_content.pictures_in(PANDOC_GFM) == 2
+    assert '<p>{<br>"xs-security": {<br>"authorities": []<br>}<br>}</p>' in out
+    assert ("<ul>\n<li>Note the exact scope name(s) from the error message.</li>\n"
+            "<li>Open the existing instance and choose <strong>Update</strong>.</li>\n"
+            "<ul>\n<li>Keep every existing entry.</li>\n</ul>\n</ul>") in out  # one list, nested once
+    assert "<ol>\n<li>First step</li>\n<li>Second step</li>\n</ol>" in out
+    assert "<th>Scope</th><th>Unlocks</th>" in out and "&lt;table" not in out  # HTML table kept as a table
+    assert "<blockquote><strong>Note:</strong> the existing key stays valid.</blockquote>" in out
+    assert out.endswith("<hr>")
+
+
+def test_pandoc_markdown_through_calm_resource(calm, sap):
+    out = calm(Ctx(), resource="documents", operation="create", project_id="P1",
+               data={"title": "Guide", "type": "Functional Specification", "content": PANDOC_GFM,
+                     "url": "https://mysyntax-my.sharepoint.com/personal/x/Documents/Guide.docx"})
+    assert out["Content"] == {"Source": "text (Markdown / text)", "Pictures Not In Text": 2}
+    assert "<h2>3. Naming Convention</h2>" in sap["create"][0]["content"]
+    assert sap["link"][0][1] == "toURLReferences"

@@ -1283,8 +1283,15 @@ def register(mcp: FastMCP) -> None:
                 "requirement": "<display ID>" (or tasks / user_story /
                 solution_process / url — wherever the user wants it linked)}.
                 On a local MCP, data={"file_path": "<path to .docx>"} reads the
-                Word file itself and attaches the original. Ask the user where to
-                link it when they didn't say.
+                Word file itself and attaches the original — always prefer it when
+                the file is on the user's machine (a synced SharePoint / OneDrive
+                folder counts). Otherwise (hosted MCP) convert the Word file to
+                Markdown yourself — e.g. `pandoc -t gfm spec.docx` — and pass ALL
+                of it as content; the MCP turns it into CALM's rich text. Do NOT pass text read
+                through a SharePoint / Microsoft 365 connector: it comes from a PDF
+                conversion (page footers mixed in, words broken). Pass the file's
+                SharePoint link as "url" so the original, with its pictures, is one
+                click away. Ask the user where to link it when they didn't say.
           - "automated test cases"             → resource="automated_test_cases",
                 operation="list" | "get", project_id=X  (read-only)
           - "which requirements / tasks does test case X cover"

@@ -47,7 +47,10 @@ def body(content: Any = None, file_path: Any = None, file_base64: Any = None,
     if content not in (None, ""):
         text = str(content)
         kind = "HTML" if _looks_html(text) else "Markdown / text"
-        return (sanitize(text) if kind == "HTML" else markdown_html(text)), {"Source": f"text ({kind})"}, None
+        report: dict = {"Source": f"text ({kind})"}
+        if pictures_in(text):
+            report["Pictures Not In Text"] = pictures_in(text)
+        return (_without_pictures(sanitize(text)) if kind == "HTML" else markdown_html(text)), report, None
     if file_path not in (None, ""):
         name, data = _read_local(str(file_path))
     else:
@@ -70,8 +73,10 @@ def body(content: Any = None, file_path: Any = None, file_base64: Any = None,
             report["Pictures Not In Text"] = pictures
     else:
         text = data.decode("utf-8-sig", errors="replace")
-        out = sanitize(text) if FILE_TYPES[suffix] == "HTML" else (
+        out = _without_pictures(sanitize(text)) if FILE_TYPES[suffix] == "HTML" else (
             markdown_html(text) if FILE_TYPES[suffix] == "Markdown" else _plain_html(text))
+        if FILE_TYPES[suffix] != "Text" and pictures_in(text):
+            report["Pictures Not In Text"] = pictures_in(text)
     return out, report, (Path(name).name, data)
 
 
@@ -298,22 +303,53 @@ def _safe_url(url: Any) -> bool:
     return bool(url) and re.match(r"(https?:|mailto:)", str(url), re.I) is not None
 
 
+# A picture in Markdown (pandoc writes ![](media/image1.png){width=...}) or HTML.
+_MD_PICTURE = re.compile(r"!\[([^\]]*)\]\([^)]*\)(\{[^}]*\})?")
+_HTML_PICTURE = re.compile(r"<img\b[^>]*>", re.I)
+_ESCAPED = re.compile(r"\\([\\`*_{}\[\]()#+\-.!<>$|~\"'=&^%@])")
+_HTML_BLOCK = re.compile(r"<(table|img|div|figure|p|ul|ol|pre|blockquote|h[1-6]|colgroup|thead|tbody|tr)\b", re.I)
+
+
+def pictures_in(text: str) -> int:
+    """Pictures a Markdown / HTML text refers to (they can't travel as text)."""
+    return len(_MD_PICTURE.findall(text)) + len(_HTML_PICTURE.findall(text))
+
+
+def _without_pictures(html_text: str) -> str:
+    return _HTML_PICTURE.sub("[Picture]", html_text)
+
+
 def _inline(text: str) -> str:
-    out = html.escape(text, quote=False)
-    out = re.sub(r"`([^`]+)`", r"<code>\1</code>", out)
-    out = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: f"<strong>{m.group(1) or m.group(2)}</strong>", out)
-    out = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?!\w)", r"<em>\1</em>", out)
-    return re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)",
-                  lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>' if _safe_url(m.group(2)) else m.group(0), out)
+    text = _MD_PICTURE.sub(lambda m: f"[Picture{': ' + m.group(1) if m.group(1) else ''}]", text)
+    text = re.sub(r"(\\|\s{2,})$", "", text)  # a hard line break marker; lines join with <br> anyway
+    parts = re.split(r"(`[^`]+`)", text)  # escapes and emphasis never apply inside code
+    out = []
+    for part in parts:
+        if part.startswith("`") and part.endswith("`") and len(part) > 1:
+            out.append(f"<code>{html.escape(part[1:-1], quote=False)}</code>")
+            continue
+        piece = html.escape(_ESCAPED.sub(r"\1", part), quote=False)
+        piece = re.sub(r"\*\*(.+?)\*\*|__(.+?)__", lambda m: f"<strong>{m.group(1) or m.group(2)}</strong>", piece)
+        piece = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?!\w)", r"<em>\1</em>", piece)
+        piece = re.sub(r"\[([^\]]+)\]\(([^)\s]+)\)",
+                       lambda m: f'<a href="{m.group(2)}">{m.group(1)}</a>' if _safe_url(m.group(2)) else m.group(0),
+                       piece)
+        out.append(piece)
+    return "".join(out)
+
+
+_LIST_ITEM = re.compile(r"(\s*)([-*+•]|\d+[.)])\s+(.*)")
 
 
 def markdown_html(text: str) -> str:
-    """Markdown (or plain text) -> HTML: headings, lists, tables, code blocks,
-    bold / italic / code / links. Line breaks inside a paragraph are kept."""
+    """Markdown (or plain text) -> HTML: headings, lists (loose or tight, nested by
+    indentation), tables (pipe or raw HTML), code blocks, quotes, rules, bold /
+    italic / code / links, and pandoc's escapes. Pictures become "[Picture]".
+    Line breaks inside a paragraph are kept."""
     lines = text.replace("\r\n", "\n").split("\n")
     out: list[str] = []
     para: list[str] = []
-    lists: list[str] = []
+    lists: list[tuple[str, int]] = []  # (ul / ol, indentation)
     i = 0
 
     def flush() -> None:
@@ -321,26 +357,47 @@ def markdown_html(text: str) -> str:
             out.append("<p>" + "<br>".join(_inline(x) for x in para) + "</p>")
             para.clear()
 
-    def close_lists() -> None:
-        while lists:
-            out.append(f"</{lists.pop()}>")
+    def close_lists(to_indent: int = -1) -> None:
+        while lists and lists[-1][1] > to_indent:
+            out.append(f"</{lists.pop()[0]}>")
+
+    def next_text(j: int) -> str:
+        while j < len(lines) and not lines[j].strip():
+            j += 1
+        return lines[j] if j < len(lines) else ""
 
     while i < len(lines):
-        line = lines[i]
+        line = lines[i].rstrip()
         stripped = line.strip()
-        if stripped.startswith("```"):
+        item = _LIST_ITEM.match(line)
+        if stripped.startswith("```") or stripped.startswith("~~~"):
             flush()
             close_lists()
+            fence = stripped[:3]
             block = []
             i += 1
-            while i < len(lines) and not lines[i].strip().startswith("```"):
+            while i < len(lines) and not lines[i].strip().startswith(fence):
                 block.append(lines[i])
                 i += 1
             out.append("<pre>" + html.escape("\n".join(block), quote=False) + "</pre>")
         elif m := re.match(r"(#{1,6})\s+(.*)", stripped):
             flush()
             close_lists()
-            out.append(f"<h{len(m.group(1))}>{_inline(m.group(2).rstrip('#').strip())}</h{len(m.group(1))}>")
+            title = re.sub(r"\s*\{[#.][^}]*\}\s*$", "", m.group(2)).rstrip("#").strip()
+            out.append(f"<h{len(m.group(1))}>{_inline(title)}</h{len(m.group(1))}>")
+        elif re.fullmatch(r"(\*\s*){3,}|(-\s*){3,}|(_\s*){3,}", stripped):
+            flush()
+            close_lists()
+            out.append("<hr>")
+        elif _HTML_BLOCK.match(stripped):
+            flush()
+            close_lists()
+            block = []
+            while i < len(lines) and lines[i].strip():
+                block.append(lines[i])
+                i += 1
+            out.append(_without_pictures(sanitize("\n".join(block))))
+            continue
         elif stripped.startswith("|") and stripped.count("|") >= 2:
             flush()
             close_lists()
@@ -352,21 +409,35 @@ def markdown_html(text: str) -> str:
                 i += 1
             out.append("<table>" + "".join(rows) + "</table>")
             continue
-        elif m := re.match(r"(\s*)([-*+•]|\d+[.)])\s+(.*)", line):
+        elif item:
             flush()
-            tag = "ol" if m.group(2)[0].isdigit() else "ul"
-            depth = len(m.group(1).expandtabs(4)) // 2 + 1
-            while len(lists) > depth:
-                out.append(f"</{lists.pop()}>")
-            if len(lists) == depth and lists[-1] != tag:
-                out.append(f"</{lists.pop()}>")
-            while len(lists) < depth:
-                lists.append(tag)
+            indent = len(item.group(1).expandtabs(4))
+            tag = "ol" if item.group(2)[0].isdigit() else "ul"
+            close_lists(indent)
+            if lists and lists[-1][1] == indent and lists[-1][0] != tag:
+                out.append(f"</{lists.pop()[0]}>")
+            if not lists or lists[-1][1] < indent:
+                lists.append((tag, indent))
                 out.append(f"<{tag}>")
-            out.append(f"<li>{_inline(m.group(3))}</li>")
-        elif not stripped:
+            out.append(f"<li>{_inline(item.group(3))}</li>")
+        elif stripped.startswith(">"):
             flush()
             close_lists()
+            quote = []
+            while i < len(lines) and lines[i].strip().startswith(">"):
+                quote.append(lines[i].strip()[1:].strip())
+                i += 1
+            out.append("<blockquote>" + "<br>".join(_inline(q) for q in quote if q) + "</blockquote>")
+            continue
+        elif not stripped:
+            flush()
+            # A blank line between items of the same list (pandoc's loose lists)
+            # keeps the list open.
+            following = next_text(i + 1)
+            if not (lists and (_LIST_ITEM.match(following) or following.startswith(" " * (lists[-1][1] + 2)))):
+                close_lists()
+        elif lists and line.startswith(" ") and out and out[-1].endswith("</li>"):
+            out[-1] = out[-1][:-5] + "<br>" + _inline(stripped) + "</li>"  # an item's continued text
         else:
             close_lists()
             para.append(stripped)
