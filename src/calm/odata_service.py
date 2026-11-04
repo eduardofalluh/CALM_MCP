@@ -17,6 +17,7 @@ property name by one fixed rule (``displayId`` -> "Display ID", ``statusCode`` -
 from __future__ import annotations
 
 import logging
+import mimetypes
 import re
 import time
 from typing import Any, Iterable
@@ -66,6 +67,12 @@ def parse_metadata(xml: str) -> dict[str, dict]:
                 target = a.get("Type", "")
                 navs[a["Name"]] = {"type": target, "many": target.startswith("Collection(")}
         types[type_name] = {"key": _KEY.findall(body), "props": props, "navs": navs}
+    # A navigation knows its target's fields, so a link's body (e.g. a document's
+    # task assignment) is built with SAP's own field names.
+    for t in types.values():
+        for nav in t["navs"].values():
+            target = types.get(nav["type"].removeprefix("Collection(").rstrip(")").rsplit(".", 1)[-1], {})
+            nav["props"], nav["key"] = target.get("props", {}), target.get("key", [])
     sets: dict[str, dict] = {}
     for set_name, entity_type in _ENTITY_SET.findall(xml):
         short = entity_type.rsplit(".", 1)[-1]
@@ -371,6 +378,61 @@ def delete(
     _, etag = client._get_with_meta(url, token)
     client._delete(url, token, if_match=etag or "*", user_email=user_email)
     return {"deleted": uuid}
+
+
+def code_for(service: str, token: str, kind: str, value: Any, base_url: str | None = None) -> Any:
+    """A type / status given by name ("Functional Specification") as the code SAP
+    stores, from the service's own code list (an entity set named like
+    "DocumentTypes"). A value that already is a code passes; with no code list the
+    value passes unchanged; a name the list doesn't have is refused with the list."""
+    sets = schema(service, token, base_url)
+    lists = sorted((n for n in sets if kind in n.lower() and n.lower() != "documents"),
+                   key=lambda n: ("document" not in n.lower(), n))
+    want = client._squash(value)
+    for name in lists:
+        es = sets[name]
+        code = next((p for p in es["props"] if p.lower() in ("code", "id")), None) or next(iter(es["key"]), None)
+        text = next((p for p in es["props"] if p.lower() in ("name", "description", "text", "title")), None)
+        if not code or not text:
+            continue
+        rows = list_raw(service, name, token, base_url)
+        for row in rows:
+            if want in (client._squash(row.get(code)), client._squash(row.get(text))):
+                return row.get(code)
+        raise ValueError(f"{kind.capitalize()} '{value}' is not one of: "
+                         + ", ".join(f"{r.get(text)} ({r.get(code)})" for r in rows[:40]))
+    return value
+
+
+def nav_for(es: dict, *words: str) -> str | None:
+    """The navigation whose name has every word (e.g. "task" -> toTaskAssignments)."""
+    return next((n for n in es["navs"] if all(w in n.lower() for w in words)), None)
+
+
+def field_in(props: dict, *words: str) -> str | None:
+    """The target field whose name has every word (e.g. "task", "id" -> taskId)."""
+    return next((p for p in props if all(w in p.lower() for w in words) and p not in _MANAGED), None)
+
+
+def add_link(service: str, es: dict, token: str, uuid: str, nav: str, body: dict,
+             base_url: str | None = None, user_email: str | None = None) -> Any:
+    """POST one item under an entity's navigation (a document's task assignment,
+    solution process assignment or URL reference)."""
+    url = f"{_key_url(service, es, base_url, uuid)}/{nav}"
+    return client._write("POST", url, token, body, user_email=user_email)
+
+
+def upload_file(service: str, es: dict, token: str, uuid: str, name: str, data: bytes,
+                base_url: str | None = None) -> None:
+    """PUT a file as the entity's content (a document's attached original)."""
+    url = f"{_key_url(service, es, base_url, uuid)}/fileContent"
+    safe = re.sub(r'[\r\n"\\]', "_", name)[:200] or "document"
+    headers = {"Authorization": f"Bearer {token}",
+               "Content-Type": mimetypes.guess_type(safe)[0] or "application/octet-stream",
+               "Content-Disposition": f'attachment; filename="{safe}"'}
+    resp = http_retry.send(lambda t: requests.put(url, data=data, headers=headers, timeout=t),
+                           "PUT", url, repeatable=False, timeout=client.REQUEST_TIMEOUT)
+    client._raise_for_status(resp, url)
 
 
 # --------------------------------------------------------------------------- #

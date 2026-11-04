@@ -325,6 +325,11 @@ def main() -> None:
 
         threading.Thread(target=_startup_auth_check, name="calm-startup-auth-check", daemon=True).start()
 
+    # A file path names a file on the machine the MCP runs on: only meaningful (and
+    # only safe) when that is the user's own machine, never the shared HTTP server.
+    from src.calm import doc_content
+    doc_content.LOCAL_FILES = not args.http
+
     if args.http:
         log.info("Starting CALM MCP on http://%s:%s", args.host, args.port)
         trust_proxy = os.getenv("MCP_TRUST_PROXY", "true").lower() not in ("false", "0", "no")

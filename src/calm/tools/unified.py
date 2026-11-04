@@ -20,7 +20,7 @@ from typing import Any, Literal, Optional
 
 from fastmcp import Context, FastMCP
 
-from src.calm import client, http_retry, odata_service
+from src.calm import client, doc_content, http_retry, odata_service
 from src.calm.config import TenantNotConfiguredError
 from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
 from src.calm.tools.user_resolver import resolve_assignee
@@ -578,6 +578,23 @@ def _with_not_written(result: Any, not_written: dict) -> Any:
 
 
 _COMMENT_TEXT_KEYS = ("text", "content", "comment", "body", "message", "note")
+# Documents: where the body comes from, what to link it to, and the file to attach.
+_DOC_BODY_KEYS = ("content", "text", "body", "markdown", "html")
+_DOC_TASK_KEYS = ("requirement", "requirements", "task", "tasks", "user_story", "user_stories",
+                  "link_to", "linked_tasks")
+_DOC_LINK_KEYS = _DOC_TASK_KEYS + ("solution_process", "solution_processes", "url", "source_url",
+                                   "reference_url", "link_url")
+_DOC_KEYS = frozenset(_DOC_BODY_KEYS + _DOC_LINK_KEYS + ("file_path", "file_base64", "file_name",
+                                                         "attach_file", "url_name"))
+
+
+def _doc_values(special: dict, keys: tuple) -> list:
+    """Every value given under any of ``keys`` (one value or a list)."""
+    out: list = []
+    for k in keys:
+        v = special.get(k)
+        out += [x for x in (v if isinstance(v, list) else [v]) if x not in (None, "")]
+    return out
 # SAP's Test Management API can't change a test case's tags (verified live:
 # create / update ignore them, tag writes answer 405; $metadata marks
 # TagAssignments read-only). Say so instead of dropping them silently.
@@ -969,7 +986,9 @@ def _odata_call(resource: str, operation: str, call):
             f"{resource} {operation} needs scope(s) {', '.join(scopes)} on the SAP Cloud ALM "
             f"service key, which this connection is not granted ({text}). Add them to the "
             "key's BTP service instance (xs-security authorities, as "
-            "$XSMASTERAPPNAME.<scope>) and create a new key — see the connectivity guide."
+            "$XSMASTERAPPNAME.<scope>, by updating the existing instance). The existing key "
+            "stays valid; restart the MCP so it gets a token with the new scopes — see the "
+            "connectivity guide, section 12."
         )
         if operation in ("list", "get"):
             return {"status": "unavailable", "supported": False, "resource": resource,
@@ -1256,6 +1275,16 @@ def register(mcp: FastMCP) -> None:
           - "create / update / release / delete a document"
                 → resource="documents", operation="create" | "update" | "delete"
                 (needs calm-api.documents.write / .delete; writes must be enabled)
+          - "add this spec / Word document to project X", "load this document
+            into CALM" → resource="documents", operation="create",
+                project_id=X, data={"title": ..., "type": "Functional
+                Specification", "content": <the document's full text, as Markdown
+                or HTML — keep its headings, lists, tables and code blocks>,
+                "requirement": "<display ID>" (or tasks / user_story /
+                solution_process / url — wherever the user wants it linked)}.
+                On a local MCP, data={"file_path": "<path to .docx>"} reads the
+                Word file itself and attaches the original. Ask the user where to
+                link it when they didn't say.
           - "automated test cases"             → resource="automated_test_cases",
                 operation="list" | "get", project_id=X  (read-only)
           - "which requirements / tasks does test case X cover"
@@ -1322,11 +1351,20 @@ def register(mcp: FastMCP) -> None:
                 - features update: any feature field by name — status, name/title,
                     description, priority (priorityCode), responsible_id, … — unknown
                     fields are refused with the list of real ones
-                - documents create: title (required), content (the document text,
-                    HTML rich text), type / status codes, and any other document
-                    field; project_id comes from the argument. update: the fields to
-                    change. Field names come from the tenant's own Documents schema;
-                    an unknown field is refused with the list of valid ones.
+                - documents create: title (required); the body as ONE of content
+                    (text: Markdown, HTML or plain — converted to CALM's rich text),
+                    file_path (local MCP only: .docx / .md / .txt / .html), or
+                    file_base64 + file_name (small files); type and status by name
+                    ("Functional Specification", "In Review") or code; links:
+                    requirement / task / user_story (display IDs or UUIDs, one or a
+                    list), solution_process (name or ID), url (+ url_name, e.g. the
+                    SharePoint location of the original); attach_file (default true:
+                    a file's original is attached when the tenant allows it); any
+                    other document field. update: the same keys, only what changes.
+                    The answer has "Content" (source; "Pictures Not In Text" for a
+                    Word file's pictures, which only the attached original keeps),
+                    "Linked", "Not Linked" and "Not Written" — nothing is dropped
+                    silently. Field names come from the tenant's own schema.
                 # --- read resources with optional data filters ---
                 - documents / automated_test_cases list: data={search (title / ID /
                     display ID, best first; 25 rows default), top, fields, or any
@@ -2589,30 +2627,127 @@ def register(mcp: FastMCP) -> None:
                 raise ValueError(f"data is required for {operation} operation")
             fields = dict(d.get("extra_fields") or {})
             fields.update({k: v for k, v in d.items() if k not in ("extra_fields", "project_id")})
+            special = {k: fields.pop(k) for k in list(fields) if k in _DOC_KEYS}
+            text_key = next((k for k in _DOC_BODY_KEYS if special.get(k) not in (None, "")), None)
+            has_body = bool(text_key or special.get("file_path") or special.get("file_base64"))
+            # Read the file / convert the text before anything is sent to SAP.
+            html_body, content_report, original = (doc_content.body(
+                special.get(text_key) if text_key else None, special.get("file_path"),
+                special.get("file_base64"), special.get("file_name")) if has_body else (None, None, None))
 
             def write_document():
                 es = odata_service.entity_set(service, set_name, h.token, h.base_url)
+                not_written: dict = {}
+                for kind in ("type", "status"):
+                    key = next((k for k in (kind, f"document_{kind}") if fields.get(k) not in (None, "")), None)
+                    if key:
+                        fields[kind] = odata_service.code_for(service, h.token, kind, fields.pop(key), h.base_url)
+                if has_body:
+                    prop = next((p for p in odata_service.LONG_TEXT if p in es["props"]), None)
+                    if prop:
+                        fields[prop] = html_body
+                    else:
+                        not_written["content"] = ("this tenant's documents have no text field; "
+                                                  f"fields: {sorted(es['props'])}")
+                pid = project_id or d.get("project_id")
                 if operation == "update":
                     if not resource_id:
                         raise ValueError("resource_id is required for update operation")
+                    uuid = odata_service.resolve_uuid(service, set_name, h.token, resource_id, h.base_url, pid)
                     body = odata_service.body_for(es, fields)
-                    return odata_service.format_row(odata_service.update(
-                        service, set_name, h.token, resource_id, body, h.base_url, project_id,
-                        user_email=acting_email))
-                pid = project_id or d.get("project_id")
-                if "projectId" in es["props"] and "projectId" not in fields and "project_id" not in fields:
-                    if not pid:
-                        raise ValueError("project_id is required to create a document")
-                    fields["projectId"] = pid
-                if not fields.get("title"):
-                    raise ValueError("data must include 'title' for create operation")
-                body = odata_service.body_for(es, fields)
-                raw, note = odata_service.create(service, set_name, h.token, body, h.base_url,
-                                                 user_email=acting_email)
-                row = odata_service.format_row(raw)
+                    raw = (odata_service.update(service, set_name, h.token, uuid, body, h.base_url, pid,
+                                                user_email=acting_email) if body
+                           else odata_service.get_raw(service, set_name, h.token, uuid, h.base_url, pid)[0])
+                    note = None
+                else:
+                    if "projectId" in es["props"] and "projectId" not in fields and "project_id" not in fields:
+                        if not pid:
+                            raise ValueError("project_id is required to create a document")
+                        fields["projectId"] = pid
+                    if not fields.get("title"):
+                        raise ValueError("data must include 'title' for create operation")
+                    body = odata_service.body_for(es, fields)
+                    raw, note = odata_service.create(service, set_name, h.token, body, h.base_url,
+                                                     user_email=acting_email)
+                    uuid = str(raw.get(next(iter(es["key"]), "uuid")) or raw.get("uuid") or "")
+                row = odata_service.format_row(raw, long_text=False)
                 if note:
                     row["Note"] = note
-                return row
+                if content_report:
+                    row["Content"] = content_report
+                # Links and the attached file never undo the saved document: each
+                # one that SAP refuses is reported, with the reason.
+                if uuid:
+                    _document_extras(es, uuid, pid or raw.get("projectId"), special, original, row, not_written)
+                elif any(special.get(k) for k in _DOC_LINK_KEYS) or original:
+                    not_written["links / file"] = "SAP did not return the new document's ID, so nothing was linked"
+                return _with_not_written(row, not_written)
+
+            def _document_extras(es, uuid, pid, special, original, row, not_written):
+                linked, not_linked = [], {}
+
+                def link(label, nav_words, field_words, value, show):
+                    nav = odata_service.nav_for(es, *nav_words)
+                    if not nav:
+                        not_linked[label] = f"documents on this tenant have no {' '.join(nav_words)} link"
+                        return
+                    props = es["navs"][nav].get("props") or {}
+                    try:
+                        body = value(props)
+                        odata_service.add_link(service, es, h.token, uuid, nav, body, h.base_url, acting_email)
+                        linked.append(show)
+                    except Exception as exc:  # noqa: BLE001 — reported, never undoes the document
+                        not_linked[label] = str(exc)[:300]
+
+                for t in _doc_values(special, _DOC_TASK_KEYS):
+                    try:
+                        task = client.get_task(h.token, str(t), h.base_url, project_id=pid)
+                    except Exception as exc:  # noqa: BLE001
+                        not_linked[str(t)] = str(exc)[:300]
+                        continue
+                    link(str(t), ("task",), ("task", "id"),
+                         lambda props, task=task: {odata_service.field_in(props, "task", "id") or "taskId": task["ID"]},
+                         {"Type": task.get("Type"), "Display ID": task.get("Display ID"), "Title": task.get("Title")})
+                for sp in _doc_values(special, ("solution_process", "solution_processes")):
+                    try:
+                        sp_id = sp if odata_service._GUID.match(str(sp)) else next(
+                            (p["ID"] for p in client.get_solution_processes(h.token, h.base_url)
+                             if client._squash(p.get("Name")) == client._squash(sp)), None)
+                        if not sp_id:
+                            raise client.NotFound(f"No solution process named '{sp}'")
+                    except Exception as exc:  # noqa: BLE001
+                        not_linked[str(sp)] = str(exc)[:300]
+                        continue
+                    link(str(sp), ("solution", "process"), (),
+                         lambda props, sp_id=sp_id: {(odata_service.field_in(props, "solution", "process", "id")
+                                                      or odata_service.field_in(props, "process", "id")
+                                                      or "solutionProcessId"): sp_id},
+                         {"Type": "Solution Process", "ID": sp_id, "Name": sp})
+                for url in _doc_values(special, ("url", "source_url", "reference_url", "link_url")):
+                    if not doc_content._safe_url(url):
+                        not_linked[str(url)] = "a link must start with http:// or https://"
+                        continue
+
+                    def url_body(props, url=url):
+                        body = {odata_service.field_in(props, "url") or "url": url}
+                        name = next((p for p in props if p.lower() in ("name", "title", "description")), None)
+                        if name:
+                            body[name] = special.get("url_name") or "Source document"
+                        return body
+                    link(str(url), ("url",), (), url_body, {"Type": "URL", "URL": url})
+                if original and special.get("attach_file", True) not in (False, "false", "no"):
+                    try:
+                        odata_service.upload_file(service, es, h.token, uuid, original[0], original[1], h.base_url)
+                        row["File Attached"] = original[0]
+                    except Exception as exc:  # noqa: BLE001
+                        not_written["file"] = (f"'{original[0]}' was not attached: {str(exc)[:250]}. Attaching files "
+                                               "needs SAP's Document Management Service on the CALM tenant; the "
+                                               "text is in the document either way.")
+                if linked:
+                    row["Linked"] = linked
+                if not_linked:
+                    row["Not Linked"] = not_linked
+
             return _odata_call("documents", operation, write_document)
 
         elif resource == "automated_test_cases":

@@ -780,6 +780,30 @@ async def main() -> int:
             check("document create ok (schema field names, project filled in)",
                   res.is_error is not True and isinstance(made, dict) and made.get("Title") == "New design"
                   and made.get("Type Code") == "SDD" and made.get("Project ID") == "P001", f"got {made}")
+            res = await _call(session, "documents", "create", project_id="P001", data={
+                "title": "Setup guide", "type": "SDD",
+                "content": "# 1. Purpose\n\nExpose the API.\n\n- step one\n- step two",
+                "requirement": "3-60729"})
+            spec = _payload(res)
+            check("a spec from text: converted, saved, an impossible link reported (not dropped)",
+                  res.is_error is not True and spec.get("Content", {}).get("Source") == "text (Markdown / text)"
+                  and ("3-60729" in spec.get("Not Linked", {}) or "links / file" in spec.get("Not Written", {})),
+                  f"got {spec}")
+            import tempfile
+            import zipfile as _zip
+            with tempfile.TemporaryDirectory() as tmp:
+                word = Path(tmp) / "Spec.docx"
+                with _zip.ZipFile(word, "w") as z:
+                    z.writestr("word/document.xml",
+                               '<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+                               '<w:body><w:p><w:r><w:t>Hello from Word</w:t></w:r></w:p></w:body></w:document>')
+                res = await _call(session, "documents", "create", project_id="P001",
+                                  data={"title": "Word spec", "type": "SDD", "file_path": str(word),
+                                        "attach_file": False})
+            from_word = _payload(res)
+            check("a local Word file is read by path and converted (stdio MCP)",
+                  res.is_error is not True and "Word file 'Spec.docx'" in from_word.get("Content", {}).get("Source", ""),
+                  f"got {str(from_word)[:300] or res.content}")
             res = await _call(session, "documents", "update", project_id="P001", resource_id="7-101",
                               data={"status": "IN_REVIEW"})
             check("document update by display ID ok (ETag sent)", res.is_error is not True,
