@@ -5,8 +5,8 @@ Covers the body conversion (Word / Markdown / HTML / text), the guards on
 reading files, and the documents create / update flow against a synthetic
 Documents schema: type and status by name, links to requirements / tasks,
 solution processes and URLs, the attached original, and that nothing a link
-or the attachment can't do is dropped silently. Not yet run against a live
-tenant: the test key lacks calm-api.documents.* (403).
+or the attachment can't do is dropped silently. The schema mirrors the live
+tenant's (2026-11-05); the live run is ~/calm_mcp_live_tests/live_document_full.py.
 """
 
 from __future__ import annotations
@@ -172,22 +172,22 @@ class Ctx:
 
 DOC_UUID = "0b1c2d3e-4f50-4a61-8b72-9c83d4e5f601"
 TASK_UUID = "1a2b3c4d-5e6f-4a7b-8c9d-0e1f2a3b4c5d"
-SP_UUID = "2b3c4d5e-6f70-4b8c-9d0e-1f2a3b4c5d6e"
 CSDL = (
     '<edmx:Edmx Version="4.0"><edmx:DataServices><Schema Namespace="S"><EntityContainer Name="C">'
     '<EntitySet Name="Documents" EntityType="S.Documents"/>'
     '<EntitySet Name="DocumentTypes" EntityType="S.DocumentTypes"/>'
-    '<EntitySet Name="DocumentStatuses" EntityType="S.DocumentStatuses"/></EntityContainer>'
+    '<EntitySet Name="DocumentStatus" EntityType="S.DocumentStatus"/></EntityContainer>'
     '<EntityType Name="Documents"><Key><PropertyRef Name="uuid"/></Key>'
     '<Property Name="uuid" Type="Edm.Guid"/><Property Name="displayId" Type="Edm.String"/>'
     '<Property Name="title" Type="Edm.String"/><Property Name="content" Type="Edm.String"/>'
-    '<Property Name="projectId" Type="Edm.String"/><Property Name="typeCode" Type="Edm.String"/>'
-    '<Property Name="statusCode" Type="Edm.String"/>'
+    '<Property Name="projectId" Type="Edm.String"/><Property Name="documentTypeCode" Type="Edm.String"/>'
+    '<Property Name="statusCode" Type="Edm.Int32"/>'
     '<NavigationProperty Name="toTaskAssignments" Type="Collection(S.TaskAssignments)"/>'
     '<NavigationProperty Name="toSolutionProcessAssignments" Type="Collection(S.SolutionProcessAssignments)"/>'
     '<NavigationProperty Name="toURLReferences" Type="Collection(S.URLReferences)"/></EntityType>'
     '<EntityType Name="TaskAssignments"><Key><PropertyRef Name="uuid"/></Key>'
-    '<Property Name="uuid" Type="Edm.Guid"/><Property Name="taskId" Type="Edm.String"/></EntityType>'
+    '<Property Name="uuid" Type="Edm.Guid"/><Property Name="parent_uuid" Type="Edm.Guid"/>'
+    '<Property Name="id" Type="Edm.String"/><Property Name="type" Type="Edm.String"/></EntityType>'
     '<EntityType Name="SolutionProcessAssignments"><Key><PropertyRef Name="uuid"/></Key>'
     '<Property Name="uuid" Type="Edm.Guid"/><Property Name="solutionProcessId" Type="Edm.String"/></EntityType>'
     '<EntityType Name="URLReferences"><Key><PropertyRef Name="uuid"/></Key>'
@@ -195,14 +195,16 @@ CSDL = (
     '<Property Name="name" Type="Edm.String"/></EntityType>'
     '<EntityType Name="DocumentTypes"><Key><PropertyRef Name="code"/></Key>'
     '<Property Name="code" Type="Edm.String"/><Property Name="name" Type="Edm.String"/></EntityType>'
-    '<EntityType Name="DocumentStatuses"><Key><PropertyRef Name="code"/></Key>'
-    '<Property Name="code" Type="Edm.String"/><Property Name="name" Type="Edm.String"/></EntityType>'
+    '<EntityType Name="DocumentStatus"><Key><PropertyRef Name="code"/></Key>'
+    '<Property Name="code" Type="Edm.Int32"/><Property Name="name" Type="Edm.String"/></EntityType>'
     '</Schema></edmx:DataServices></edmx:Edmx>'
 )
-CODES = {"DocumentTypes": [{"code": "FS", "name": "Functional Specification"},
-                           {"code": "SDD", "name": "Solution Design Document"}],
-         "DocumentStatuses": [{"code": "IN_PROGRESS", "name": "In Progress"},
-                              {"code": "IN_REVIEW", "name": "In Review"}]}
+# The schema and code lists as the live tenant has them (read 2026-11-05):
+# FS is "Fact Sheet", a Functional Specification is FU; statuses are numbers.
+CODES = {"DocumentTypes": [{"code": "FS", "name": "Fact Sheet"}, {"code": "FU", "name": "Functional Specification"},
+                           {"code": "SD", "name": "Solution Design Document"}],
+         "DocumentStatus": [{"code": 10, "name": "In Progress"}, {"code": 20, "name": "In Review"},
+                            {"code": 30, "name": "Released"}]}
 
 
 @pytest.fixture
@@ -240,8 +242,6 @@ def sap(monkeypatch):
                         lambda service, es, token, uuid, name, data, *a, **k: calls["upload"].append((uuid, name, len(data))))
     task = {"ID": TASK_UUID, "Display ID": "3-61724", "Type": "Requirement", "Title": "Customs form"}
     monkeypatch.setattr("src.calm.client.get_task", lambda token, ident, *a, **k: task)
-    monkeypatch.setattr("src.calm.client.get_solution_processes",
-                        lambda *a, **k: [{"ID": SP_UUID, "Name": "Order to Cash"}])
     return calls
 
 
@@ -253,24 +253,25 @@ def test_a_spec_lands_with_its_type_and_every_link(calm, sap):
         "requirement": "3-61724", "solution_process": "Order to Cash",
         "url": "https://sharepoint.example/sites/x/Guide.docx", "url_name": "Original Word file"})
     body = sap["create"][0]
-    assert body["typeCode"] == "FS" and body["statusCode"] == "IN_REVIEW" and body["projectId"] == "P1"
+    assert body["documentTypeCode"] == "FU" and body["statusCode"] == 20 and body["projectId"] == "P1"
     assert body["content"] == "<h1>1. Purpose</h1>\n<p>This guide explains how to expose the API.</p>"
     assert sap["link"] == [
-        (DOC_UUID, "toTaskAssignments", {"taskId": TASK_UUID}),
-        (DOC_UUID, "toSolutionProcessAssignments", {"solutionProcessId": SP_UUID}),
+        (DOC_UUID, "toTaskAssignments", {"id": TASK_UUID, "type": "CALMREQU"}),
         (DOC_UUID, "toURLReferences", {"url": "https://sharepoint.example/sites/x/Guide.docx",
                                        "name": "Original Word file"}),
     ]
     assert out["Content"] == {"Source": "text (Markdown / text)"}
-    assert [x.get("Display ID") or x.get("Name") or x.get("URL") for x in out["Linked"]] == [
-        "3-61724", "Order to Cash", "https://sharepoint.example/sites/x/Guide.docx"]
-    assert "Not Linked" not in out and "Not Written" not in out and sap["upload"] == []
+    assert [x.get("Display ID") or x.get("URL") for x in out["Linked"]] == [
+        "3-61724", "https://sharepoint.example/sites/x/Guide.docx"]
+    # A solution process is linked inside a project scope in CALM: reported, never written wrong.
+    assert list(out["Not Linked"]) == ["Order to Cash"] and "link it in CALM" in out["Not Linked"]["Order to Cash"]
+    assert "Not Written" not in out and sap["upload"] == []
 
 
 def test_a_word_file_is_converted_and_its_original_attached(calm, sap):
     out = calm(Ctx(), resource="documents", operation="create", project_id="P1", data={
-        "title": "Guide", "type": "FS", "file_base64": base64.b64encode(GUIDE).decode(), "file_name": "Guide.docx"})
-    assert "<h1>1. Purpose</h1>" in sap["create"][0]["content"] and sap["create"][0]["typeCode"] == "FS"
+        "title": "Guide", "type": "FU", "file_base64": base64.b64encode(GUIDE).decode(), "file_name": "Guide.docx"})
+    assert "<h1>1. Purpose</h1>" in sap["create"][0]["content"] and sap["create"][0]["documentTypeCode"] == "FU"
     assert sap["upload"] == [(DOC_UUID, "Guide.docx", len(GUIDE))]
     assert out["File Attached"] == "Guide.docx" and out["Content"]["Pictures Not In Text"] == 2
 
@@ -290,7 +291,7 @@ def test_what_sap_refuses_is_reported_and_the_document_stays(calm, sap, monkeypa
 
 
 def test_an_unknown_type_is_refused_with_the_real_ones(calm, sap):
-    with pytest.raises(ValueError, match="Functional Specification \\(FS\\)"):
+    with pytest.raises(ValueError, match="Functional Specification \\(FU\\)"):
         calm(Ctx(), resource="documents", operation="create", project_id="P1",
              data={"title": "x", "type": "Spec of things", "content": "x"})
     assert sap["create"] == []  # nothing sent
@@ -312,6 +313,21 @@ def test_update_can_only_add_links(calm, sap, monkeypatch):
                data={"requirement": ["3-61724"]})
     assert sap["update"] == [] and sap["link"][0][1] == "toTaskAssignments"
     assert out["Linked"][0]["Display ID"] == "3-61724"
+
+
+def test_sap_refusing_any_change_to_a_saved_document_is_reported_and_links_still_go_on(calm, sap, monkeypatch):
+    """Live: SAP's Documents API answers every PATCH with 405 (its schema: a saved
+    document only takes links, tags and its file)."""
+    monkeypatch.setattr(odata_service, "resolve_uuid", lambda *a, **k: DOC_UUID)
+    monkeypatch.setattr(odata_service, "get_raw", lambda *a, **k: ({"uuid": DOC_UUID, "projectId": "P1"}, None))
+
+    def refuse(*a, **k):
+        raise RuntimeError('CALM API error: HTTP 405 Method Not Allowed at https://x/Documents/1 — response: {"status":405}')
+    monkeypatch.setattr(odata_service, "update", refuse)
+    out = calm(Ctx(), resource="documents", operation="update", resource_id="7-301",
+               data={"status": "Released", "content": "# New", "requirement": "3-61724"})
+    assert set(out["Not Written"]) == {"status", "content"} and "change it in CALM" in out["Not Written"]["status"]
+    assert out["Linked"][0]["Display ID"] == "3-61724" and sap["link"][0][1] == "toTaskAssignments"
 
 
 # What `pandoc -t gfm` makes of a Word guide like the connectivity guide: the

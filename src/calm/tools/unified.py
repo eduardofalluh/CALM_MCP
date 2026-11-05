@@ -1272,7 +1272,9 @@ def register(mcp: FastMCP) -> None:
           - "read document 7-109", "what does the design doc say"
                 → resource="documents", operation="get", resource_id=<UUID or
                 display ID>, project_id=X  (returns the document text + references)
-          - "create / update / release / delete a document"
+          - "create / add links to / delete a document" (SAP's API can't change a
+            saved document's title, type, status or text — say so; the user
+            changes those in CALM)
                 → resource="documents", operation="create" | "update" | "delete"
                 (needs calm-api.documents.write / .delete; writes must be enabled)
           - "add this spec / Word document to project X", "load this document
@@ -1280,8 +1282,9 @@ def register(mcp: FastMCP) -> None:
                 project_id=X, data={"title": ..., "type": "Functional
                 Specification", "content": <the document's full text, as Markdown
                 or HTML — keep its headings, lists, tables and code blocks>,
-                "requirement": "<display ID>" (or tasks / user_story /
-                solution_process / url — wherever the user wants it linked)}.
+                "requirement": "<display ID>" (or tasks / user_story / url —
+                wherever the user wants it linked; a solution process is linked
+                in CALM)}.
                 On a local MCP, data={"file_path": "<path to .docx>"} reads the
                 Word file itself and attaches the original — always prefer it when
                 the file is on the user's machine (a synced SharePoint / OneDrive
@@ -1373,10 +1376,12 @@ def register(mcp: FastMCP) -> None:
                     file_base64 + file_name (small files); type and status by name
                     ("Functional Specification", "In Review") or code; links:
                     requirement / task / user_story (display IDs or UUIDs, one or a
-                    list), solution_process (name or ID), url (+ url_name, e.g. the
+                    list), url (+ url_name, e.g. the
                     SharePoint location of the original); attach_file (default true:
                     a file's original is attached when the tenant allows it); any
-                    other document field. update: the same keys, only what changes.
+                    other document field. update: adds links (and the attached file)
+                    only — SAP refuses any other change to a saved document,
+                    reported under "Not Written".
                     The answer has "Content" (source; "Pictures Not In Text" for a
                     Word file's pictures, which only the attached original keeps;
                     "Diagrams" for ```mermaid / ```drawio blocks, each kept as
@@ -2673,9 +2678,22 @@ def register(mcp: FastMCP) -> None:
                         raise ValueError("resource_id is required for update operation")
                     uuid = odata_service.resolve_uuid(service, set_name, h.token, resource_id, h.base_url, pid)
                     body = odata_service.body_for(es, fields)
-                    raw = (odata_service.update(service, set_name, h.token, uuid, body, h.base_url, pid,
-                                                user_email=acting_email) if body
-                           else odata_service.get_raw(service, set_name, h.token, uuid, h.base_url, pid)[0])
+                    raw = None
+                    if body:
+                        try:
+                            raw = odata_service.update(service, set_name, h.token, uuid, body, h.base_url, pid,
+                                                       user_email=acting_email)
+                        except RuntimeError as exc:
+                            # Live (2026-11-05): SAP's Documents API refuses any PATCH (405); its schema says a
+                            # saved document can only get links, tags and its attached file. Links still go on.
+                            if "HTTP 405" not in str(exc):
+                                raise
+                            for key in fields:
+                                not_written[key] = ("SAP's Documents API can't change a saved document (it only "
+                                                    "takes new links and the attached file): change it in CALM, "
+                                                    "or create a new document")
+                    if raw is None:
+                        raw = odata_service.get_raw(service, set_name, h.token, uuid, h.base_url, pid)[0]
                     note = None
                 else:
                     if "projectId" in es["props"] and "projectId" not in fields and "project_id" not in fields:
@@ -2723,24 +2741,22 @@ def register(mcp: FastMCP) -> None:
                     except Exception as exc:  # noqa: BLE001
                         not_linked[str(t)] = str(exc)[:300]
                         continue
-                    link(str(t), ("task",), ("task", "id"),
-                         lambda props, task=task: {odata_service.field_in(props, "task", "id") or "taskId": task["ID"]},
+                    def task_body(props, task=task):
+                        # Live schema (2026-11-05): {id: task UUID, type: CALM type code, e.g. CALMREQU}.
+                        body = {odata_service.field_in(props, "task", "id") or ("id" if "id" in props else "taskId"):
+                                task["ID"]}
+                        if "type" in props:
+                            body["type"] = client.TASK_TYPE_REVERSE_MAP.get(str(task.get("Type")).lower(),
+                                                                            task.get("Type"))
+                        return body
+                    link(str(t), ("task",), (), task_body,
                          {"Type": task.get("Type"), "Display ID": task.get("Display ID"), "Title": task.get("Title")})
                 for sp in _doc_values(special, ("solution_process", "solution_processes")):
-                    try:
-                        sp_id = sp if odata_service._GUID.match(str(sp)) else next(
-                            (p["ID"] for p in client.get_solution_processes(h.token, h.base_url)
-                             if client._squash(p.get("Name")) == client._squash(sp)), None)
-                        if not sp_id:
-                            raise client.NotFound(f"No solution process named '{sp}'")
-                    except Exception as exc:  # noqa: BLE001
-                        not_linked[str(sp)] = str(exc)[:300]
-                        continue
-                    link(str(sp), ("solution", "process"), (),
-                         lambda props, sp_id=sp_id: {(odata_service.field_in(props, "solution", "process", "id")
-                                                      or odata_service.field_in(props, "process", "id")
-                                                      or "solutionProcessId"): sp_id},
-                         {"Type": "Solution Process", "ID": sp_id, "Name": sp})
+                    # Live (2026-11-05): CALM links a document to a solution process inside a project
+                    # scope (solutionProcessId like SP_OP_1F1_1 + scopeId + solutionScenarioId), not by
+                    # the Process Authoring ID, and this key can't read a scope's processes (403).
+                    not_linked[str(sp)] = ("linking a document to a solution process isn't supported yet "
+                                           "(CALM links it inside a project scope); link it in CALM")
                 for url in _doc_values(special, ("url", "source_url", "reference_url", "link_url")):
                     if not doc_content._safe_url(url):
                         not_linked[str(url)] = "a link must start with http:// or https://"
