@@ -796,6 +796,14 @@ async def main() -> int:
             check("a spec's Mermaid diagram is counted and linked, a screenshot counted (none dropped)",
                   res.is_error is not True and drawn.get("Content", {}).get("Diagrams") == 1
                   and drawn.get("Content", {}).get("Pictures Not In Text") == 1, f"got {drawn}")
+            res = await _call(session, "documents", "create", project_id="P001", data={
+                "title": "Caption only", "type": "SDD",
+                "content": "## Flow\n\nFigure 1 shows the flow.\n\nFigure 1: Credit check flow\n\n## Next"})
+            lost = _payload(res)
+            check("a figure whose picture never reached the MCP is named, not silently gone",
+                  res.is_error is not True
+                  and lost.get("Content", {}).get("Figures Without A Picture") == ["Figure 1: Credit check flow"],
+                  f"got {lost}")
             import tempfile
             import zipfile as _zip
             with tempfile.TemporaryDirectory() as tmp:

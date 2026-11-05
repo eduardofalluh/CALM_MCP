@@ -504,3 +504,17 @@ def test_a_failed_read_back_is_reported_and_the_document_stays(calm, sap, monkey
     out = calm(Ctx(), resource="documents", operation="create", project_id="P1",
                data={"title": "Spec", "content": "# Hi"})
     assert out["ID"] == DOC_UUID and "HTTP 503" in out["Read Back"]
+
+
+def test_a_figure_whose_picture_was_left_out_is_named_never_silent():
+    """GenAI Studio (2026-11-05): the agent had only the Word text and passed the
+    caption without the picture; nothing said Figure 1 was gone."""
+    text = ("## 3. Process Flow\n\nFigure 1 shows the credit check flow.\n\nFigure 1: Credit check flow\n\n"
+            "![](media/image2.png)\n\n*Figure 2: Order screen*\n\n"
+            "```mermaid\n%% redrawn from Figure 3\nflowchart LR\n  A --> B\n```\n\nFigure 3: Release flow")
+    _, report, _ = doc_content.body(content=text)
+    assert report["Figures Without A Picture"] == ["Figure 1: Credit check flow"]  # 2 counted, 3 redrawn
+    assert doc_content.figures_without_a_picture("<p>Figure 1 shows the flow.</p>") == []  # a mention, not a caption
+    # a picture only counts for the caption right next to it, not one a list away
+    _, report, _ = doc_content.body(content="![Figure 3](a.png)\n\n## Open\n\n1. x\n2. y\n\nFigure 9: Landscape")
+    assert report["Figures Without A Picture"] == ["Figure 9: Landscape"]

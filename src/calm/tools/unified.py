@@ -1305,7 +1305,9 @@ def register(mcp: FastMCP) -> None:
                 goes in a ```mermaid / ```drawio block unchanged. CALM keeps each
                 diagram's source with an "Open diagram" link ("Diagrams";
                 "Diagrams Redrawn From Pictures": tell the user to check those
-                against the original). Keep numbered lists numbered (1. 2. 3.).
+                against the original; "Figures Without A Picture": captions whose
+                picture you left out — tell the user each one is only in the
+                original). Keep numbered lists numbered (1. 2. 3.).
                 Report status, type and links from the answer (what SAP stored,
                 read back), never from what you sent. Do NOT pass text read
                 through a SharePoint / Microsoft 365 connector: it comes from a PDF
@@ -1394,7 +1396,8 @@ def register(mcp: FastMCP) -> None:
                     Word file's pictures, which only the attached original keeps;
                     "Diagrams" for ```mermaid / ```drawio blocks, each kept as
                     source with an "Open diagram" link that draws it; "Diagrams
-                    Redrawn From Pictures" for those marked "%% redrawn from …"),
+                    Redrawn From Pictures" for those marked "%% redrawn from …";
+                    "Figures Without A Picture" for captions with no picture),
                     the document as SAP stored it (read back after saving),
                     "Linked", "Not Linked" and "Not Written" — nothing is dropped
                     silently. Field names come from the tenant's own schema.

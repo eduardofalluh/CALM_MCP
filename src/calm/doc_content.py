@@ -50,6 +50,8 @@ def body(content: Any = None, file_path: Any = None, file_base64: Any = None,
         report["Diagrams"] = count
     if redrawn:
         report["Diagrams Redrawn From Pictures"] = redrawn  # by the agent: to be checked against the original
+    if lost := figures_without_a_picture(out):
+        report["Figures Without A Picture"] = lost
     return out, report, original
 
 
@@ -373,6 +375,44 @@ def diagrams(html_text: str) -> tuple[str, int, int]:
                 f"Open diagram {count} ({kind})</a>{note}</p>")
 
     return _PRE.sub(link, html_text), count, redrawn
+
+
+# A figure caption ("Figure 1: Credit check flow") with no picture marker or
+# diagram near it: the picture was left out before the text reached the MCP
+# (a GenAI Studio agent with only the Word file's text did this silently).
+_CAPTION = re.compile(r"<p>(?:<(?:em|strong|i|b)>)*\s*((?:Figure|Fig\.|Abbildung|Exhibit|Diagram|Image)\s*\d+"
+                      r"\s*[:.\-–—]\s*[^<]{0,150})", re.I)
+
+
+_FIGURE = re.compile(r"\[Picture[^\]]*\]|Open diagram \d+[^<]*</a>[^<]*")
+
+
+def figures_without_a_picture(html_text: str) -> list[str]:
+    """Captions of figures whose picture is neither counted nor redrawn. A
+    caption takes the picture / diagram directly before it (Word puts captions
+    below), else the one directly after it — nothing but markup in between —
+    and a picture belongs to one caption."""
+    def gap(a: int, b: int) -> int:
+        return len(re.sub(r"<[^>]+>|\s", "", html_text[a:b]))
+
+    events = sorted([(m.start(), max(html_text.find("</p>", m.end()), m.end()), m) for m in _CAPTION.finditer(html_text)]
+                    + [(m.start(), m.end(), None) for m in _FIGURE.finditer(html_text)], key=lambda e: e[0])
+    taken: set[int] = set()
+    waiting = []
+    for i, (begin, _, caption) in enumerate(events):
+        if caption:
+            if i and events[i - 1][2] is None and i - 1 not in taken and gap(events[i - 1][1], begin) <= 3:
+                taken.add(i - 1)
+            else:
+                waiting.append(i)
+    lost = []
+    for i in waiting:
+        nxt = i + 1
+        if nxt < len(events) and events[nxt][2] is None and nxt not in taken and gap(events[i][1], events[nxt][0]) <= 3:
+            taken.add(nxt)
+        else:
+            lost.append(html.unescape(events[i][2].group(1)).strip())
+    return lost
 
 
 # --------------------------------------------------------------------------- #
