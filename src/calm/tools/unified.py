@@ -1291,15 +1291,23 @@ def register(mcp: FastMCP) -> None:
                 folder counts). Otherwise (hosted MCP) convert the Word file to
                 Markdown yourself — e.g. `pandoc -t gfm --extract-media=. spec.docx` —
                 and pass ALL of it as content; the MCP turns it into CALM's rich text.
-                Diagrams: CALM can't show a Word file's pictures. Look at each
-                picture; when it is a diagram (process flow, swimlane, architecture,
-                sequence, data model, org chart), write it IN ITS PLACE as a
-                ```mermaid block (draw.io XML: a ```drawio block), every box,
-                arrow and label exactly as in the picture. CALM keeps the source
-                and an "Open diagram" link that draws it ("Diagrams" in the
-                answer). Screenshots can't be redrawn: leave them as pictures
-                ("Pictures Not In Text"). Tell the user which pictures you redrew,
-                to check them against the original. Do NOT pass text read
+                Pictures: CALM can't show a Word file's pictures. Redraw ONLY a
+                picture whose image you can actually see: when it is a diagram
+                (process flow, swimlane, architecture, sequence, data model),
+                write it IN ITS PLACE as a ```mermaid block whose first line is
+                "%% redrawn from <figure name>", every box, arrow and label
+                exactly as in the picture — nothing added, nothing left out.
+                NEVER draw a diagram from a caption or the text around it: when
+                you have only the file's text (no image), or the picture is a
+                screenshot, put ![<caption>](picture) where it was, so it is
+                counted ("Pictures Not In Text"), and tell the user it is only in
+                the original. A diagram already written as Mermaid / draw.io text
+                goes in a ```mermaid / ```drawio block unchanged. CALM keeps each
+                diagram's source with an "Open diagram" link ("Diagrams";
+                "Diagrams Redrawn From Pictures": tell the user to check those
+                against the original). Keep numbered lists numbered (1. 2. 3.).
+                Report status, type and links from the answer (what SAP stored,
+                read back), never from what you sent. Do NOT pass text read
                 through a SharePoint / Microsoft 365 connector: it comes from a PDF
                 conversion (page footers mixed in, words broken). Pass the file's
                 SharePoint link as "url" so the original, with its pictures, is one
@@ -1385,7 +1393,9 @@ def register(mcp: FastMCP) -> None:
                     The answer has "Content" (source; "Pictures Not In Text" for a
                     Word file's pictures, which only the attached original keeps;
                     "Diagrams" for ```mermaid / ```drawio blocks, each kept as
-                    source with an "Open diagram" link that draws it),
+                    source with an "Open diagram" link that draws it; "Diagrams
+                    Redrawn From Pictures" for those marked "%% redrawn from …"),
+                    the document as SAP stored it (read back after saving),
                     "Linked", "Not Linked" and "Not Written" — nothing is dropped
                     silently. Field names come from the tenant's own schema.
                 # --- read resources with optional data filters ---
@@ -2715,6 +2725,13 @@ def register(mcp: FastMCP) -> None:
                 # one that SAP refuses is reported, with the reason.
                 if uuid:
                     _document_extras(es, uuid, pid or raw.get("projectId"), special, original, row, not_written)
+                    # The answer shows what SAP stored, read back (status / type names, every link),
+                    # not what was sent: an agent once reported the state "Active" as the status.
+                    try:
+                        stored = odata_service.get_raw(service, set_name, h.token, uuid, h.base_url, pid)[0]
+                        row.update(odata_service.format_row(stored, long_text=False))
+                    except Exception as exc:  # noqa: BLE001 — the document is saved either way
+                        row["Read Back"] = f"not read back after saving: {str(exc)[:200]}"
                 elif any(special.get(k) for k in _DOC_LINK_KEYS) or original:
                     not_written["links / file"] = "SAP did not return the new document's ID, so nothing was linked"
                 return _with_not_written(row, not_written)

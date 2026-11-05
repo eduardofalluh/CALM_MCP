@@ -360,12 +360,13 @@ def test_documents_list_get_through_calm_resource(calm, with_schema):
 
 
 def test_document_create_fills_project_and_requires_title(calm, with_schema):
-    with patch.object(client, "_write", return_value=_doc()) as w:
+    with patch.object(client, "_write", return_value=_doc()) as w, \
+         patch.object(client, "_get_with_meta", return_value=(_doc(), None)):  # the read-back after saving
         out = calm(Ctx(), resource="documents", operation="create", project_id=PROJECT,
                    data={"title": "Solution design 1", "type": "SDD", "content": "<p>Text</p>"})
     assert w.call_args.args[3] == {"title": "Solution design 1", "typeCode": "SDD",
                                    "content": "<p>Text</p>", "projectId": PROJECT}
-    assert out["ID"] == DOC_UUID
+    assert out["ID"] == DOC_UUID and "Read Back" not in out
     with pytest.raises(ValueError, match="title"):
         calm(Ctx(), resource="documents", operation="create", project_id=PROJECT, data={"type": "SDD"})
     with pytest.raises(ValueError, match="project_id is required"):
@@ -381,7 +382,8 @@ def test_document_writes_respect_the_write_switch(calm, with_schema, monkeypatch
 
 def test_document_update_and_delete_by_display_id(calm, with_schema):
     with patch.object(client, "_get_all", return_value=[_doc()]), \
-         patch.object(client, "_get_with_meta", return_value=(_doc(), 'W/"1"')), \
+         patch.object(client, "_get_with_meta", side_effect=[(_doc(), 'W/"1"'),  # ETag, then the read-back
+                                                             (_doc(statusCode="RELEASED"), 'W/"2"')]), \
          patch.object(client, "_write", return_value=_doc(statusCode="RELEASED")) as w:
         out = calm(Ctx(), resource="documents", operation="update", project_id=PROJECT,
                    resource_id="7-101", data={"status": "RELEASED"})

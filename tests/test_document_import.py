@@ -236,6 +236,10 @@ def sap(monkeypatch):
         return {"uuid": DOC_UUID, "displayId": "7-301", **body}, None
 
     monkeypatch.setattr(odata_service, "create", create)
+    # SAP's read-back after saving: what was stored, with status / type names.
+    monkeypatch.setattr(odata_service, "get_raw", lambda *a, **k: (
+        {"uuid": DOC_UUID, "displayId": "7-301", **(calls["create"][-1] if calls["create"] else {}),
+         "stateCode": "ACT", "toStatus": {"code": 10, "name": "In Progress"}}, None))
     monkeypatch.setattr(odata_service, "add_link",
                         lambda service, es, token, uuid, nav, body, *a, **k: calls["link"].append((uuid, nav, body)))
     monkeypatch.setattr(odata_service, "upload_file",
@@ -439,7 +443,8 @@ def test_markdown_diagrams_keep_their_source_and_get_a_link_that_draws_them():
     text = (f"# Process\n\nThe flow:\n\n```mermaid\n{MERMAID}\n```\n\n```drawio\n{DRAWIO}\n```\n\n"
             "```\nSELECT * FROM vbak\n```\n\n![](media/screenshot.png)")
     out, report, _ = doc_content.body(content=text)
-    assert report == {"Source": "text (Markdown / text)", "Pictures Not In Text": 1, "Diagrams": 2}
+    assert report == {"Source": "text (Markdown / text)", "Pictures Not In Text": 1, "Diagrams": 2,
+                      "Diagrams Redrawn From Pictures": 1}  # MERMAID is marked "%% redrawn from Figure 2"
     links = _links(out)
     assert [_drawn(x) for x in links] == [MERMAID, DRAWIO]  # exactly the source, special characters included
     assert links[0].startswith("https://mermaid.live/view#pako:")
@@ -470,5 +475,32 @@ def test_a_spec_with_diagrams_through_calm_resource(calm, sap):
     out = calm(Ctx(), resource="documents", operation="create", project_id="P1",
                data={"title": "Spec", "type": "Functional Specification",
                      "content": f"## Flow\n\n```mermaid\n{MERMAID}\n```"})
-    assert out["Content"] == {"Source": "text (Markdown / text)", "Diagrams": 1}
+    assert out["Content"] == {"Source": "text (Markdown / text)", "Diagrams": 1, "Diagrams Redrawn From Pictures": 1}
     assert _drawn(_links(sap["create"][0]["content"])[0]) == MERMAID
+
+
+def test_a_diagram_redrawn_from_a_picture_is_marked_in_calm_and_counted():
+    text = ("## Flow\n\n```mermaid\n%% redrawn from Figure 1\nflowchart LR\n  A[Sales order] --> B[Billing]\n```\n\n"
+            "```mermaid\nsequenceDiagram\n  A->>B: hi\n```\n\n![Figure 2: SAP screen](picture)")
+    out, report, _ = doc_content.body(content=text)
+    assert report == {"Source": "text (Markdown / text)", "Pictures Not In Text": 1, "Diagrams": 2,
+                      "Diagrams Redrawn From Pictures": 1}
+    assert "Open diagram 1 (Mermaid)</a> — redrawn by AI from Figure 1: check it against the original</p>" in out
+    assert "Open diagram 2 (Mermaid)</a></p>" in out  # written as Mermaid in the spec: no note
+    assert "[Picture: Figure 2: SAP screen]" in out  # a picture the agent couldn't see stays, counted
+
+
+def test_the_answer_is_what_sap_stored_read_back(calm, sap):
+    out = calm(Ctx(), resource="documents", operation="create", project_id="P1",
+               data={"title": "Spec", "type": "Functional Specification", "content": "# Hi"})
+    assert out["Status"] == {"Code": 10, "Name": "In Progress"}  # the status, never the state "ACT"
+    assert out["Display ID"] == "7-301" and "Read Back" not in out
+
+
+def test_a_failed_read_back_is_reported_and_the_document_stays(calm, sap, monkeypatch):
+    def down(*a, **k):
+        raise RuntimeError("CALM API error: HTTP 503")
+    monkeypatch.setattr(odata_service, "get_raw", down)
+    out = calm(Ctx(), resource="documents", operation="create", project_id="P1",
+               data={"title": "Spec", "content": "# Hi"})
+    assert out["ID"] == DOC_UUID and "HTTP 503" in out["Read Back"]

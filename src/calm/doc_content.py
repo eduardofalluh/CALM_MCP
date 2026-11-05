@@ -45,9 +45,11 @@ def body(content: Any = None, file_path: Any = None, file_base64: Any = None,
     file path, or a file sent as base64. The original file comes back so it can
     be attached to the CALM document as well."""
     out, report, original = _body(content, file_path, file_base64, file_name)
-    out, count = diagrams(out)
+    out, count, redrawn = diagrams(out)
     if count:
         report["Diagrams"] = count
+    if redrawn:
+        report["Diagrams Redrawn From Pictures"] = redrawn  # by the agent: to be checked against the original
     return out, report, original
 
 
@@ -318,6 +320,9 @@ _MERMAID = re.compile(
     r"|C4Dynamic|C4Deployment|mindmap|timeline|zenuml|sankey-beta|xychart-beta|block-beta|packet-beta|kanban"
     r"|architecture-beta|radar-beta)\b")
 _PRE = re.compile(r"<pre\b[^>]*>(.*?)</pre>", re.I | re.S)
+# An agent marks a diagram it redrew from a picture with a Mermaid comment,
+# "%% redrawn from Figure 1", so CALM shows it must be checked.
+_REDRAWN = re.compile(r"^\s*%%\s*redrawn\b(?:\s+from\s+(.+))?", re.I | re.M)
 
 
 def diagram_kind(source: str) -> str | None:
@@ -344,23 +349,30 @@ def diagram_link(source: str, kind: str) -> str:
     return "https://app.diagrams.net/#R" + quote(base64.b64encode(packed).decode(), safe="")
 
 
-def diagrams(html_text: str) -> tuple[str, int]:
+def diagrams(html_text: str) -> tuple[str, int, int]:
     """Each code block holding a Mermaid / draw.io diagram gets an "Open
-    diagram N" link right after it; returns the HTML and how many."""
-    count = 0
+    diagram N" link right after it, and a diagram marked as redrawn from a
+    picture says so next to its link; returns the HTML, how many diagrams,
+    and how many of them were redrawn."""
+    count = redrawn = 0
 
     def link(m: re.Match) -> str:
-        nonlocal count
+        nonlocal count, redrawn
         source = re.sub(r"<br\s*/?>", "\n", m.group(1), flags=re.I)
         source = html.unescape(re.sub(r"<[^>]+>", "", source)).strip()
         kind = diagram_kind(source)
         if not kind:
             return m.group(0)
         count += 1
+        note = ""
+        if marked := _REDRAWN.search(source):
+            redrawn += 1
+            what = html.escape((marked.group(1) or "a picture").strip().rstrip(".:"), quote=False)
+            note = f" — redrawn by AI from {what}: check it against the original"
         return (f'{m.group(0)}<p><a href="{html.escape(diagram_link(source, kind))}">'
-                f"Open diagram {count} ({kind})</a></p>")
+                f"Open diagram {count} ({kind})</a>{note}</p>")
 
-    return _PRE.sub(link, html_text), count
+    return _PRE.sub(link, html_text), count, redrawn
 
 
 # --------------------------------------------------------------------------- #
