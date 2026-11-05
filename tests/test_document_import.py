@@ -236,6 +236,7 @@ def sap(monkeypatch):
         return {"uuid": DOC_UUID, "displayId": "7-301", **body}, None
 
     monkeypatch.setattr(odata_service, "create", create)
+    monkeypatch.setattr(odata_service, "same_title", lambda *a, **k: [])
     # SAP's read-back after saving: what was stored, with status / type names.
     monkeypatch.setattr(odata_service, "get_raw", lambda *a, **k: (
         {"uuid": DOC_UUID, "displayId": "7-301", **(calls["create"][-1] if calls["create"] else {}),
@@ -518,3 +519,35 @@ def test_a_figure_whose_picture_was_left_out_is_named_never_silent():
     # a picture only counts for the caption right next to it, not one a list away
     _, report, _ = doc_content.body(content="![Figure 3](a.png)\n\n## Open\n\n1. x\n2. y\n\nFigure 9: Landscape")
     assert report["Figures Without A Picture"] == ["Figure 9: Landscape"]
+
+
+
+def test_a_lost_picture_is_visible_in_calm_under_its_caption():
+    out, _, _ = doc_content.body(content="Figure 1 shows the flow.\n\nFigure 1: Credit check flow\n\n## Next")
+    assert ("<p>Figure 1: Credit check flow</p>\n<p>[Picture not included — see the original document]</p>"
+            in out)
+
+
+def test_a_second_copy_of_the_same_spec_is_pointed_out(calm, sap, monkeypatch):
+    seen = {}
+
+    def twins(service, es, token, project_id, title, uuid, *a, **k):
+        seen.update(project=project_id, title=title, uuid=uuid)
+        return ["7-135"]
+    monkeypatch.setattr(odata_service, "same_title", twins)
+    out = calm(Ctx(), resource="documents", operation="create", project_id="P1",
+               data={"title": "Credit Management Spec", "content": "# Hi"})
+    assert out["Same Title In Project"] == ["7-135"]
+    assert seen == {"project": "P1", "title": "Credit Management Spec", "uuid": DOC_UUID}
+
+
+def test_same_title_asks_sap_for_that_exact_title_in_that_project_only(monkeypatch):
+    es = {"name": "Documents", "key": ["uuid"]}
+    pid = "4f0ba0a8-40bd-458e-8c66-ce9e7ef3095d"
+    urls = []
+    monkeypatch.setattr(odata_service.client, "_get", lambda url, token: urls.append(url) or {"value": [
+        {"uuid": "new", "displayId": "7-141"}, {"uuid": "old", "displayId": "7-135"}]})
+    assert odata_service.same_title("calm-documents", es, "t", pid, "O'Brien's spec", "new", "https://x") == ["7-135"]
+    from urllib.parse import unquote
+    assert f"projectId eq {pid} and title eq 'O''Brien''s spec'" in unquote(urls[0])  # quote doubled, not injectable
+    assert odata_service.same_title("calm-documents", es, "t", "Test Project X", "x", "new") == []  # not a UUID: no query

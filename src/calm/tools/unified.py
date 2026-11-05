@@ -1397,7 +1397,9 @@ def register(mcp: FastMCP) -> None:
                     "Diagrams" for ```mermaid / ```drawio blocks, each kept as
                     source with an "Open diagram" link that draws it; "Diagrams
                     Redrawn From Pictures" for those marked "%% redrawn from …";
-                    "Figures Without A Picture" for captions with no picture),
+                    "Figures Without A Picture" for captions with no picture;
+                    "Same Title In Project": other documents already titled the same
+                    — a repeated request made a copy: tell the user),
                     the document as SAP stored it (read back after saving),
                     "Linked", "Not Linked" and "Not Written" — nothing is dropped
                     silently. Field names come from the tenant's own schema.
@@ -2734,7 +2736,16 @@ def register(mcp: FastMCP) -> None:
                         stored = odata_service.get_raw(service, set_name, h.token, uuid, h.base_url, pid)[0]
                         row.update(odata_service.format_row(stored, long_text=False))
                     except Exception as exc:  # noqa: BLE001 — the document is saved either way
+                        stored = raw
                         row["Read Back"] = f"not read back after saving: {str(exc)[:200]}"
+                    if operation != "update":
+                        try:
+                            twins = odata_service.same_title(service, es, h.token, stored.get("projectId"),
+                                                             stored.get("title"), uuid, h.base_url)
+                        except Exception:  # noqa: BLE001 — only a hint; the document is saved either way
+                            twins = []
+                        if twins:
+                            row["Same Title In Project"] = twins
                 elif any(special.get(k) for k in _DOC_LINK_KEYS) or original:
                     not_written["links / file"] = "SAP did not return the new document's ID, so nothing was linked"
                 return _with_not_written(row, not_written)

@@ -51,7 +51,9 @@ def body(content: Any = None, file_path: Any = None, file_base64: Any = None,
     if redrawn:
         report["Diagrams Redrawn From Pictures"] = redrawn  # by the agent: to be checked against the original
     if lost := figures_without_a_picture(out):
-        report["Figures Without A Picture"] = lost
+        report["Figures Without A Picture"] = [caption for caption, _ in lost]
+        for _, end in reversed(lost):  # visible in CALM too, right under the caption
+            out = out[:end] + "\n<p>[Picture not included — see the original document]</p>" + out[end:]
     return out, report, original
 
 
@@ -387,15 +389,15 @@ _CAPTION = re.compile(r"<p>(?:<(?:em|strong|i|b)>)*\s*((?:Figure|Fig\.|Abbildung
 _FIGURE = re.compile(r"\[Picture[^\]]*\]|Open diagram \d+[^<]*</a>[^<]*")
 
 
-def figures_without_a_picture(html_text: str) -> list[str]:
+def figures_without_a_picture(html_text: str) -> list[tuple[str, int]]:
     """Captions of figures whose picture is neither counted nor redrawn. A
     caption takes the picture / diagram directly before it (Word puts captions
     below), else the one directly after it — nothing but markup in between —
-    and a picture belongs to one caption."""
+    and a picture belongs to one caption. Returns (caption, end of its paragraph)."""
     def gap(a: int, b: int) -> int:
         return len(re.sub(r"<[^>]+>|\s", "", html_text[a:b]))
 
-    events = sorted([(m.start(), max(html_text.find("</p>", m.end()), m.end()), m) for m in _CAPTION.finditer(html_text)]
+    events = sorted([(m.start(), _para_end(html_text, m.end()), m) for m in _CAPTION.finditer(html_text)]
                     + [(m.start(), m.end(), None) for m in _FIGURE.finditer(html_text)], key=lambda e: e[0])
     taken: set[int] = set()
     waiting = []
@@ -411,8 +413,13 @@ def figures_without_a_picture(html_text: str) -> list[str]:
         if nxt < len(events) and events[nxt][2] is None and nxt not in taken and gap(events[i][1], events[nxt][0]) <= 3:
             taken.add(nxt)
         else:
-            lost.append(html.unescape(events[i][2].group(1)).strip())
+            lost.append((html.unescape(events[i][2].group(1)).strip(), events[i][1]))
     return lost
+
+
+def _para_end(html_text: str, pos: int) -> int:
+    end = html_text.find("</p>", pos)
+    return end + len("</p>") if end >= 0 else pos
 
 
 # --------------------------------------------------------------------------- #

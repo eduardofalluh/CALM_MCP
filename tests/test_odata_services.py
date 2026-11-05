@@ -361,7 +361,8 @@ def test_documents_list_get_through_calm_resource(calm, with_schema):
 
 def test_document_create_fills_project_and_requires_title(calm, with_schema):
     with patch.object(client, "_write", return_value=_doc()) as w, \
-         patch.object(client, "_get_with_meta", return_value=(_doc(), None)):  # the read-back after saving
+         patch.object(client, "_get_with_meta", return_value=(_doc(), None)), \
+         patch.object(odata_service, "same_title", return_value=[]):  # the read-back after saving
         out = calm(Ctx(), resource="documents", operation="create", project_id=PROJECT,
                    data={"title": "Solution design 1", "type": "SDD", "content": "<p>Text</p>"})
     assert w.call_args.args[3] == {"title": "Solution design 1", "typeCode": "SDD",

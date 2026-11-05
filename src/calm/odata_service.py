@@ -422,6 +422,19 @@ def add_link(service: str, es: dict, token: str, uuid: str, nav: str, body: dict
     return client._write("POST", url, token, body, user_email=user_email)
 
 
+def same_title(service: str, es: dict, token: str, project_id: Any, title: Any, uuid: str,
+               base_url: str | None = None) -> list[str]:
+    """Display IDs of the project's other items titled exactly ``title`` (a
+    repeated or retried create makes a second copy; SAP keeps both)."""
+    if not title or not _GUID.match(str(project_id or "")):
+        return []
+    literal = str(title).replace("'", "''")  # OData string literal
+    flt = quote(f"projectId eq {project_id} and title eq '{literal}'", safe="")
+    url = f"{_root(base_url, service)}/{es['name']}?$select={','.join(es['key'])},displayId&$filter={flt}"
+    rows = (client._get(url, token) or {}).get("value", [])
+    return [r.get("displayId") for r in rows if str(r.get(next(iter(es["key"])), "")) != str(uuid)]
+
+
 def upload_file(service: str, es: dict, token: str, uuid: str, name: str, data: bytes,
                 base_url: str | None = None) -> None:
     """PUT a file as the entity's content (a document's attached original)."""
