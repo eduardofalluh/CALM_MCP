@@ -174,6 +174,16 @@ _TYPE_WORDS = {
 _TYPE_BY_WORD = {**{_squash(label): code for code, label in TASK_TYPE_MAP.items()}, **_TYPE_WORDS}
 
 
+# In a list, "task(s)" is the everyday word for every CALM task type, not just
+# "Project Task": an agent asking for a person's overdue "Task"s got 1 of 8.
+_ALL_TASK_WORDS = frozenset({"task", "tasks", "alltask", "alltasks", "all", "any", "anytask"})
+
+
+def means_every_task_type(value: Any) -> bool:
+    """True for "Task" / "tasks" / "all" — in a list, every task type."""
+    return value not in (None, "") and _squash(value) in _ALL_TASK_WORDS
+
+
 def resolve_task_type_code(value: str) -> str:
     """Accept a human label ("User Story"), an everyday name ("Task", "Subtask",
     "Story", "Bug"; singular or plural, any case or separator) or a raw code

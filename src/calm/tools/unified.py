@@ -1205,7 +1205,8 @@ def register(mcp: FastMCP) -> None:
           - "task counts / effort per sprint and per team", "sprint planning",
             any count or effort total over tasks
                 → resource="tasks", operation="list", project_id=X,
-                task_type="Project Task" (optional),
+                task_type="Project Task" (optional; "Task" / no task_type = every
+                task type: Project Task, User Story, Sub-task, Roadmap Task),
                 data={"summarize_by": ["Timebox", "Responsible Team"],
                       "timebox": ["Sprint 1", "Sprint 2", "Sprint 3"]}
                 Returns the finished table (Tasks, Effort per group + totals),
@@ -1338,6 +1339,9 @@ def register(mcp: FastMCP) -> None:
                 resource: its ID, or its display ID (e.g. task "3-60729", test case
                 "8-1-1380" — pass project_id with a task display ID).
             task_type: Optional filter for tasks operation (e.g., "Requirement", "User Story").
+                For "a person's tasks" leave it out, or "Task": every task type (Project
+                Task, User Story, Sub-task, Roadmap Task) counts as a task. "Project Task"
+                keeps only that one type.
             data: Required for "create" and "update" operations - the resource data, as a
                 JSON object (the same object sent as JSON text is also accepted).
                 Keys are snake_case (camelCase and everyday names also work):
@@ -1907,6 +1911,11 @@ def register(mcp: FastMCP) -> None:
                 opts, project_id, task_type = _task_list_options(d, project_id, task_type)
                 if not project_id:
                     raise ValueError("project_id is required for tasks")
+                # "Task" / "tasks" means every task type here (Lutron, 2026-11-09: task_type
+                # "Task" kept only Project Tasks, 1 of the person's 8 overdue tasks).
+                every_type_word = task_type if client.means_every_task_type(task_type) else None
+                if every_type_word:
+                    task_type = None
                 summarize = opts.get("summarize_by") is not None
                 if summarize:
                     client.check_summary_fields(opts["summarize_by"])
@@ -1996,6 +2005,10 @@ def register(mcp: FastMCP) -> None:
                 # Proof nothing was dropped on the way: every task SAP returned was
                 # read, and the answer counts the ones that match, server-side.
                 check: dict = {"Tasks Read": read, "Matched": len(rows)}
+                if every_type_word:
+                    check["Task Types"] = (f"task_type {every_type_word!r} means every task type (Project Task, "
+                                           "User Story, Sub-task, Roadmap Task); task_type='Project Task' for "
+                                           "only those")
                 if others:
                     check["Not Tasks, Not Included"] = dict(sorted(Counter(str(r.get("Type")) for r in others).items()))
                     if search is not None:

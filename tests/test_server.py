@@ -486,9 +486,12 @@ async def main() -> int:
                   res.is_error is not True and missing.get("status") == "invalid_request"
                   and "project_id is required" in missing.get("message", ""), f"got {str(missing)[:160]}")
             res = await _call(session, "tasks", "list", project_id="P001", task_type="Task")
-            check("tasks list takes an everyday type name ('Task')",
-                  res.is_error is not True and [t.get("ID") for t in _list(res)] == ["K1"],
-                  f"got {str(_payload(res))[:160]}")
+            as_task = _payload(res)
+            check("task_type 'Task' means every task type (as with no task_type; the Check says so), "
+                  "not only Project Tasks",
+                  res.is_error is not True and [t.get("ID") for t in as_task.get("Tasks", [])] == ["K1"]
+                  and "every task type" in as_task.get("Check", {}).get("Task Types", ""),
+                  f"got {str(as_task)[:200]}")
             one = _payload(await _call(session, "tasks", "get",
                                        resource_id="0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"))
             check("tasks get by UUID returns one task row",

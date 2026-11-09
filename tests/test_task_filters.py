@@ -334,3 +334,26 @@ def test_workstream_summary_check_still_adds_up(calm):
             _row(2, Workstream="Integration", **{"Workstream ID": "WS004"})]
     out, _ = _list(calm, rows, summarize_by="Workstream")
     assert out["Total Tasks"] == 2 and out["Group Memberships"] == 3 and out["Check"]["Groups Add Up"] is True
+
+
+
+def test_task_type_task_means_every_task_type_not_only_project_tasks(calm):
+    """Lutron 2026-11-09: an agent asked for Nick's overdue tasks with task_type
+    "Task" and got 1 (the Project Task) instead of 8 (Roadmap Tasks, Sub-tasks)."""
+    rows = [_row(1, "In Progress", PAST, "Person Delta", "u-d"),
+            *[_row(10 + i, "Open", PAST, "Person Delta", "u-d", Type="Roadmap Task") for i in range(5)],
+            *[_row(20 + i, "In Progress", PAST, "Person Delta", "u-d", Type="Sub-task") for i in range(2)],
+            _row(30, "Open", PAST, "Person Delta", "u-d", Type="Requirement")]
+    for word in ("Task", "tasks", "TASK", "all"):
+        out, gt = _list(calm, rows, task_type=word, assignee="Person Delta", overdue=True, done=False,
+                        summarize_by="Type")
+        assert out["Total Tasks"] == 8, word  # 1 Project Task + 5 Roadmap Tasks + 2 Sub-tasks
+        assert gt.call_args.kwargs["task_type"] is None  # every type read, not CALMTASK
+        assert "every task type" in out["Check"]["Task Types"]
+        assert out["Check"]["Not Tasks, Not Included"] == {"Requirement": 1}  # still not a task
+    out, gt = _list(calm, rows[:1], task_type="Project Task", assignee="Person Delta", overdue=True,
+                    summarize_by="Type")
+    assert out["Total Tasks"] == 1 and gt.call_args.kwargs["task_type"] == "Project Task"  # asked for by name
+    assert "Task Types" not in out["Check"]
+    from src.calm import client as c
+    assert c.resolve_task_type_code("Task") == "CALMTASK"  # creating a "Task" still makes a Project Task
