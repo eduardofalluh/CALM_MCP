@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import base64
+import json
 import os
+import re
 
 from fastmcp import Context, FastMCP
 
@@ -11,9 +14,58 @@ from src.calm.config import (
     get_auth_url,
     get_base_url,
 )
-from src.calm.dependencies import writes_enabled
+from src.calm.dependencies import get_calm_headers, writes_enabled
 from src.calm.tm_dependencies import tm_configured, tm_writes_enabled
 from src.calm.token_manager import get_managed_token
+
+
+# The service key permissions in the Syntax setup guide, and what each one
+# opens in this MCP — so "does this client's key have everything?" is answered
+# per connection, from the key's own token.
+DOCUMENTED_SCOPES = {
+    "calm-api.projects.read": "list and read projects",
+    "calm-api.projects.write": "create / update projects",
+    "calm-api.tasks.read": "tasks, requirements, user stories, risks, defects and every count over them",
+    "calm-api.tasks.write": "create / update tasks and requirements, their comments and links",
+    "calm-api.documents.read": "read documents",
+    "calm-api.documents.write": "load functional specs / documents into CALM",
+    "calm-api.documents.delete": "delete documents",
+    "calm-api.features.read": "read features",
+    "calm-api.features.write": "create / update features",
+    "calm-api.testcases.read": "read test cases and their steps",
+    "calm-api.testcases.write": "create / update test cases",
+    "calm-api.testcases.delete": "delete test cases",
+    "calm-api.testcases.force-delete": "delete test cases that already have test runs",
+    "calm-api.testplans.read": "SAP's own Test Plans API (not offered on tenants yet; test plans are read from analytics)",
+    "calm-api.tests.read": "test execution results and test plans (from analytics)",
+    "calm-api.analytics.read": "analytics: status breakdowns, test execution and test plans",
+    "calm-api.analytics.providers.read": "the list of analytics data sources",
+    "calm-api.processmanagement.read": "scopes and their solution processes",
+    "calm-api.processmanagement.write": "change scopes",
+    "calm-api.processmanagement.delete": "delete scope items",
+    "calm-api.processauthoring.read": "business and solution processes",
+    "calm-api.processauthoring.write": "create / update processes",
+    "calm-api.processauthoring.delete": "delete processes",
+    "calm-api.demo-tasks.read": "SAP's demo analytics data (not used by the MCP)",
+}
+_SCOPE = re.compile(r"(calm-api\.[a-z0-9.\-]+)$")
+
+
+def _permissions(ctx: Context) -> dict:
+    """The CALM API permissions this connection's key grants (names from its
+    token, never the token), against the documented set."""
+    try:
+        token = get_calm_headers(ctx).token or ""
+    except Exception as exc:  # noqa: BLE001 — a diagnostic reports, never fails
+        return {"status": "unknown", "reason": f"no token for this connection: {str(exc)[:200]}"}
+    try:
+        part = token.split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except Exception:  # noqa: BLE001
+        return {"status": "unknown", "reason": "the token isn't a JWT, so its permissions can't be read from it"}
+    granted = sorted({m.group(1) for s in claims.get("scope", []) if (m := _SCOPE.search(str(s)))})
+    missing = {s: f"without it: {what}" for s, what in DOCUMENTED_SCOPES.items() if s not in granted}
+    return {"granted": granted, "missing": missing, "has_every_documented_permission": not missing}
 
 
 def register(mcp: FastMCP) -> None:
@@ -25,8 +77,11 @@ def register(mcp: FastMCP) -> None:
         URLs, and the raw per-tenant header values received (identity zone, region,
         client id). Use this to verify GenAI Studio is injecting the correct SAP
         Cloud ALM credentials for this connection and that the server resolved the
-        intended tenant — not another one. Does NOT make a live CALM API call and
-        never returns project data; for CALM data use calm_resource.
+        intended tenant — not another one. Also lists the service key's CALM API
+        permissions ("permissions": granted, and each documented one missing with
+        what stops working without it) — use it for "does this key have all the
+        permissions / why is X unavailable". Fetches this connection's token but
+        reads no CALM data; for CALM data use calm_resource.
         """
         token_source = None
         identity_zone = None
@@ -105,6 +160,7 @@ def register(mcp: FastMCP) -> None:
                 else "header/token"
             ),
             "writes_enabled": writes_enabled(),
+            "permissions": _permissions(ctx),
             "auth_url": auth_url,
             "base_url": base_url,
             # Optional BTP Test Management OData connection (tm_* tools).

@@ -16,6 +16,7 @@ import re
 import time
 import uuid
 from datetime import date, datetime, timedelta, timezone
+from collections import Counter
 from itertools import product
 from typing import Any
 from urllib.parse import quote, urljoin, urlparse, urlunparse
@@ -1429,89 +1430,84 @@ def get_test_case(token: str, test_case_id: str, base_url: str | None = None) ->
     return _format_test_case_detail(items[0])
 
 
-_TM_SERVICE_ROOT = "api/calm-testmanagement/v1/"
-
-# Entity-set names per tenant base URL: static per tenant, so the service
-# document is read once per process, not on every test_plans call.
-_TM_ENTITY_SETS: dict[str, list[str]] = {}
-_TM_ENTITY_SETS_MAX = 64  # the key comes from the caller, so bound the memory
-
-# Known plan fields -> the Title-Case names every other read uses; any field not
-# listed is passed through under its CALM name (the plan schema isn't pinned).
-_PLAN_FIELDS = {
-    "uuid": "ID", "id": "ID", "displayId": "Display ID", "title": "Title", "name": "Name",
-    "description": "Description", "projectId": "Project ID", "status": "Status",
-    "statusCode": "Status", "startDate": "Start Date", "endDate": "End Date",
-}
+# Test plans. SAP's Test Plans API answers on no tenant we can reach (live
+# 2026-11-09: the Test Management service has no plan entity set and no other
+# test service exists, even with calm-api.testplans.read granted), so plans are
+# read from CALM's test analytics (provider DP_TESTS): one row per test run (a
+# test case x its tester) x tag, daily snapshot, carrying the plan's name, status
+# and dates and the run's result. A test case assigned to two testers is two runs
+# with their own results (live: Failed + In Progress). Needs
+# calm-api.analytics.read + calm-api.tests.read.
+_NO_PLAN = {"", "(none)"}
 
 
-def _tm_entity_sets(base: str, token: str) -> list[str]:
-    if base not in _TM_ENTITY_SETS:
-        service = _get(f"{base}/{_TM_SERVICE_ROOT}", token)
-        entries = service.get("value", []) if isinstance(service, dict) else []
-        names = [e.get("url") or e.get("name") for e in entries if isinstance(e, dict)]
-        names = [n for n in names if n]
-        if not names:
-            return names  # don't cache an empty/odd answer
-        while len(_TM_ENTITY_SETS) >= _TM_ENTITY_SETS_MAX:
-            _TM_ENTITY_SETS.pop(next(iter(_TM_ENTITY_SETS)))  # drop the oldest
-        _TM_ENTITY_SETS[base] = names
-    return _TM_ENTITY_SETS[base]
+def _snapshot_day(value: Any) -> str | None:
+    text = str(value or "")
+    return f"{text[:4]}-{text[4:6]}-{text[6:8]}" if re.fullmatch(r"\d{8}", text) else (text or None)
 
 
-def _format_plan(item: dict) -> dict:
-    out: dict[str, Any] = {}
-    for k, v in item.items():
-        if k.startswith("@") or isinstance(v, (dict, list)):
+def _plan_rows(token: str, base_url: str | None, project_id: str | None) -> dict:
+    """{(project id, plan name): {"plan": first row, "runs": {(test case id, tester): row},
+    "tags": {test case id: {tag}}}}."""
+    want = _squash(project_id) if project_id else None
+    plans: dict = {}
+    for r in get_analytics(token, provider="DP_TESTS", base_url=base_url):
+        name = r.get("testPlan")
+        if str(name or "").strip().lower() in _NO_PLAN:
             continue
-        out.setdefault(_PLAN_FIELDS.get(k, k), v)
+        if want and want not in (_squash(r.get("projectGUID")), _squash(r.get("project"))):
+            continue
+        entry = plans.setdefault((r.get("projectGUID"), name), {"plan": r, "runs": {}, "tags": {}})
+        entry["runs"].setdefault((r.get("testcaseId"), r.get("testerId")), r)  # a row per tag: count each run once
+        if r.get("tag"):
+            entry["tags"].setdefault(r.get("testcaseId"), set()).add(r["tag"])
+    return plans
+
+
+def _plan_summary(entry: dict) -> dict:
+    plan, runs = entry["plan"], entry["runs"]
+    return {
+        "Test Plan": plan.get("testPlan"), "Project": plan.get("project"), "Project ID": plan.get("projectGUID"),
+        "Status": plan.get("testPlanStatus"), "Start Date": plan.get("testPlanStartDate"),
+        "End Date": plan.get("testPlanEndDate"), "Test Cases": len({case for case, _ in runs}),
+        "Test Runs": len(runs),  # a test case assigned to two testers is two runs
+        "Results": dict(sorted(Counter(str(r.get("status")) for r in runs.values()).items())),
+        "As Of": _snapshot_day(plan.get("Snapshot")),
+    }
+
+
+def get_test_plans(token: str, base_url: str | None = None, project_id: str | None = None) -> list[dict]:
+    """Every test plan (optionally of one project): status, dates, how many test
+    cases and test runs, and the runs' results, as of CALM's last daily analytics
+    snapshot. A plan with no test case assigned has no analytics row, so it isn't
+    listed."""
+    rows = [_plan_summary(e) for e in _plan_rows(token, base_url, project_id).values()]
+    return sorted(rows, key=lambda r: (str(r["Project"]), str(r["Test Plan"])))
+
+
+def get_test_plan(token: str, ident: Any, base_url: str | None = None, project_id: str | None = None) -> dict:
+    """One test plan by name (exact, else a unique partial match) with every test
+    run: the test case, its result and its tester's ID."""
+    plans = _plan_rows(token, base_url, project_id)
+    want = _squash(ident)
+    hits = [e for e in plans.values() if _squash(e["plan"].get("testPlan")) == want] or \
+           [e for e in plans.values() if want and want in _squash(e["plan"].get("testPlan"))]
+    if not hits:
+        raise NotFound(f"No test plan named '{ident}'" + (" in that project" if project_id else "") + ". Test plans: "
+                       + ", ".join(sorted({str(e['plan'].get('testPlan')) for e in plans.values()})[:40]))
+    if len(hits) > 1:
+        raise Ambiguous(f"'{ident}' matches several test plans: "
+                        + "; ".join(f"{e['plan'].get('testPlan')} ({e['plan'].get('project')})" for e in hits[:20])
+                        + ". Give the full name, or project_id.")
+    entry = hits[0]
+    out = _plan_summary(entry)
+    tags = entry["tags"]
+    out["Test Runs List"] = sorted((
+        {"Test Case": c.get("testcaseName"), "Test Case ID": tid, "Tester ID": tester, "Type": c.get("type"),
+         "Result": c.get("status"), "Priority": c.get("priority"), "Process": c.get("process"),
+         "Scope": c.get("scopeName"), "Tags": sorted(tags.get(tid, ()))}
+        for (tid, tester), c in entry["runs"].items()), key=lambda c: (str(c["Result"]), str(c["Test Case"])))
     return out
-
-
-def get_test_plans(
-    token: str, base_url: str | None = None, project_id: str | None = None,
-) -> list[dict] | dict:
-    """List test plans from the Test Management service.
-
-    SAP publishes the scope (calm-api.testplans.read) but no machine-readable
-    entity name we could pin here, so the plan entity set is discovered from the
-    service document (once per tenant). When the tenant's service exposes none, a
-    structured ``unavailable`` result says so instead of failing. ``project_id``
-    is applied client-side; if the plans carry no project field at all, the rows
-    come back unfiltered with a "Warning" saying so.
-    """
-    base = _base_url(base_url)
-    names = _tm_entity_sets(base, token)
-    plan_sets = [n for n in names if "plan" in n.lower()]
-    if not plan_sets:
-        _TM_ENTITY_SETS.pop(base, None)  # re-check next call, e.g. once the scope is granted
-        return {
-            "status": "unavailable",
-            "supported": False,
-            "resource": "test_plans",
-            "message": (
-                "The connected Test Management service exposes no test-plan entity set. "
-                "Test plans need scope calm-api.testplans.read on the service key; if it "
-                "is granted, the tenant's API version does not offer plans yet."
-            ),
-            "available_entity_sets": names,
-        }
-    rows = [
-        _format_plan(item)
-        for item in _get_all(f"{base}/{_TM_SERVICE_ROOT}{plan_sets[0]}", token)
-        if isinstance(item, dict)
-    ]
-    if project_id:
-        if rows and not any("Project ID" in r for r in rows):
-            return {
-                "Warning": (
-                    "These test plans carry no project field, so they could not be "
-                    "filtered by project; all plans are listed."
-                ),
-                "Test Plans": rows,
-            }
-        rows = [r for r in rows if r.get("Project ID") == project_id]
-    return rows
 
 
 def get_timeboxes(project_id: str, token: str, base_url: str | None = None) -> list[dict]:

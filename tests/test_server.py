@@ -235,6 +235,11 @@ def _fake_get(url, *a, **kw):
             {"provider": "DP_TESTS", "date": "2026-10-22", "d1k": "testcaseID", "d1v": "8-1-1380",
              "d2k": "status", "d2v": "Failed", "d3k": "project", "d3v": "P001",
              "m1k": "total", "m1v": 1},
+            # a test case inside a test plan (another project, so the P001 analytics check is unchanged)
+            {"provider": "DP_TESTS", "date": "2026-10-22", "d1k": "testcaseId", "d1v": "TC-7",
+             "d2k": "status", "d2v": "Passed", "d3k": "project", "d3v": "P002", "d4k": "projectGUID",
+             "d4v": "P002", "d5k": "testPlan", "d5v": "SIT Cycle 1", "d6k": "testPlanStatus",
+             "d6v": "In Testing", "m1k": "total", "m1v": 1},
         ]}))
 
     # --- Single-entity GETs used for ETag auto-fetch on update/delete ------
@@ -405,6 +410,10 @@ async def main() -> int:
             check("base_url derived from BTP zone config",
                   health.get("base_url") == "https://test-cloudalm.us10.alm.cloud.sap",
                   f"got {health.get('base_url')}")
+            perms = health.get("permissions") or {}
+            check("calm_health reports the key's permissions (here a non-JWT test token: said so, not guessed)",
+                  perms.get("status") == "unknown" and "JWT" in perms.get("reason", "")
+                  or "has_every_documented_permission" in perms, f"got {perms}")
 
             # ---- Test 3: reads via calm_resource --------------------------
             print("\nTest 3: calm_resource reads round-trip through client.py")
@@ -611,11 +620,10 @@ async def main() -> int:
                   [f.get("ID") for f in feats] == ["F1", "F2"] and feats[0].get("Name") == "User Management",
                   f"got {feats}")
 
-            plans = _payload(await _call(session, "test_plans", "list"))
-            check("test_plans reports unavailable (no plan entity) instead of failing",
-                  isinstance(plans, dict) and plans.get("status") == "unavailable"
-                  and "calm-api.testplans.read" in plans.get("message", ""),
-                  f"got {plans}")
+            plans = _list(await _call(session, "test_plans", "list"))
+            check("test_plans come from test analytics: plan, status, test cases and results",
+                  [(p.get("Test Plan"), p.get("Status"), p.get("Test Cases"), p.get("Results")) for p in plans]
+                  == [("SIT Cycle 1", "In Testing", 1, {"Passed": 1})], f"got {plans}")
 
             runs = _list(await _call(session, "analytics", "list", project_id="P001",
                                      data={"provider": "DP_TESTS"}))

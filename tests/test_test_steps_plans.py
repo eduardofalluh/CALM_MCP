@@ -5,8 +5,9 @@ Covers three additive capabilities, all read-only:
 - ``client.get_test_case`` — one test case with its step tree
   (``toActivities($expand=toActions)``), addressable by UUID or display ID,
   numbered 1.1 / 1.2 … like the CALM UI, rich text flattened to plain text.
-- ``client.get_test_plans`` — plan entity set discovered from the Test
-  Management service document; structured ``unavailable`` when absent.
+- ``client.get_test_plans`` / ``get_test_plan`` — read from CALM's test analytics
+  (DP_TESTS): SAP's Test Plans API answers on no tenant (live 2026-11-09), the
+  analytics rows carry each test case's plan, plan status, dates and result.
 - ``calm_resource`` wiring for both, plus the analytics 403 message naming
   calm-api.tests.read for DP_TESTS.
 
@@ -221,87 +222,72 @@ def test_list_query_unchanged():
 
 
 # --------------------------------------------------------------------------- #
-# client.get_test_plans
+# client.get_test_plans / get_test_plan — from CALM's test analytics
 # --------------------------------------------------------------------------- #
 
-SERVICE_DOC_NO_PLANS = {"value": [
-    {"name": "ManualTestCases", "url": "ManualTestCases"},
-    {"name": "Activities", "url": "Activities"},
-    {"name": "Actions", "url": "Actions"},
-]}
+def _t(pid, pname, plan, pstatus, tid, tname, result, tag=None, tester="t1"):
+    return {"Provider": "DP_TESTS", "Snapshot": "20261108", "projectGUID": pid, "project": pname,
+            "testPlan": plan, "testPlanStatus": pstatus, "testPlanStartDate": "2026-11-01",
+            "testPlanEndDate": None, "testcaseId": tid, "testcaseName": tname, "status": result,
+            "type": "Manual", "priority": "High", "process": "(Not Assigned)", "scopeName": "S1",
+            "tag": tag, "testerId": tester, "Metrics": {"total": "1"}}
 
 
-def test_test_plans_unavailable_when_service_has_no_plan_set():
-    calls = []
-
-    def fake_get(url, token):
-        calls.append(url)
-        return SERVICE_DOC_NO_PLANS
-
-    with patch("src.calm.client._get", fake_get), \
-         patch("src.calm.client._get_all", side_effect=AssertionError("must not page")):
-        out = client.get_test_plans(TOKEN, BASE_URL)
-    assert calls == [f"{BASE_URL}/api/calm-testmanagement/v1/"]
-    assert out["status"] == "unavailable" and out["resource"] == "test_plans"
-    assert "calm-api.testplans.read" in out["message"]
-    assert out["available_entity_sets"] == ["ManualTestCases", "Activities", "Actions"]
-
-
-@pytest.fixture(autouse=True)
-def fresh_entity_set_cache():
-    client._TM_ENTITY_SETS.clear()
-    yield
-    client._TM_ENTITY_SETS.clear()
-
-
-def _plans(doc, rows, **kw):
-    paged = []
-
-    def fake_get_all(url, token):
-        paged.append(url)
-        return rows
-
-    with patch("src.calm.client._get", return_value=doc) as g, \
-         patch("src.calm.client._get_all", fake_get_all):
-        out = client.get_test_plans(TOKEN, BASE_URL, **kw)
-    return out, paged, g
-
-
-PLAN_DOC = {"value": SERVICE_DOC_NO_PLANS["value"] + [{"name": "TestPlans", "url": "TestPlans"}]}
-PLAN_ROWS = [
-    {"@odata.etag": "W/1", "uuid": "tp1", "title": "SIT Cycle 1", "projectId": "p1",
-     "toTestCases": [{"uuid": "x"}], "details": {"a": 1}, "planType": "SIT"},
-    {"uuid": "tp2", "title": "UAT", "projectId": "p2"},
+DP_TESTS_ROWS = [
+    _t("p1", "Project One", "SIT Cycle 1", "In Testing", "tc1", "Login", "Passed", tag="A"),
+    _t("p1", "Project One", "SIT Cycle 1", "In Testing", "tc1", "Login", "Passed", tag="B"),  # same test, 2nd tag
+    _t("p1", "Project One", "SIT Cycle 1", "In Testing", "tc2", "Order", "Failed"),
+    _t("p1", "Project One", "SIT Cycle 1", "In Testing", "tc3", "Invoice", "Initial"),
+    _t("p1", "Project One", "SIT Cycle 1", "In Testing", "tc3", "Invoice", "In Progress", tester="t2"),  # 2nd tester
+    _t("p2", "Project Two", "UAT Cycle 1", "In Preparation", "tc9", "Payroll", "Initial"),
+    _t("p1", "Project One", "(None)", None, "tc7", "Loose test", "Failed"),  # in no plan
 ]
 
 
-def test_test_plans_discovered_and_formatted_like_other_reads():
-    out, paged, _ = _plans(PLAN_DOC, PLAN_ROWS)
-    assert paged[0] == f"{BASE_URL}/api/calm-testmanagement/v1/TestPlans"
-    # Known fields use the Title-Case contract; unknown scalars pass through;
-    # @odata annotations and nested navigation/objects are dropped.
-    assert out[0] == {"ID": "tp1", "Title": "SIT Cycle 1", "Project ID": "p1", "planType": "SIT"}
-    assert len(out) == 2
+def _plans(**kw):
+    with patch("src.calm.client.get_analytics", return_value=DP_TESTS_ROWS) as ga:
+        out = client.get_test_plans(TOKEN, BASE_URL, **kw)
+    ga.assert_called_once_with(TOKEN, provider="DP_TESTS", base_url=BASE_URL)
+    return out
 
 
-def test_test_plans_project_filter_is_exact():
-    out, *_ = _plans(PLAN_DOC, PLAN_ROWS, project_id="p1")
-    assert [p["ID"] for p in out] == ["tp1"]
+def test_test_plans_come_from_test_analytics_each_test_case_counted_once():
+    out = _plans()
+    assert out == [
+        {"Test Plan": "SIT Cycle 1", "Project": "Project One", "Project ID": "p1", "Status": "In Testing",
+         "Start Date": "2026-11-01", "End Date": None, "Test Cases": 3, "Test Runs": 4,
+         "Results": {"Failed": 1, "In Progress": 1, "Initial": 1, "Passed": 1}, "As Of": "2026-11-08"},
+        {"Test Plan": "UAT Cycle 1", "Project": "Project Two", "Project ID": "p2", "Status": "In Preparation",
+         "Start Date": "2026-11-01", "End Date": None, "Test Cases": 1, "Test Runs": 1, "Results": {"Initial": 1},
+         "As Of": "2026-11-08"},
+    ]  # tc1's two tag rows count once; tc3 has two testers = two runs, each result kept; tc7 is in no plan
 
 
-def test_test_plans_without_project_field_say_they_are_unfiltered():
-    out, *_ = _plans(PLAN_DOC, [{"uuid": "tp9", "title": "No project field"}], project_id="p1")
-    assert "Warning" in out and out["Test Plans"] == [{"ID": "tp9", "Title": "No project field"}]
+@pytest.mark.parametrize("project", ["p1", "project one", "Project One"])
+def test_test_plans_project_filter_by_id_or_name(project):
+    assert [p["Test Plan"] for p in _plans(project_id=project)] == ["SIT Cycle 1"]
 
 
-def test_test_plans_service_document_read_once_per_tenant():
-    _, _, g1 = _plans(PLAN_DOC, PLAN_ROWS)
-    _, _, g2 = _plans(PLAN_DOC, PLAN_ROWS)
-    assert g1.call_count == 1 and g2.call_count == 0  # second call served from the cache
+def test_one_test_plan_lists_every_run_with_its_result_and_tags():
+    with patch("src.calm.client.get_analytics", return_value=DP_TESTS_ROWS):
+        out = client.get_test_plan(TOKEN, "sit cycle 1", BASE_URL)
+        partial = client.get_test_plan(TOKEN, "SIT", BASE_URL)
+    assert out == partial and out["Test Cases"] == 3 and out["Test Runs"] == 4
+    assert [(c["Test Case"], c["Tester ID"], c["Result"], c["Tags"]) for c in out["Test Runs List"]] == [
+        ("Order", "t1", "Failed", []), ("Invoice", "t2", "In Progress", []), ("Invoice", "t1", "Initial", []),
+        ("Login", "t1", "Passed", ["A", "B"])]
 
 
-def test_test_plans_propagates_http_errors_to_caller():
-    with patch("src.calm.client._get", side_effect=RuntimeError("HTTP 403 Forbidden")):
+def test_an_unknown_or_ambiguous_test_plan_says_so():
+    with patch("src.calm.client.get_analytics", return_value=DP_TESTS_ROWS):
+        with pytest.raises(client.NotFound, match="SIT Cycle 1, UAT Cycle 1"):
+            client.get_test_plan(TOKEN, "Regression", BASE_URL)
+        with pytest.raises(client.Ambiguous, match="SIT Cycle 1 .*UAT Cycle 1"):
+            client.get_test_plan(TOKEN, "cycle 1", BASE_URL)
+
+
+def test_test_plans_propagate_http_errors_to_caller():
+    with patch("src.calm.client.get_analytics", side_effect=RuntimeError("HTTP 403 Forbidden")):
         with pytest.raises(RuntimeError, match="HTTP 403"):
             client.get_test_plans(TOKEN, BASE_URL)
 
@@ -358,12 +344,20 @@ def test_resource_test_plans_list_routes_with_project():
     m.assert_called_once_with(TOKEN, BASE_URL, project_id="p1")
 
 
+def test_resource_test_plans_get_routes_by_name():
+    with patch("src.calm.client.get_test_plan", return_value={"Test Plan": "SIT"}) as m:
+        out = _fn()(Ctx(), resource="test_plans", operation="get", resource_id="SIT")
+    assert out == {"Test Plan": "SIT"}
+    m.assert_called_once_with(TOKEN, "SIT", BASE_URL, project_id=None)
+
+
 @pytest.mark.parametrize("status", ["HTTP 403", "HTTP 401", "HTTP 404"])
-def test_resource_test_plans_scope_missing_is_structured(status):
+def test_resource_test_plans_missing_access_names_the_scopes_that_matter(status):
     with patch("src.calm.client.get_test_plans", side_effect=RuntimeError(f"{status} denied")):
         out = _fn()(Ctx(), resource="test_plans", operation="list")
     assert out["status"] == "unavailable"
-    assert "calm-api.testplans.read" in out["message"]
+    assert "calm-api.analytics.read" in out["message"] and "calm-api.tests.read" in out["message"]
+    assert "testplans.read" not in out["message"]  # it isn't what SAP checks: plans come from analytics
 
 
 def test_resource_test_plans_server_error_is_not_swallowed():
@@ -372,12 +366,12 @@ def test_resource_test_plans_server_error_is_not_swallowed():
             _fn()(Ctx(), resource="test_plans", operation="list")
 
 
-def test_resource_test_plans_get_returns_one_plan():
-    plans = [{"ID": "p1", "Title": "SIT cycle 1"}, {"ID": "p2", "Title": "UAT"}]
-    with patch("src.calm.client.get_test_plans", return_value=plans):
-        assert _fn()(Ctx(), resource="test_plans", operation="get", resource_id="uat") == plans[1]
+def test_resource_test_plans_get_returns_one_plan_or_says_not_found():
+    with patch("src.calm.client.get_analytics", return_value=DP_TESTS_ROWS):
+        one = _fn()(Ctx(), resource="test_plans", operation="get", resource_id="uat cycle 1")
         missing = _fn()(Ctx(), resource="test_plans", operation="get", resource_id="p9")
-        assert missing["status"] == "not_found" and "No test_plans" in missing["message"]
+    assert one["Test Plan"] == "UAT Cycle 1" and one["Test Runs List"][0]["Test Case"] == "Payroll"
+    assert missing["status"] == "not_found" and "No test plan named 'p9'" in missing["message"]
 
 
 @pytest.mark.parametrize("op", ["create", "update", "delete"])

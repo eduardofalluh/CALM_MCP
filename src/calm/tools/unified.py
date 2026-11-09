@@ -1238,8 +1238,15 @@ def register(mcp: FastMCP) -> None:
           - "test execution status", "passed/failed tests", "test progress"
                 → resource="analytics", data={"provider":"DP_TESTS"}, project_id=X
                 (needs scope calm-api.tests.read on the service key)
-          - "test plans"                        → resource="test_plans", operation="list"
-                (needs scope calm-api.testplans.read)
+          - "test plans", "how is test plan X going", "which tests failed in plan X"
+                → resource="test_plans", operation="list" (project_id optional) or
+                operation="get", resource_id=<plan name>. Each plan: status, dates,
+                "Test Cases", "Test Runs" (a test case assigned to two testers is two
+                runs) and "Results" per run (e.g. Initial / In Progress / Passed /
+                Failed — they add up to Test Runs); get adds every run with its result.
+                Read from SAP Cloud ALM's test analytics, a daily snapshot —
+                say "as of <As Of>". A plan with no test case yet isn't listed.
+                (needs calm-api.analytics.read + calm-api.tests.read)
           - a tester's ACTUAL RESULT on a step is NOT exposed by any SAP Cloud ALM
             public API — say so; it is only visible in the Test Execution app.
           - "readiness %", "status breakdown", "how many tasks done"
@@ -2539,30 +2546,30 @@ def register(mcp: FastMCP) -> None:
                 raise ValueError(f"Unknown operation '{operation}' for test_cases")
 
         elif resource == "test_plans":
-            if operation in ("list", "get"):
-                try:
-                    plans = client.get_test_plans(
-                        h.token, h.base_url, project_id=project_id or d.get("project_id"),
-                    )
-                    if operation == "get":
-                        rows = plans.get("Test Plans", plans) if isinstance(plans, dict) else plans
-                        return _pick_one("test_plans", rows, resource_id)
-                    return plans
-                except RuntimeError as exc:
-                    if _is_not_authorized(exc):
-                        return {
-                            "status": "unavailable",
-                            "supported": False,
-                            "resource": "test_plans",
-                            "message": (
-                                "Reading test plans needs scope calm-api.testplans.read, "
-                                "which the connected service key is not granted. Add it to "
-                                "the key's BTP service instance (authorities) and restart."
-                            ),
-                        }
-                    raise
-            else:
-                raise ValueError(f"Operation '{operation}' not supported for test_plans (use list)")
+            if operation not in ("list", "get"):
+                raise ValueError(f"Operation '{operation}' not supported for test_plans (use list or get)")
+            pid = project_id or d.get("project_id")
+            try:
+                if operation == "get":
+                    if not resource_id:
+                        raise ValueError("resource_id is required for get: the test plan's name")
+                    return client.get_test_plan(h.token, resource_id, h.base_url, project_id=pid)
+                return client.get_test_plans(h.token, h.base_url, project_id=pid)
+            except RuntimeError as exc:
+                if _is_not_authorized(exc):
+                    # Plans come from CALM's test analytics (SAP's Test Plans API answers on
+                    # no tenant), so these are the scopes that matter, not testplans.read.
+                    return {
+                        "status": "unavailable",
+                        "supported": False,
+                        "resource": "test_plans",
+                        "message": (
+                            "Test plans are read from SAP Cloud ALM's test analytics, which this "
+                            "service key can't read: it needs calm-api.analytics.read and "
+                            f"calm-api.tests.read. SAP answered: {str(exc)[:200]}"
+                        ),
+                    }
+                raise
 
         elif resource == "tags":
             tag_alternative = (

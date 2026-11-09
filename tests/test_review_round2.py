@@ -687,33 +687,6 @@ def test_server_tm_credential_still_used_for_its_own_host(tm_env):
     assert same.token == "server-tm-token"
 
 
-def test_entity_set_cache_is_bounded():
-    client._TM_ENTITY_SETS.clear()
-    try:
-        with patch.object(client, "_get", return_value={"value": [{"url": "TestPlans"}]}):
-            for i in range(client._TM_ENTITY_SETS_MAX + 20):
-                client._tm_entity_sets(f"https://t{i}.example.com", "tok")
-        assert len(client._TM_ENTITY_SETS) == client._TM_ENTITY_SETS_MAX
-        assert "https://t0.example.com" not in client._TM_ENTITY_SETS
-    finally:
-        client._TM_ENTITY_SETS.clear()
-
-
-def test_no_plan_set_answer_is_rechecked_next_call():
-    client._TM_ENTITY_SETS.clear()
-    services = iter([{"value": [{"url": "ManualTestCases"}]},
-                     {"value": [{"url": "ManualTestCases"}, {"url": "TestPlans"}]}])
-    try:
-        with patch.object(client, "_get", side_effect=lambda *a: next(services)), \
-             patch.object(client, "_get_all", return_value=[{"uuid": "p", "title": "Plan"}]):
-            first = client.get_test_plans("tok", base_url=BASE)
-            second = client.get_test_plans("tok", base_url=BASE)
-        assert first["status"] == "unavailable"
-        assert second == [{"ID": "p", "Title": "Plan"}]
-    finally:
-        client._TM_ENTITY_SETS.clear()
-
-
 # --------------------------------------------------------------------------- #
 # tasks get — the agent's read-back after a dropped update (trace: 5x "Use
 # operation='list'") now works
