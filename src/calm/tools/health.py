@@ -130,8 +130,19 @@ def register(mcp: FastMCP) -> None:
         except TenantNotConfiguredError as exc:
             auth_url = f"(not configured) {exc}"
 
+        # Who CALM records as the author of changes (a name, never the token).
+        try:
+            person = get_calm_headers(ctx).signed_in_user
+        except Exception:  # noqa: BLE001 — a diagnostic reports, never fails
+            person = None
+        recorded_as = (f"{person} (signed in with their own SAP account: CALM records changes under this person)"
+                       if person else "the connection's technical user (CALM shows \"API\"); comments say "
+                       "\"Added by <person> via AI agent\" when the person is known")
+
         # Mirror token resolution order from dependencies.py
-        if client_id_hdr and client_secret_hdr:
+        if person:
+            token_source = "signed-in user (OAuth)"
+        elif client_id_hdr and client_secret_hdr:
             token_source = "client_credentials (header)"
         elif get_managed_token():
             token_source = "client_credentials"
@@ -160,6 +171,7 @@ def register(mcp: FastMCP) -> None:
                 else "header/token"
             ),
             "writes_enabled": writes_enabled(),
+            "changes_recorded_as": recorded_as,
             "permissions": _permissions(ctx),
             "auth_url": auth_url,
             "base_url": base_url,

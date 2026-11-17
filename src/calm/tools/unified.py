@@ -578,6 +578,23 @@ def _with_not_written(result: Any, not_written: dict) -> Any:
 
 
 _COMMENT_TEXT_KEYS = ("text", "content", "comment", "body", "message", "note")
+
+
+def _added_by(text: str | None, signed_in_user: str | None, acting_email: str | None) -> str | None:
+    """A comment names the person using the agent when CALM can't: on a service-key
+    connection CALM shows the author as "API". With the person's own sign-in
+    (OAuth) CALM shows them as the author already, so nothing is added."""
+    if text is None or signed_in_user or not acting_email:
+        return text
+    who = str(acting_email).strip()
+    parts = re.split(r"[._\-]+", who.split("@")[0])
+    if "@" in who and len(parts) >= 2 and all(p.isalpha() for p in parts):
+        who = " ".join(p.capitalize() for p in parts)  # jane.doe@x.com -> Jane Doe
+    line = f"Added by {who} via AI agent"
+    said = str(text).lower()
+    if who.lower() in said or str(acting_email).strip().lower() in said:
+        return text  # already names the person (e.g. the agent's own attribution comment)
+    return f"{text}<p>{line}</p>" if re.search(r"<[a-zA-Z][^>]*>", str(text)) else f"{text}\n\n{line}"
 # Documents: where the body comes from, what to link it to, and the file to attach.
 _DOC_BODY_KEYS = ("content", "text", "body", "markdown", "html")
 _DOC_TASK_KEYS = ("requirement", "requirements", "task", "tasks", "user_story", "user_stories",
@@ -2935,7 +2952,7 @@ def register(mcp: FastMCP) -> None:
                 return client.create_task_comment(
                     token=h.token,
                     task_id=task_id,
-                    text=text,
+                    text=_added_by(text, h.signed_in_user, acting_email),
                     extra_fields=d.get("extra_fields"),
                     base_url=h.base_url,
                     user_email=acting_email,

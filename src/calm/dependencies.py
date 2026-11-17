@@ -2,6 +2,8 @@
 CALM credential resolution.
 
 Resolution order:
+  0. A person's own SAP sign-in token in Authorization: Bearer (OAuth, e.g. from
+     GenAI Studio) — first, so CALM records that person, not the service key's "API".
   1. Client credentials from request headers — x-calm-client-id + x-calm-client-secret
      (preferred for HTTP/multi-tenant; GenAI Studio injects these per customer).
   2. Server-startup token manager — CALM_CLIENT_ID + CALM_CLIENT_SECRET env vars.
@@ -32,7 +34,9 @@ Cross-tenant safety (fail-closed):
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import json
 import logging
 import os
 
@@ -84,6 +88,22 @@ def _token_from_authorization(value: str | None) -> str | None:
     if scheme.lower() == "bearer" and token:
         return token.strip()
     return raw_token
+
+
+def signed_in_person(token: str | None) -> str | None:
+    """The person a SAP sign-in token was issued to (OAuth, e.g. from GenAI Studio),
+    or None for a service key's token or anything that isn't a SAP user token.
+    Only reads the token's claims; SAP itself checks the token on every call."""
+    try:
+        part = str(token or "").split(".")[1]
+        claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))
+    except Exception:  # noqa: BLE001 — not a JWT: not a person's sign-in
+        return None
+    if (not isinstance(claims, dict) or claims.get("grant_type") in (None, "", "client_credentials")
+            or not claims.get("user_name")):
+        return None
+    name = " ".join(str(claims.get(k) or "").strip() for k in ("given_name", "family_name")).strip()
+    return name or claims.get("email") or str(claims["user_name"])
 
 
 def get_calm_headers(ctx: Context) -> CALMHeaders:
@@ -165,8 +185,17 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
         except TenantNotConfiguredError as exc:
             tenant_error = exc
 
+    # --- 0. The signed-in person's own SAP token (OAuth) ---
+    # SAP then records that person (history, comment author, creator) instead of
+    # the service key's technical user ("API"), so it goes before any service key.
+    # Any other Authorization header keeps its place (step 3).
+    if signed_in_person(auth_bearer_token):
+        log.info("CALM auth path=SIGNED-IN USER (OAuth) base_url=%s", base_url)
+        token = auth_bearer_token
+        token_source = "signed-in user (OAuth)"
+
     # --- 1. Client credentials from request headers (per-tenant OAuth) ---
-    if has_header_creds:
+    if not token and has_header_creds:
         if auth_url_hdr:
             auth_url = auth_url_hdr
         elif identity_zone or region_zone:
@@ -257,4 +286,5 @@ def get_calm_headers(ctx: Context) -> CALMHeaders:
     if not user_email:
         user_email = os.getenv("CALM_USER_EMAIL")
 
-    return CALMHeaders(token=token, base_url=base_url, token_source=token_source, user_email=user_email)
+    return CALMHeaders(token=token, base_url=base_url, token_source=token_source, user_email=user_email,
+                       signed_in_user=signed_in_person(token))

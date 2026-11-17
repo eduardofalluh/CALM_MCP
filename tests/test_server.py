@@ -724,6 +724,11 @@ async def main() -> int:
             check("a comment sent as data.content is posted with its words",
                   res.is_error is not True and _payload(res).get("text") == "Created via Project Agent by A. Person.",
                   f"got {_payload(res)}")
+            res = await _call(session, "task_comments", "create", resource_id="T1",
+                              data={"text": "Reviewed."}, user_email="jane.doe@example.com")
+            check("on a service-key connection a comment names the person using the agent (CALM shows \"API\")",
+                  res.is_error is not True
+                  and _payload(res).get("text") == "Reviewed.\n\nAdded by Jane Doe via AI agent", f"got {_payload(res)}")
 
             res = await _call(session, "business_processes", "create", project_id="P001",
                               data={"name": "New BP", "description": "d"})

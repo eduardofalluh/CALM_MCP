@@ -8,3 +8,4 @@ class CALMHeaders(BaseModel):
     base_url: str
     token_source: str | None = None
     user_email: str | None = None  # User email for audit logging
+    signed_in_user: str | None = None  # the person whose own SAP sign-in this is (OAuth); CALM records them
