@@ -60,74 +60,106 @@ def get_protected_resource_metadata(base_url: str | None = None) -> dict:
     }
 
 
-def get_authorization_server_metadata(auth_url: str) -> dict:
-    """Return OAuth 2.0 Authorization Server Metadata (RFC 8414).
+def get_authorization_server_metadata(auth_url: str, issuer: str | None = None) -> dict:
+    """Return OAuth 2.0 Authorization Server Metadata (RFC 8414) for the tenant's SAP login.
 
-    This describes the CALM OAuth server's capabilities and endpoints.
-    MCP clients fetch this after discovering the authorization server from
-    the Protected Resource Metadata.
-
-    Args:
-        auth_url: CALM auth server base URL
-                  (e.g. https://my-tenant.authentication.eu10.hana.ondemand.com)
-
-    Returns:
-        Authorization Server Metadata per RFC 8414
+    Only what SAP's login service (XSUAA) really does, read from its own
+    /.well-known/openid-configuration: no client registration, so a client
+    (Claude, GenAI Studio) signs in with the CALM API key's client ID + secret;
+    no scope list, because asking for "openid" alone would leave the token
+    without its CALM API permissions. ``issuer`` is this MCP server when it
+    serves the document for its sign-in (Claude reads it from there).
     """
     base = auth_url.rstrip("/")
-
     return {
-        # Required fields per RFC 8414
-        "issuer": base,
+        "issuer": issuer or base,
         "authorization_endpoint": f"{base}/oauth/authorize",
         "token_endpoint": f"{base}/oauth/token",
-
-        # Supported grant types
-        "grant_types_supported": [
-            "authorization_code",
-            "refresh_token",
-            "client_credentials",  # For service accounts
-        ],
-
-        # Response types supported
         "response_types_supported": ["code"],
-
-        # PKCE support (required by MCP spec)
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
-
-        # Token endpoint auth methods
-        "token_endpoint_auth_methods_supported": [
-            "client_secret_basic",
-            "client_secret_post",
-            "none",  # For public clients using PKCE
-        ],
-
-        # Scopes (minimal set - additional scopes requested via step-up)
-        "scopes_supported": [
-            "openid",
-        ],
-
-        # Optional: Refresh token support
-        # SAP Cloud ALM DOES support refresh tokens
-        "refresh_token_rotation_supported": True,
-
-        # Optional: RFC 9207 - Authorization Response Issuer Identification
-        # Indicates that authorization responses include the "iss" parameter
-        "authorization_response_iss_parameter_supported": True,
-
-        # Optional: RFC 8707 - Resource Indicators support
-        "resource_parameter_supported": True,
-
-        # Optional: Metadata endpoints
-        "revocation_endpoint": f"{base}/oauth/revoke",
-        "introspection_endpoint": f"{base}/oauth/introspect",
-
-        # Optional: Discovery endpoint
-        "jwks_uri": f"{base}/oauth/token_keys",
-
-        # Optional: UI locales supported
-        "ui_locales_supported": ["en", "de", "fr", "es", "pt", "ja", "zh"],
+        "token_endpoint_auth_methods_supported": ["client_secret_basic", "client_secret_post"],
     }
+
+
+def public_mcp_url(headers: dict) -> str:
+    """This server's MCP address as clients use it: MCP_PUBLIC_URL, else the request's host."""
+    explicit = os.getenv("MCP_PUBLIC_URL", "").strip().rstrip("/")
+    if explicit:
+        return explicit
+    host = (headers.get("x-forwarded-host") or headers.get("host") or "localhost").split(",")[0].strip()
+    local = host.split(":")[0] in ("localhost", "127.0.0.1", "[::1]")
+    proto = (headers.get("x-forwarded-proto") or ("http" if local else "https")).split(",")[0].strip()
+    return f"{proto}://{host}/mcp"
+
+
+def issuer_for(mcp_url: str) -> str:
+    """The base the sign-in metadata lives under: the MCP address without its /mcp."""
+    return mcp_url[: -len("/mcp")] if mcp_url.endswith("/mcp") else mcp_url
+
+
+def connector_metadata(mcp_url: str) -> dict:
+    """RFC 9728 metadata as Claude needs it: ``resource`` is exactly the MCP address
+    and the authorization server is this server, which describes the SAP login."""
+    return {
+        "resource": mcp_url,
+        "authorization_servers": [issuer_for(mcp_url)],
+        "bearer_methods_supported": ["header"],
+        "resource_documentation": "https://help.sap.com/docs/cloud-alm-api",
+    }
+
+
+def has_credential(headers: dict) -> bool:
+    """Whether a request can reach CALM without signing in (same order as dependencies)."""
+    if headers.get("authorization"):
+        return True
+    if headers.get("x-calm-client-id") and headers.get("x-calm-client-secret"):
+        return True
+    if os.getenv("CALM_MULTI_TENANT", "").strip().lower() in ("1", "true", "yes", "on"):
+        return False  # a shared pod never falls back to its own credential
+    return bool(os.getenv("CALM_TOKEN") or (os.getenv("CALM_CLIENT_ID") and os.getenv("CALM_CLIENT_SECRET")))
+
+
+class OAuthMiddleware:
+    """HTTP mode: serves the sign-in metadata, and answers an MCP request that has no
+    credential at all with 401 + where to sign in (Claude only starts the SAP login
+    on a 401). A request with any credential, or a server with its own, is untouched."""
+
+    def __init__(self, app) -> None:
+        self.app = app
+
+    async def __call__(self, scope, receive, send) -> None:
+        if scope["type"] == "http":
+            response = self._answer(scope)
+            if response is not None:
+                await response(scope, receive, send)
+                return
+        await self.app(scope, receive, send)
+
+    @staticmethod
+    def _answer(scope):
+        from starlette.responses import JSONResponse
+
+        from src.calm.config import TenantNotConfiguredError, get_auth_base_url
+
+        path = scope.get("path", "")
+        headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        if path.startswith("/.well-known/oauth-protected-resource"):
+            return JSONResponse(connector_metadata(public_mcp_url(headers)))
+        if path.startswith(("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")):
+            try:
+                auth_url = get_auth_base_url()
+            except TenantNotConfiguredError as exc:
+                return JSONResponse({"error": "tenant_not_configured", "error_description": str(exc)}, status_code=503)
+            return JSONResponse(get_authorization_server_metadata(auth_url, issuer_for(public_mcp_url(headers))))
+        if path.rstrip("/") == "/mcp" and scope.get("method") != "OPTIONS" and not has_credential(headers):
+            where = f"{issuer_for(public_mcp_url(headers))}/.well-known/oauth-protected-resource"
+            return JSONResponse(
+                {"error": "invalid_token", "error_description": "Sign in to SAP Cloud ALM to use this connector."},
+                status_code=401,
+                headers={"WWW-Authenticate": f'Bearer resource_metadata="{where}"'},
+            )
+        return None
 
 
 def build_www_authenticate_header(
