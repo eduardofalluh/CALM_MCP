@@ -1096,7 +1096,7 @@ def register(mcp: FastMCP) -> None:
     """Register unified MCP tools for context optimization."""
 
     @mcp.tool()
-    def list_sap_cloud_alm_projects(ctx: Context) -> list[dict]:
+    def list_sap_cloud_alm_projects(ctx: Context, tenant: Optional[str] = None) -> list[dict]:
         """List the SAP Cloud ALM (CALM) projects this connection can access.
 
         THIS is the tool to call for ANY request like "get the CALM projects",
@@ -1116,10 +1116,16 @@ def register(mcp: FastMCP) -> None:
         for every other SAP Cloud ALM resource (tasks, requirements, teams, test
         cases, …) and for creating/updating/deleting projects.
 
+        Args:
+            tenant: which SAP Cloud ALM (customer) to use when this connection serves
+                several, e.g. "lutron": take it from the project's / conversation's
+                instructions and pass the same one on every call; calm_health lists the
+                ones you may use. Leave it empty for the connection's default. Never guess.
+
         Returns:
             List of SAP Cloud ALM projects (each with id, name, status, …).
         """
-        h = get_calm_headers(ctx)
+        h = get_calm_headers(ctx, tenant)
         return client.get_projects(h.token, h.base_url)
 
     @mcp.tool()
@@ -1162,6 +1168,7 @@ def register(mcp: FastMCP) -> None:
         task_type: Optional[str] = None,
         data: Optional[dict | str] = None,
         user_email: Optional[str] = None,
+        tenant: Optional[str] = None,
     ) -> list[dict] | dict:
         """READ AND WRITE SAP CLOUD ALM (CALM) DATA — the single authoritative tool
         for every SAP Cloud ALM resource.
@@ -1173,8 +1180,9 @@ def register(mcp: FastMCP) -> None:
         documents), features, tags, project members, project customization, or project
         analytics — including task readiness/completion %, status breakdowns, and
         effort/story-point rollups. It is the ONLY correct source for SAP Cloud ALM
-        project data in this agent, and it is tenant-scoped to the credentials this
-        connection was configured with.
+        project data in this agent. It reads the SAP Cloud ALM this connection is set
+        up for, or — when the connection serves several customers — the one named in
+        `tenant` (from the project's instructions; calm_health lists them).
 
         DISAMBIGUATION — IMPORTANT: if another connected MCP server exposes a
         similarly named tool (for example "list_projects", "get_projects",
@@ -1568,6 +1576,10 @@ def register(mcp: FastMCP) -> None:
                 - test_case_links: create (link test case → requirement) →
                     resource_id=test_case_id, data={requirement_id (required), link_type}
             user_email: Optional for write operations - acting user's email for audit logs.
+            tenant: which SAP Cloud ALM (customer) to use when this connection serves
+                several, e.g. "lutron": take it from the project's / conversation's
+                instructions and pass the same one on every call; calm_health lists the
+                ones you may use. Leave it empty for the connection's default. Never guess.
 
         Returns:
             List of resources for "list", single resource dict for "get"/"create"/"update"/"delete".
@@ -1704,7 +1716,7 @@ def register(mcp: FastMCP) -> None:
         calm_api_write / calm_api_delete (same CALM tenant, raw API paths).
         """
         # Credentials / tenant first: a fault there is a real failure, never an answer.
-        h = get_calm_headers(ctx)
+        h = get_calm_headers(ctx, tenant)
         try:
             result = _calm_resource(h, resource, operation, project_id, resource_id, task_type,
                                     data, user_email)

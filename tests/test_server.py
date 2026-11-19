@@ -102,6 +102,9 @@ _DOC = {"uuid": "0b1c2d3e-4f50-4a61-8b72-9c83d4e5f601", "displayId": "7-101",
 
 
 def _fake_get(url, *a, **kw):
+    # --- A second SAP Cloud ALM picked with `tenant` (CALM_TENANT_ACME_*) ----
+    if "acme-cloudalm.us10.alm.cloud.sap" in url:
+        return _FakeResp(json.dumps([{"id": "A001", "name": "Acme Project", "status": "O", "purpose": "Build"}]))
     # --- OData $metadata (Documents / Test Management schemas) --------------
     if url.endswith("/$metadata"):
         if "calm-documents" in url or "calm-testmanagement" in url:
@@ -280,8 +283,19 @@ def _fake_request(method, url, *a, **kw):
     return _FakeResp(json.dumps(body))
 
 
+_real_post = requests.post
+
+
+def _fake_post(url, *a, **kw):
+    # The token for a tenant's own key (client credentials at its SAP login).
+    if url.endswith("/oauth/token"):
+        return _FakeResp(json.dumps({"access_token": "fake-tenant-token", "expires_in": 3600}))
+    return _real_post(url, *a, **kw)
+
+
 requests.get = _fake_get
 requests.request = _fake_request
+requests.post = _fake_post
 ''' % {"payload": FAKE_PROJECTS_PAYLOAD}
 
 
@@ -932,6 +946,40 @@ async def main() -> int:
             text = res.content[0].text if res.content else ""
             check("get_calm_oauth_endpoints refuses without a tenant",
                   res.is_error is True and "IDENTITY_ZONE" in text, f"got {text[:200]}")
+
+    # ================= Several tenants on one connection (`tenant`) =================
+    acme_env = {"CALM_TENANT_ACME_IDENTITY_ZONE": "acme-cloudalm", "CALM_TENANT_ACME_REGION_ZONE": "us10",
+                "CALM_TENANT_ACME_CLIENT_ID": "acme-test-id", "CALM_TENANT_ACME_CLIENT_SECRET": "acme-test-value"}
+    async with stdio_client(_make_params(shim_dir, acme_env)) as (read, write):
+        async with ClientSession(read, write) as session:
+            await session.initialize()
+
+            print("\nTest 9: one connection, the SAP Cloud ALM picked per call with tenant")
+            tools = {t.name: t for t in (await session.list_tools()).tools}
+            for name in ("calm_resource", "list_sap_cloud_alm_projects", "calm_api_read", "calm_health"):
+                t = tools[name]
+                props = (getattr(t, "inputSchema", None) or getattr(t, "input_schema", None) or {}).get("properties", {})
+                check(f"{name} takes tenant", "tenant" in props, f"props={sorted(props)}")
+            health = _payload(await session.call_tool("calm_health", {}))
+            check("calm_health lists the tenants", health.get("tenants") == ["acme"], f"got {health.get('tenants')}")
+            health = _payload(await session.call_tool("calm_health", {"tenant": "acme"}))
+            check("calm_health checks a tenant",
+                  health.get("base_url") == "https://acme-cloudalm.us10.alm.cloud.sap"
+                  and health.get("token_source") == "client_credentials (tenant acme)", f"got {health}")
+            res = await session.call_tool("list_sap_cloud_alm_projects", {"tenant": "Acme"})
+            text = json.dumps(_payload(res))
+            check("projects come from the named tenant", "Acme Project" in text and "Test Project A" not in text,
+                  f"got {text[:200]}")
+            text = json.dumps(_payload(await _call(session, "projects", "list", tenant="acme")))
+            check("calm_resource reads the named tenant", "Acme Project" in text, f"got {text[:200]}")
+            text = json.dumps(_payload(await _call(session, "projects", "list")))
+            check("no tenant: the connection's default", "Test Project A" in text and "Acme" not in text,
+                  f"got {text[:200]}")
+            res = await _call(session, "projects", "list", tenant="nope")
+            text = res.content[0].text if res.content else ""
+            check("an unknown tenant is refused, naming the ones there are",
+                  res.is_error is True and 'No SAP Cloud ALM called "nope"' in text and "acme" in text,
+                  f"got {text[:200]}")
 
     # ================= Summary =================
     print("\n" + "=" * 70)

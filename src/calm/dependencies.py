@@ -17,6 +17,11 @@ Base URL resolution order:
   x-calm-base-url header > zone headers > env vars.
   There is no built-in tenant: if none of these supply one, TenantNotConfiguredError.
 
+Several tenants on one connection (``tenant`` on the tools, see tenants.py):
+  a named tenant is opened with its own server-configured key; on the HTTP server
+  only for a person whose SAP sign-in this server verified and who is on that
+  tenant's list (their own token when they signed in to that very tenant).
+
 Cross-tenant safety (fail-closed):
   The server env credential (CALM_CLIENT_ID/SECRET) belongs to ONE tenant. In a
   shared multi-tenant pod (e.g. GenAI Studio), falling back to it for a request
@@ -42,6 +47,7 @@ import os
 
 from fastmcp import Context
 
+from . import tenants
 from .config import TenantNotConfiguredError, build_auth_url, build_base_url, get_auth_url, get_base_url
 from .models import CALMHeaders
 from .token_manager import get_managed_token, get_or_create_token_manager
@@ -106,7 +112,78 @@ def signed_in_person(token: str | None) -> str | None:
     return name or claims.get("email") or str(claims["user_name"])
 
 
-def get_calm_headers(ctx: Context) -> CALMHeaders:
+def _request(ctx: Context):
+    try:
+        return ctx.request_context.request
+    except Exception:  # noqa: BLE001 — no request: a local (stdio) MCP
+        return None
+
+
+def tenant_names(ctx: Context) -> list[str]:
+    """The tenants this caller may pick with ``tenant`` (every one on a local MCP)."""
+    everyone = tenants.configured()
+    request = _request(ctx)
+    if request is None:
+        return sorted(everyone)
+    person = tenants.verified_person(_token_from_authorization(request.headers.get("Authorization")))
+    return sorted(n for n, t in everyone.items() if person and tenants.allows(t, person))
+
+
+def _tenant_headers(ctx: Context, name: str) -> CALMHeaders:
+    """Credentials for the tenant the caller named (see tenants.py)."""
+    request = _request(ctx)
+    hdrs = request.headers if request is not None else {}
+    bearer = _token_from_authorization(hdrs.get("Authorization"))
+    everyone = list(tenants.configured().values())
+    person = None
+    if request is None:  # a local MCP: the user's own machine and configuration
+        choices = everyone
+    else:
+        person = tenants.verified_person(bearer)
+        if person is None:
+            zone_hdr = (hdrs.get("x-calm-identity-zone") or "").strip()
+            if zone_hdr:  # a connection set up for one tenant (GenAI Studio headers): that one only
+                named = tenants.find(name, everyone)
+                if tenants.norm(zone_hdr) in (tenants.norm(name), tenants.norm(named.identity_zone if named else "")):
+                    return get_calm_headers(ctx)
+                raise ValueError(
+                    f'This connection is set up for the SAP Cloud ALM "{zone_hdr}" only, so it can\'t open '
+                    f'tenant "{name}". Leave tenant empty, or use the connection for that tenant.')
+            raise ValueError(
+                f'Choosing a SAP Cloud ALM (tenant "{name}") needs your own SAP sign-in on this connection, '
+                "so the server knows who is asking. Connect / sign in to the SAP Cloud ALM connector, "
+                "or leave tenant empty to use the connection's default.")
+        choices = [t for t in everyone if tenants.allows(t, person)]
+    entry = tenants.find(name, choices)
+    if entry is None:
+        exists = person is not None and tenants.find(name, everyone)
+        if exists:
+            raise ValueError(
+                f'You are not on the list of people who may use the SAP Cloud ALM "{exists.name}". '
+                f"Ask the MCP's administrator to add you (CALM_TENANT_{exists.name.upper()}_ALLOWED_USERS).")
+        raise ValueError(
+            f'No SAP Cloud ALM called "{name}". Tenants you can use: '
+            f'{", ".join(t.name for t in choices) or "none"}. Leave tenant empty for the connection\'s default.')
+    if entry.missing:
+        raise ValueError(f'The SAP Cloud ALM "{entry.name}" is not fully set up on the server: '
+                         f'{", ".join(entry.missing)} not set.')
+    if person is not None and person.get("iss") == entry.auth_url:
+        # They signed in to this very tenant: their own token, so CALM records them.
+        token, source = bearer, f"signed-in user (OAuth), tenant {entry.name}"
+    else:
+        token = get_or_create_token_manager(entry.client_id, entry.client_secret, entry.auth_url).get_token()
+        source = f"client_credentials (tenant {entry.name})"
+    log.info("CALM auth path=TENANT %s caller=%s source=%s base_url=%s",
+             entry.name, "verified person" if person else "local", source, entry.base_url)
+    email = (tenants.person_email(person) if person else None) or hdrs.get("x-user-email") \
+        or os.getenv("CALM_USER_EMAIL")
+    return CALMHeaders(token=token, base_url=entry.base_url, token_source=source, user_email=email,
+                       signed_in_user=signed_in_person(token))
+
+
+def get_calm_headers(ctx: Context, tenant: str | None = None) -> CALMHeaders:
+    if tenant is not None and str(tenant).strip():
+        return _tenant_headers(ctx, str(tenant).strip())
     token: str | None = None
     base_url: str | None = None
     token_source: str | None = None

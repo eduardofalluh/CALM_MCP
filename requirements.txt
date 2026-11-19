@@ -2,6 +2,8 @@ fastmcp>=2.12.0
 requests>=2.31.0
 # Imported directly by src/calm/http_retry.py (also pulled in by requests).
 urllib3>=2.0.0
+# Verifies a person's SAP sign-in token before a named tenant is opened (src/calm/tenants.py).
+PyJWT[crypto]>=2.8.0
 python-dotenv>=1.0.0
 # TOON (Token-Oriented Object Notation) encoder for token-efficient tool output.
 # Pinned to a working commit — PyPI 0.1.0 is a non-functional stub.

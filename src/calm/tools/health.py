@@ -14,7 +14,7 @@ from src.calm.config import (
     get_auth_url,
     get_base_url,
 )
-from src.calm.dependencies import get_calm_headers, writes_enabled
+from src.calm.dependencies import get_calm_headers, tenant_names, writes_enabled
 from src.calm.tm_dependencies import tm_configured, tm_writes_enabled
 from src.calm.token_manager import get_managed_token
 
@@ -51,11 +51,18 @@ DOCUMENTED_SCOPES = {
 _SCOPE = re.compile(r"(calm-api\.[a-z0-9.\-]+)$")
 
 
-def _permissions(ctx: Context) -> dict:
+def _recorded_as(person: str | None) -> str:
+    """Who CALM records as the author of changes (a name, never the token)."""
+    return (f"{person} (signed in with their own SAP account: CALM records changes under this person)"
+            if person else "the connection's technical user (CALM shows \"API\"); comments say "
+            "\"Added by <person> via AI agent\" when the person is known")
+
+
+def _permissions(ctx: Context, tenant: str | None = None) -> dict:
     """The CALM API permissions this connection's key grants (names from its
     token, never the token), against the documented set."""
     try:
-        token = get_calm_headers(ctx).token or ""
+        token = get_calm_headers(ctx, tenant).token or ""
     except Exception as exc:  # noqa: BLE001 — a diagnostic reports, never fails
         return {"status": "unknown", "reason": f"no token for this connection: {str(exc)[:200]}"}
     try:
@@ -71,7 +78,7 @@ def _permissions(ctx: Context) -> dict:
 def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
-    def calm_health(ctx: Context) -> dict:
+    def calm_health(ctx: Context, tenant: str | None = None) -> dict:
         """SAP Cloud ALM (CALM) connection diagnostic. Confirms THIS SAP Cloud ALM
         MCP server is up and reports token status, the resolved tenant OAuth/API
         URLs, and the raw per-tenant header values received (identity zone, region,
@@ -82,7 +89,19 @@ def register(mcp: FastMCP) -> None:
         what stops working without it) — use it for "does this key have all the
         permissions / why is X unavailable". Fetches this connection's token but
         reads no CALM data; for CALM data use calm_resource.
+
+        "tenants" lists the SAP Cloud ALMs (customers) you may pick with the
+        `tenant` argument of the other tools; pass `tenant` here to check that one.
         """
+        if tenant and str(tenant).strip():
+            answer = {"server": "sap-cloud-alm", "tenant": str(tenant).strip(), "tenants": tenant_names(ctx)}
+            try:
+                h = get_calm_headers(ctx, tenant)
+            except Exception as exc:  # noqa: BLE001 — a diagnostic reports, never fails
+                return {**answer, "token_configured": False, "error": str(exc)[:500]}
+            return {**answer, "token_configured": True, "token_source": h.token_source,
+                    "writes_enabled": writes_enabled(), "changes_recorded_as": _recorded_as(h.signed_in_user),
+                    "permissions": _permissions(ctx, tenant), "base_url": h.base_url}
         token_source = None
         identity_zone = None
         region_zone = None
@@ -135,9 +154,7 @@ def register(mcp: FastMCP) -> None:
             person = get_calm_headers(ctx).signed_in_user
         except Exception:  # noqa: BLE001 — a diagnostic reports, never fails
             person = None
-        recorded_as = (f"{person} (signed in with their own SAP account: CALM records changes under this person)"
-                       if person else "the connection's technical user (CALM shows \"API\"); comments say "
-                       "\"Added by <person> via AI agent\" when the person is known")
+        recorded_as = _recorded_as(person)
 
         # Mirror token resolution order from dependencies.py
         if person:
@@ -175,6 +192,7 @@ def register(mcp: FastMCP) -> None:
             "permissions": _permissions(ctx),
             "auth_url": auth_url,
             "base_url": base_url,
+            "tenants": tenant_names(ctx),
             # Optional BTP Test Management OData connection (tm_* tools).
             "tm_odata": {
                 "configured": tm_configured(ctx),

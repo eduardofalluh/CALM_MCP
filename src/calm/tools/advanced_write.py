@@ -45,7 +45,7 @@ def _unsupported_option(exc: Exception, params: dict | None) -> str | None:
 def register(mcp: FastMCP) -> None:
 
     @mcp.tool()
-    def calm_api_read(path: str, ctx: Context, params: dict | None = None) -> Any:
+    def calm_api_read(path: str, ctx: Context, params: dict | None = None, tenant: str | None = None) -> Any:
         """SAP Cloud ALM (CALM) low-level GET — raw read for any SAP Cloud ALM API
         path on THIS tenant. Read-only, always available (NOT gated by
         CALM_ENABLE_WRITES).
@@ -72,13 +72,17 @@ def register(mcp: FastMCP) -> None:
             params: optional query parameters, e.g. {"projectId": "<uuid>"}. OData
                 options ($top, $skip, $select, $orderby) work on OData services only;
                 where SAP doesn't support one it is left out and the answer says so.
+            tenant: which SAP Cloud ALM (customer) to use when this connection serves
+                several, e.g. "lutron": take it from the project's / conversation's
+                instructions and pass the same one on every call; calm_health lists the
+                ones you may use. Leave it empty for the connection's default. Never guess.
 
         Returns the parsed JSON response. A read SAP refuses (400 / 403 / 404) comes
         back as {"status": ..., "message": ...} instead of an error.
         """
         if not path:
             raise ValueError("path is required")
-        h = get_calm_headers(ctx)
+        h = get_calm_headers(ctx, tenant)
         ignored: list[str] = []
         try:
             while True:
@@ -126,6 +130,7 @@ def register(mcp: FastMCP) -> None:
         ctx: Context,
         body: dict | list | None = None,
         if_match: str | None = None,
+        tenant: str | None = None,
     ) -> dict:
         """SAP Cloud ALM (CALM) low-level POST/PATCH — raw write to any SAP Cloud ALM
         API path on THIS tenant. Requires CALM_ENABLE_WRITES=true.
@@ -143,6 +148,10 @@ def register(mcp: FastMCP) -> None:
             if_match: ETag for services that require it (Process Authoring, Test
                 Management PATCH/DELETE, Projects PATCH). Not auto-fetched here —
                 pass it explicitly when needed, or use the dedicated typed tool.
+            tenant: which SAP Cloud ALM (customer) to use when this connection serves
+                several, e.g. "lutron": take it from the project's / conversation's
+                instructions and pass the same one on every call; calm_health lists the
+                ones you may use. Leave it empty for the connection's default. Never guess.
 
         Returns the parsed response, or a small acknowledgement if the API returns
         no body.
@@ -153,14 +162,14 @@ def register(mcp: FastMCP) -> None:
             raise ValueError('method must be "POST" or "PATCH"')
         if not path:
             raise ValueError("path is required")
-        h = get_calm_headers(ctx)
+        h = get_calm_headers(ctx, tenant)
         return client.api_write(
             token=h.token, method=method_up, path=path, body=body,
             if_match=if_match, base_url=h.base_url, user_email=h.user_email,
         )
 
     @mcp.tool()
-    def calm_api_delete(path: str, ctx: Context, if_match: str | None = None) -> dict:
+    def calm_api_delete(path: str, ctx: Context, if_match: str | None = None, tenant: str | None = None) -> dict:
         """SAP Cloud ALM (CALM) low-level DELETE — raw delete for any SAP Cloud ALM
         API path on THIS tenant. Requires CALM_ENABLE_WRITES=true. Use this ESCAPE
         HATCH only for SAP Cloud ALM endpoints that calm_resource does not cover;
@@ -169,9 +178,13 @@ def register(mcp: FastMCP) -> None:
         Args:
             path: API-relative path, e.g. "api/calm-tasks/v1/workstreams/{id}".
             if_match: ETag for services that require it (pass explicitly when needed).
+            tenant: which SAP Cloud ALM (customer) to use when this connection serves
+                several, e.g. "lutron": take it from the project's / conversation's
+                instructions and pass the same one on every call; calm_health lists the
+                ones you may use. Leave it empty for the connection's default. Never guess.
         """
         ensure_writes_enabled()
         if not path:
             raise ValueError("path is required")
-        h = get_calm_headers(ctx)
+        h = get_calm_headers(ctx, tenant)
         return client.api_delete(token=h.token, path=path, if_match=if_match, base_url=h.base_url, user_email=h.user_email)

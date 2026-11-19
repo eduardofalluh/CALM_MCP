@@ -417,6 +417,24 @@ Each tool is ~10 lines. To add an "incidents" endpoint:
 
 ## Switching client tenants
 
+**Several customers on one connection (`tenant`):** configure each customer's SAP Cloud ALM on the server and let
+each conversation / project name the one it means — `calm_resource(..., tenant="lutron")` (also on
+`list_sap_cloud_alm_projects`, `calm_api_*` and `calm_health`, which lists the tenants you may use). Leave `tenant`
+empty for the connection's default.
+
+```bash
+CALM_TENANT_LUTRON_IDENTITY_ZONE=<identity zone>
+CALM_TENANT_LUTRON_REGION_ZONE=<region, e.g. us10>
+CALM_TENANT_LUTRON_CLIENT_ID=<that tenant's CALM API client id>
+CALM_TENANT_LUTRON_CLIENT_SECRET=<its secret — a deployment secret, never in code>
+CALM_TENANT_LUTRON_ALLOWED_USERS=first.last@syntax.com, @syntax.com   # emails and/or @domains; empty = nobody
+```
+
+On the HTTP server a tenant is only opened for a person signed in to the connector (their SAP token is verified by
+the server: signature, issuer, expiry) who is on its `ALLOWED_USERS`. Changes there are made with that tenant's
+key, so CALM shows "API" and comments end "Added by <person> via AI agent" — unless the person signed in to that
+very tenant, when their own token is used. A local (stdio) MCP needs no sign-in.
+
 **Header mode (recommended):** update the four `x-calm-*` headers in GenAI Studio. No server restart needed — each request is resolved independently and cached per tenant.
 
 **Env var mode:** update `IDENTITY_ZONE`, `REGION_ZONE`, `CALM_CLIENT_ID`, `CALM_CLIENT_SECRET` and restart the server. No code changes required.
