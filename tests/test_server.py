@@ -975,6 +975,11 @@ async def main() -> int:
             text = json.dumps(_payload(await _call(session, "projects", "list")))
             check("no tenant: the connection's default", "Test Project A" in text and "Acme" not in text,
                   f"got {text[:200]}")
+            res = await session.call_tool("calm_admin_clients", {"action": "list"})
+            text = res.content[0].text if res.content else ""
+            check("adding clients from a chat is advertised, and only on the hosted MCP",
+                  "calm_admin_clients" in tools and res.is_error is True and "hosted SAP Cloud ALM MCP" in text,
+                  f"got {text[:200]}")
             res = await _call(session, "projects", "list", tenant="nope")
             text = res.content[0].text if res.content else ""
             check("an unknown tenant is refused, naming the ones there are",

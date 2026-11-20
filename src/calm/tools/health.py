@@ -65,6 +65,11 @@ def _permissions(ctx: Context, tenant: str | None = None) -> dict:
         token = get_calm_headers(ctx, tenant).token or ""
     except Exception as exc:  # noqa: BLE001 — a diagnostic reports, never fails
         return {"status": "unknown", "reason": f"no token for this connection: {str(exc)[:200]}"}
+    return token_permissions(token)
+
+
+def token_permissions(token: str) -> dict:
+    """A CALM key's API permissions from its token (names only), against the documented set."""
     try:
         part = token.split(".")[1]
         claims = json.loads(base64.urlsafe_b64decode(part + "=" * (-len(part) % 4)))

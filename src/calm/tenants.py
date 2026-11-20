@@ -10,6 +10,9 @@ from env vars / secrets, never in code:
     CALM_TENANT_<NAME>_ALLOWED_USERS   emails and / or @domains allowed to use it
     (optional CALM_TENANT_<NAME>_BASE_URL / _AUTH_URL, as CALM_BASE_URL / CALM_AUTH_URL)
 
+or added by an admin from a chat (tenant_store.py, tools/admin.py); a name set on the
+server wins over the same name added from a chat.
+
 The server opens a tenant with that tenant's own key, so on the shared HTTP
 server it serves only a person whose SAP sign-in token it has verified itself
 (signature against SAP's published keys, issuer, expiry) and who is on the
@@ -28,7 +31,7 @@ from dataclasses import dataclass
 import jwt
 import requests
 
-from . import http_retry
+from . import http_retry, tenant_store
 from .config import TenantNotConfiguredError, build_auth_url, build_base_url, get_auth_url
 
 log = logging.getLogger("calm-mcp.tenants")
@@ -55,8 +58,19 @@ def norm(name: str) -> str:
     return re.sub(r"[^a-z0-9]+", "_", str(name).strip().lower()).strip("_")
 
 
+def _tenant(name: str, zone: str, region: str, client_id: str, secret: str, allowed, base: str, auth: str,
+            label: str) -> Tenant:
+    # Never fill a missing region from the default tenant's: that would open another customer's CALM.
+    base = base or (build_base_url(zone, region) if region else "")
+    auth = auth or (build_auth_url(zone, region) if region else "")
+    need = (("REGION_ZONE", base and auth), ("CLIENT_ID", client_id), ("CLIENT_SECRET", secret))
+    return Tenant(name=name, identity_zone=zone, base_url=base, auth_url=auth, client_id=client_id,
+                  client_secret=secret, allowed=tuple(str(a).lower() for a in allowed if a),
+                  missing=tuple(label + k for k, v in need if not v))
+
+
 def configured() -> dict[str, Tenant]:
-    """Every tenant with a CALM_TENANT_<NAME>_IDENTITY_ZONE, by lower-case name."""
+    """Every tenant, by lower-case name: CALM_TENANT_<NAME>_IDENTITY_ZONE ones, then those added from a chat."""
     out: dict[str, Tenant] = {}
     for var, zone in sorted(os.environ.items()):
         m = _ZONE_VAR.match(var)
@@ -67,18 +81,19 @@ def configured() -> dict[str, Tenant]:
         def get(key: str) -> str:
             return os.getenv(prefix + key, "").strip()
 
-        region = get("REGION_ZONE")
-        # Never fill a missing region from the default tenant's: that would open another customer's CALM.
-        base = get("BASE_URL") or (build_base_url(zone.strip(), region) if region else "")
-        auth = get("AUTH_URL") or (build_auth_url(zone.strip(), region) if region else "")
-        need = (("REGION_ZONE", base and auth), ("CLIENT_ID", get("CLIENT_ID")), ("CLIENT_SECRET", get("CLIENT_SECRET")))
-        out[m.group(1).lower()] = Tenant(
-            name=m.group(1).lower(), identity_zone=zone.strip(), base_url=base, auth_url=auth,
-            client_id=get("CLIENT_ID"), client_secret=get("CLIENT_SECRET"),
-            allowed=tuple(a.lower() for a in re.split(r"[\s,;]+", get("ALLOWED_USERS")) if a),
-            missing=tuple(prefix + k for k, v in need if not v),
-        )
+        out[m.group(1).lower()] = _tenant(
+            m.group(1).lower(), zone.strip(), get("REGION_ZONE"), get("CLIENT_ID"), get("CLIENT_SECRET"),
+            re.split(r"[\s,;]+", get("ALLOWED_USERS")), get("BASE_URL"), get("AUTH_URL"), prefix)
+    for name, c in tenant_store.stored_tenants().items():
+        if name not in out:
+            out[name] = _tenant(name, c["identity_zone"], c["region_zone"], c["client_id"], c["client_secret"],
+                                c.get("allowed", []), "", "", f"client {name}: ")
     return out
+
+
+def server_names() -> set[str]:
+    """Tenants set on the server itself (env), which only the deployment changes."""
+    return {m.group(1).lower() for var, zone in os.environ.items() if (m := _ZONE_VAR.match(var)) and zone.strip()}
 
 
 def find(name: str, choices: list[Tenant]) -> Tenant | None:

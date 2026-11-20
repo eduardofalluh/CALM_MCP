@@ -4,6 +4,8 @@ requests>=2.31.0
 urllib3>=2.0.0
 # Verifies a person's SAP sign-in token before a named tenant is opened (src/calm/tenants.py).
 PyJWT[crypto]>=2.8.0
+# Encrypts the store of clients admins add from a chat (src/calm/tenant_store.py).
+cryptography>=42.0.0
 python-dotenv>=1.0.0
 # TOON (Token-Oriented Object Notation) encoder for token-efficient tool output.
 # Pinned to a working commit — PyPI 0.1.0 is a non-functional stub.

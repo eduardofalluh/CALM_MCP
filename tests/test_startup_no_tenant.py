@@ -104,7 +104,7 @@ def test_real_server_process_starts_and_answers_without_tenant():
                 return tools, health, data
 
     tools, health, data = asyncio.run(run())
-    assert "calm_resource" in tools and len(tools) == 23
+    assert "calm_resource" in tools and len(tools) == 24
     assert health.is_error is not True
     assert "tenant" in health.content[0].text.lower()
     assert data.is_error is True

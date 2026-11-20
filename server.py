@@ -38,6 +38,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from src.calm.toon_middleware import ToonOutputMiddleware, TruncationAlertMiddleware
 from src.calm.tools import (
+    admin,
     advanced_write,
     health,
     oauth_info,
@@ -233,6 +234,9 @@ unified.register(mcp)
 user_uuid_helper.register(mcp)
 oauth_info.register(mcp)
 health.register(mcp)
+
+# Admins add / change / remove clients (SAP Cloud ALMs) from a chat; secrets only via a terminal command
+admin.register(mcp)
 
 # Advanced write operations (generic escape hatches for any CALM API endpoint)
 advanced_write.register(mcp)

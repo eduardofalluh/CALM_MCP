@@ -435,6 +435,14 @@ the server: signature, issuer, expiry) who is on its `ALLOWED_USERS`. Changes th
 key, so CALM shows "API" and comments end "Added by <person> via AI agent" — unless the person signed in to that
 very tenant, when their own token is used. A local (stdio) MCP needs no sign-in.
 
+**Adding a client from a chat (admins):** with `CALM_ADMINS` (emails), `CALM_TENANT_STORE` (a file path on a volume
+that survives restarts and that every copy of the MCP shares) and `CALM_TENANT_STORE_KEY` (generate one with
+`python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) set on the hosted MCP,
+an admin asks Claude to add a client (name, identity zone, region, client ID, allowed people). The answer is a
+one-time terminal command: run it, paste the client secret at the hidden prompt, and it goes straight to the MCP,
+which checks it with the client's SAP login and stores it encrypted. The secret never enters the chat. The same tool
+changes who may use a client, rotates its secret or removes it.
+
 **Header mode (recommended):** update the four `x-calm-*` headers in GenAI Studio. No server restart needed — each request is resolved independently and cached per tenant.
 
 **Env var mode:** update `IDENTITY_ZONE`, `REGION_ZONE`, `CALM_CLIENT_ID`, `CALM_CLIENT_SECRET` and restart the server. No code changes required.
