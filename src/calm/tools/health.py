@@ -14,6 +14,7 @@ from src.calm.config import (
     get_auth_url,
     get_base_url,
 )
+from src.calm import tenants
 from src.calm.dependencies import get_calm_headers, tenant_names, writes_enabled
 from src.calm.tm_dependencies import tm_configured, tm_writes_enabled
 from src.calm.token_manager import get_managed_token
@@ -198,6 +199,7 @@ def register(mcp: FastMCP) -> None:
             "auth_url": auth_url,
             "base_url": base_url,
             "tenants": tenant_names(ctx),
+            "default_tenant": tenants.default_name(),
             # Optional BTP Test Management OData connection (tm_* tools).
             "tm_odata": {
                 "configured": tm_configured(ctx),

@@ -972,8 +972,17 @@ async def main() -> int:
                   f"got {text[:200]}")
             text = json.dumps(_payload(await _call(session, "projects", "list", tenant="acme")))
             check("calm_resource reads the named tenant", "Acme Project" in text, f"got {text[:200]}")
-            text = json.dumps(_payload(await _call(session, "projects", "list")))
-            check("no tenant: the connection's default", "Test Project A" in text and "Acme" not in text,
+            answer = _payload(await _call(session, "projects", "list"))
+            check("no tenant named: asks which one, never guesses",
+                  isinstance(answer, dict) and answer.get("status") == "choose_tenant"
+                  and answer.get("Tenants") == ["default (this connection's own SAP Cloud ALM)", "acme"],
+                  f"got {str(answer)[:200]}")
+            res = await _call(session, "tasks", "create", project_id="P001", data={"title": "x"})
+            text = res.content[0].text if res.content else ""
+            check("a write with no tenant is refused, never sent to a guessed CALM",
+                  res.is_error is True and "Ask the user which" in text, f"got {text[:200]}")
+            text = json.dumps(_payload(await _call(session, "projects", "list", tenant="default")))
+            check("tenant 'default' is the connection's own", "Test Project A" in text and "Acme" not in text,
                   f"got {text[:200]}")
             res = await session.call_tool("calm_admin_clients", {"action": "list"})
             text = res.content[0].text if res.content else ""

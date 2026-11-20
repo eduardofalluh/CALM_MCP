@@ -119,6 +119,20 @@ def _request(ctx: Context):
         return None
 
 
+class TenantChoiceNeeded(ValueError):
+    """The caller can use several SAP Cloud ALMs and named none: ask the user, never guess."""
+
+    def __init__(self, choices: list[str]) -> None:
+        self.answer = {
+            "status": "choose_tenant",
+            "message": ("This connection serves several SAP Cloud ALMs and no tenant was given. Ask the user which "
+                        "one to use, then call again with tenant=<name> and keep it for the rest of the "
+                        "conversation. Never pick one yourself."),
+            "Tenants": choices,
+        }
+        super().__init__(f"{self.answer['message']} Choices: {', '.join(choices)}.")
+
+
 def tenant_names(ctx: Context) -> list[str]:
     """The tenants this caller may pick with ``tenant`` (every one on a local MCP)."""
     everyone = tenants.configured()
@@ -181,9 +195,22 @@ def _tenant_headers(ctx: Context, name: str) -> CALMHeaders:
                        signed_in_user=signed_in_person(token))
 
 
-def get_calm_headers(ctx: Context, tenant: str | None = None) -> CALMHeaders:
-    if tenant is not None and str(tenant).strip():
-        return _tenant_headers(ctx, str(tenant).strip())
+def get_calm_headers(ctx: Context, tenant: str | None = None, ask: bool = False) -> CALMHeaders:
+    """Credentials for one SAP Cloud ALM. ``ask`` (tools that take ``tenant``): with no tenant named,
+    a caller who may use client tenants is asked which one (TenantChoiceNeeded) instead of
+    silently getting the connection's default."""
+    name = str(tenant or "").strip()
+    if name and not tenants.is_default(name):
+        return _tenant_headers(ctx, name)
+    if ask and not name:
+        clients = tenant_names(ctx)
+        if clients:
+            try:
+                get_base_url()
+                own = [f"{tenants.default_name()} (this connection's own SAP Cloud ALM)"]
+            except TenantNotConfiguredError:
+                own = []
+            raise TenantChoiceNeeded(own + clients)
     token: str | None = None
     base_url: str | None = None
     token_source: str | None = None

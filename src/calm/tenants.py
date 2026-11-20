@@ -91,6 +91,15 @@ def configured() -> dict[str, Tenant]:
     return out
 
 
+def default_name() -> str:
+    """What people call the connection's own SAP Cloud ALM when they pick it (CALM_DEFAULT_TENANT_NAME)."""
+    return norm(os.getenv("CALM_DEFAULT_TENANT_NAME", "")) or "default"
+
+
+def is_default(name: str) -> bool:
+    return norm(name) in ("default", default_name())
+
+
 def server_names() -> set[str]:
     """Tenants set on the server itself (env), which only the deployment changes."""
     return {m.group(1).lower() for var, zone in os.environ.items() if (m := _ZONE_VAR.match(var)) and zone.strip()}

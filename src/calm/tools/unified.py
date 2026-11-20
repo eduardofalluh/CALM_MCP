@@ -22,7 +22,7 @@ from fastmcp import Context, FastMCP
 
 from src.calm import client, doc_content, http_retry, odata_service
 from src.calm.config import TenantNotConfiguredError
-from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
+from src.calm.dependencies import TenantChoiceNeeded, ensure_writes_enabled, get_calm_headers
 from src.calm.tools.user_resolver import resolve_assignee
 
 
@@ -1096,7 +1096,7 @@ def register(mcp: FastMCP) -> None:
     """Register unified MCP tools for context optimization."""
 
     @mcp.tool()
-    def list_sap_cloud_alm_projects(ctx: Context, tenant: Optional[str] = None) -> list[dict]:
+    def list_sap_cloud_alm_projects(ctx: Context, tenant: Optional[str] = None) -> list[dict] | dict:
         """List the SAP Cloud ALM (CALM) projects this connection can access.
 
         THIS is the tool to call for ANY request like "get the CALM projects",
@@ -1120,12 +1120,16 @@ def register(mcp: FastMCP) -> None:
             tenant: which SAP Cloud ALM (customer) to use when this connection serves
                 several, e.g. "lutron": take it from the project's / conversation's
                 instructions and pass the same one on every call; calm_health lists the
-                ones you may use. Leave it empty for the connection's default. Never guess.
+                ones you may use. If none is named and the answer is "choose_tenant", ask
+                the user which one (its "Tenants"); never pick one yourself.
 
         Returns:
             List of SAP Cloud ALM projects (each with id, name, status, …).
         """
-        h = get_calm_headers(ctx, tenant)
+        try:
+            h = get_calm_headers(ctx, tenant, ask=True)
+        except TenantChoiceNeeded as exc:
+            return exc.answer
         return client.get_projects(h.token, h.base_url)
 
     @mcp.tool()
@@ -1579,7 +1583,8 @@ def register(mcp: FastMCP) -> None:
             tenant: which SAP Cloud ALM (customer) to use when this connection serves
                 several, e.g. "lutron": take it from the project's / conversation's
                 instructions and pass the same one on every call; calm_health lists the
-                ones you may use. Leave it empty for the connection's default. Never guess.
+                ones you may use. If none is named and the answer is "choose_tenant", ask
+                the user which one (its "Tenants"); never pick one yourself.
 
         Returns:
             List of resources for "list", single resource dict for "get"/"create"/"update"/"delete".
@@ -1716,7 +1721,12 @@ def register(mcp: FastMCP) -> None:
         calm_api_write / calm_api_delete (same CALM tenant, raw API paths).
         """
         # Credentials / tenant first: a fault there is a real failure, never an answer.
-        h = get_calm_headers(ctx, tenant)
+        try:
+            h = get_calm_headers(ctx, tenant, ask=True)
+        except TenantChoiceNeeded as exc:
+            if operation in ("list", "get"):
+                return exc.answer  # a read asks; a write never goes to a guessed CALM
+            raise
         try:
             result = _calm_resource(h, resource, operation, project_id, resource_id, task_type,
                                     data, user_email)

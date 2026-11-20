@@ -419,8 +419,10 @@ Each tool is ~10 lines. To add an "incidents" endpoint:
 
 **Several customers on one connection (`tenant`):** configure each customer's SAP Cloud ALM on the server and let
 each conversation / project name the one it means — `calm_resource(..., tenant="lutron")` (also on
-`list_sap_cloud_alm_projects`, `calm_api_*` and `calm_health`, which lists the tenants you may use). Leave `tenant`
-empty for the connection's default.
+`list_sap_cloud_alm_projects`, `calm_api_*` and `calm_health`, which lists the tenants you may use). When a person who
+may use client tenants names none, the MCP asks which one (a read answers `choose_tenant` with the choices, a write is
+refused) instead of guessing; `tenant="default"` — or the name in `CALM_DEFAULT_TENANT_NAME`, e.g. `syntax` — is the
+connection's own SAP Cloud ALM.
 
 ```bash
 CALM_TENANT_LUTRON_IDENTITY_ZONE=<identity zone>

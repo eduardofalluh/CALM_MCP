@@ -170,6 +170,8 @@ def register(mcp: FastMCP) -> None:
         key = tenants.norm(name or "")
         if not _NAME.fullmatch(key):
             raise ValueError("name: the short client name people will use, e.g. centerra (letters, digits, _).")
+        if tenants.is_default(key):
+            raise ValueError(f'"{key}" is the name of this connection\'s own SAP Cloud ALM: pick another name.')
         if key in server:
             raise ValueError(f'"{key}" is set on the server (CALM_TENANT_{key.upper()}_*): change or remove it in '
                              "the deployment.")

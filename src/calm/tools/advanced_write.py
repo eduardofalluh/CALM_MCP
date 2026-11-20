@@ -20,7 +20,7 @@ from typing import Any
 from fastmcp import Context, FastMCP
 
 from src.calm import client
-from src.calm.dependencies import ensure_writes_enabled, get_calm_headers
+from src.calm.dependencies import TenantChoiceNeeded, ensure_writes_enabled, get_calm_headers
 from src.calm.tools.unified import LIST_ROW_LIMIT, _unanswerable_read
 
 # Query options that only shape or page an answer: leaving one out can't change
@@ -75,14 +75,18 @@ def register(mcp: FastMCP) -> None:
             tenant: which SAP Cloud ALM (customer) to use when this connection serves
                 several, e.g. "lutron": take it from the project's / conversation's
                 instructions and pass the same one on every call; calm_health lists the
-                ones you may use. Leave it empty for the connection's default. Never guess.
+                ones you may use. If none is named and the answer is "choose_tenant", ask
+                the user which one (its "Tenants"); never pick one yourself.
 
         Returns the parsed JSON response. A read SAP refuses (400 / 403 / 404) comes
         back as {"status": ..., "message": ...} instead of an error.
         """
         if not path:
             raise ValueError("path is required")
-        h = get_calm_headers(ctx, tenant)
+        try:
+            h = get_calm_headers(ctx, tenant, ask=True)
+        except TenantChoiceNeeded as exc:
+            return exc.answer
         ignored: list[str] = []
         try:
             while True:
@@ -151,7 +155,8 @@ def register(mcp: FastMCP) -> None:
             tenant: which SAP Cloud ALM (customer) to use when this connection serves
                 several, e.g. "lutron": take it from the project's / conversation's
                 instructions and pass the same one on every call; calm_health lists the
-                ones you may use. Leave it empty for the connection's default. Never guess.
+                ones you may use. If none is named and the answer is "choose_tenant", ask
+                the user which one (its "Tenants"); never pick one yourself.
 
         Returns the parsed response, or a small acknowledgement if the API returns
         no body.
@@ -162,7 +167,7 @@ def register(mcp: FastMCP) -> None:
             raise ValueError('method must be "POST" or "PATCH"')
         if not path:
             raise ValueError("path is required")
-        h = get_calm_headers(ctx, tenant)
+        h = get_calm_headers(ctx, tenant, ask=True)
         return client.api_write(
             token=h.token, method=method_up, path=path, body=body,
             if_match=if_match, base_url=h.base_url, user_email=h.user_email,
@@ -181,10 +186,11 @@ def register(mcp: FastMCP) -> None:
             tenant: which SAP Cloud ALM (customer) to use when this connection serves
                 several, e.g. "lutron": take it from the project's / conversation's
                 instructions and pass the same one on every call; calm_health lists the
-                ones you may use. Leave it empty for the connection's default. Never guess.
+                ones you may use. If none is named and the answer is "choose_tenant", ask
+                the user which one (its "Tenants"); never pick one yourself.
         """
         ensure_writes_enabled()
         if not path:
             raise ValueError("path is required")
-        h = get_calm_headers(ctx, tenant)
+        h = get_calm_headers(ctx, tenant, ask=True)
         return client.api_delete(token=h.token, path=path, if_match=if_match, base_url=h.base_url, user_email=h.user_email)

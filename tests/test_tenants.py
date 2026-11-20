@@ -149,3 +149,31 @@ def test_no_tenant_keeps_the_connection_default(setup, monkeypatch):
     h = get_calm_headers(LOCAL)
     assert h.base_url == "https://home-cloudalm.eu10.alm.cloud.sap" and h.token == "default-token"
     assert get_calm_headers(LOCAL, "  ").token == "default-token"
+
+
+def test_no_tenant_named_asks_which_one_instead_of_guessing(setup, monkeypatch):
+    from src.calm.dependencies import TenantChoiceNeeded
+    monkeypatch.setenv("CALM_TOKEN", "default-token")
+    jane = _http({"Authorization": f"Bearer {_token('jane.doe@example.com')}"})
+    with pytest.raises(TenantChoiceNeeded) as asked:
+        get_calm_headers(jane, None, ask=True)
+    assert asked.value.answer["status"] == "choose_tenant"
+    assert asked.value.answer["Tenants"] == ["default (this connection's own SAP Cloud ALM)", "acme"]
+    assert get_calm_headers(jane, "default", ask=True).base_url == "https://home-cloudalm.eu10.alm.cloud.sap"
+    assert get_calm_headers(jane, None).base_url == "https://home-cloudalm.eu10.alm.cloud.sap"  # calm_health: no ask
+    monkeypatch.setenv("CALM_DEFAULT_TENANT_NAME", "Syntax")
+    assert get_calm_headers(jane, "syntax", ask=True).base_url == "https://home-cloudalm.eu10.alm.cloud.sap"
+    with pytest.raises(TenantChoiceNeeded, match="Choices: syntax \\(this connection's own"):
+        get_calm_headers(jane, "", ask=True)
+    carol = _http({"Authorization": f"Bearer {_token('carol@example.com')}"})  # no client to choose from
+    assert get_calm_headers(carol, None, ask=True).base_url == "https://home-cloudalm.eu10.alm.cloud.sap"
+    assert setup.opened == []
+
+
+def test_the_choice_lists_only_clients_when_there_is_no_default(setup, monkeypatch):
+    from src.calm.dependencies import TenantChoiceNeeded
+    monkeypatch.delenv("CALM_IDENTITY_ZONE")
+    monkeypatch.delenv("CALM_REGION_ZONE")
+    with pytest.raises(TenantChoiceNeeded) as asked:
+        get_calm_headers(LOCAL, None, ask=True)
+    assert asked.value.answer["Tenants"] == ["acme", "beta"]
