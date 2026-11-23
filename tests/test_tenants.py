@@ -177,3 +177,82 @@ def test_the_choice_lists_only_clients_when_there_is_no_default(setup, monkeypat
     with pytest.raises(TenantChoiceNeeded) as asked:
         get_calm_headers(LOCAL, None, ask=True)
     assert asked.value.answer["Tenants"] == ["acme", "beta"]
+
+
+# --- The Claude connector on BTP: our own CALM is a tenant like the clients --------------------
+import json  # noqa: E402
+
+SIGNIN = "https://syntax-dev.authentication.us10.hana.ondemand.com"
+XSAPP = "calm-mcp-claude!t123"
+SIGNIN_KEY = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+
+
+def _connector(email: str, scope=(f"{XSAPP}.Claude",)):
+    claims = {"iss": f"{SIGNIN}/oauth/token", "aud": [XSAPP], "exp": int(time.time()) + 600,
+              "grant_type": "authorization_code", "user_name": email, "email": email, "scope": list(scope)}
+    token = jwt.encode(claims, SIGNIN_KEY, algorithm="RS256", headers={"kid": "k1"})
+    return _http({"Authorization": f"Bearer {token}"}), token
+
+
+@pytest.fixture
+def connector(setup, monkeypatch):
+    monkeypatch.setenv("VCAP_SERVICES", json.dumps({"xsuaa": [{"name": "claude-auth", "credentials": {
+        "url": SIGNIN, "xsappname": XSAPP, "clientid": "sb-" + XSAPP}}]}))
+    monkeypatch.setenv("CALM_SIGNIN_INSTANCE", "claude-auth")
+    monkeypatch.setenv("CALM_DEFAULT_TENANT_NAME", "syntax")
+    for key, value in {"IDENTITY_ZONE": "home-cloudalm", "REGION_ZONE": "eu10", "CLIENT_ID": "home-id",
+                       "CLIENT_SECRET": "home-secret", "ALLOWED_USERS": "@example.com"}.items():
+        monkeypatch.setenv(f"CALM_TENANT_SYNTAX_{key}", value)
+    signin_jwk = {**_jwk(SIGNIN_KEY), "kid": "k1"}
+    monkeypatch.setattr(tenants, "_fetch_jwks",
+                        lambda base: {"keys": [signin_jwk if base == SIGNIN else _jwk(KEYS[base])]})
+    return setup
+
+
+def test_connector_never_sends_its_own_sign_in_to_calm(connector):
+    from src.calm.dependencies import TenantChoiceNeeded
+    jane, token = _connector("jane.doe@example.com")  # on acme's list and, by domain, on syntax's
+    with pytest.raises(TenantChoiceNeeded) as asked:
+        get_calm_headers(jane, None, ask=True)
+    assert asked.value.answer["Tenants"] == ["acme", "syntax (this connection's own SAP Cloud ALM)"]
+    h = get_calm_headers(jane, "default", ask=True)
+    assert h.base_url == "https://home-cloudalm.eu10.alm.cloud.sap" and h.token == "home-id-token"
+    assert token not in (h.token,) and h.signed_in_user is None and h.user_email == "jane.doe@example.com"
+    assert get_calm_headers(jane, "acme", ask=True).token == "acme-id-token"
+
+
+def test_connector_with_one_calm_uses_it_and_with_none_says_so(connector):
+    carol, _ = _connector("carol@example.com")  # only syntax (by domain)
+    assert get_calm_headers(carol, None, ask=True).base_url == "https://home-cloudalm.eu10.alm.cloud.sap"
+    with pytest.raises(ValueError, match="not on the list"):
+        get_calm_headers(carol, "acme", ask=True)
+    dan, _ = _connector("dan@elsewhere.example")
+    with pytest.raises(ValueError, match="no SAP Cloud ALM on this connector yet"):
+        get_calm_headers(dan, None, ask=True)
+    no_role, _ = _connector("jane.doe@example.com", scope=("openid",))
+    with pytest.raises(ValueError, match="needs your own SAP sign-in"):
+        get_calm_headers(no_role, "acme")
+    studio = _http({"x-calm-identity-zone": "acme-cloudalm", "x-calm-client-id": "i", "x-calm-client-secret": "s"})
+    with pytest.raises(ValueError):
+        get_calm_headers(studio, "acme")  # on the connector only its own sign-in opens anything
+    assert connector.opened == [("home-id", "home-secret",
+                                 "https://home-cloudalm.authentication.eu10.hana.ondemand.com/oauth/token")]
+
+
+def test_connector_health_reports_our_own_calm(connector, monkeypatch):
+    from fastmcp import FastMCP
+    from src.calm.tools import health
+    mcp, captured, orig = FastMCP("t"), {}, None
+    orig = mcp.tool
+
+    def grab(*a, **k):
+        def deco(fn):
+            captured[fn.__name__] = fn
+            return orig(*a, **k)(fn)
+        return deco
+    monkeypatch.setattr(mcp, "tool", grab)
+    health.register(mcp)
+    jane, _ = _connector("jane.doe@example.com")
+    out = captured["calm_health"](jane)
+    assert out["tenant"] == "default" and out["base_url"] == "https://home-cloudalm.eu10.alm.cloud.sap"
+    assert out["tenants"] == ["acme", "syntax"] and out["token_source"] == "client_credentials (tenant syntax)"

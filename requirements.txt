@@ -1,12 +1,14 @@
-fastmcp>=2.12.0
-requests>=2.31.0
+# Pinned to the versions the test suites pass with (production configs pin versions).
+fastmcp==4.0.5
+requests==2.34.2
 # Imported directly by src/calm/http_retry.py (also pulled in by requests).
-urllib3>=2.0.0
-# Verifies a person's SAP sign-in token before a named tenant is opened (src/calm/tenants.py).
-PyJWT[crypto]>=2.8.0
+urllib3==2.8.0
+# Verifies sign-in tokens: the connector's own (BTP) and a person's SAP sign-in (src/calm/tenants.py).
+PyJWT[crypto]==2.14.0
 # Encrypts the store of clients admins add from a chat (src/calm/tenant_store.py).
-cryptography>=42.0.0
-python-dotenv>=1.0.0
+cryptography==50.0.1
+python-dotenv==1.2.3
 # TOON (Token-Oriented Object Notation) encoder for token-efficient tool output.
-# Pinned to a working commit — PyPI 0.1.0 is a non-functional stub.
-toon_format @ git+https://github.com/toon-format/toon-python.git@3c5e623c89658de93d201a620d3632f5d13ceb1f
+# Pinned to a working commit — PyPI 0.1.0 is a non-functional stub. A plain archive URL, so
+# installing needs no git (the Cloud Foundry Python buildpack builds from this file).
+toon_format @ https://github.com/toon-format/toon-python/archive/3c5e623c89658de93d201a620d3632f5d13ceb1f.zip

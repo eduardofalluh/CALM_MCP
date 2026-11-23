@@ -1,0 +1,19 @@
+{
+  "xsappname": "calm-mcp-claude",
+  "tenant-mode": "dedicated",
+  "description": "Sign-in for the SAP Cloud ALM MCP connector in Claude. Holds no secret.",
+  "scopes": [
+    { "name": "$XSAPPNAME.Claude", "description": "Use the SAP Cloud ALM connector in Claude" }
+  ],
+  "role-templates": [
+    { "name": "CalmMcpClaude", "description": "Use the SAP Cloud ALM connector in Claude", "scope-references": ["$XSAPPNAME.Claude"] }
+  ],
+  "role-collections": [
+    { "name": "CALM MCP Claude", "description": "Who may use the SAP Cloud ALM connector in Claude (which client CALMs each person may open is decided by the MCP's client lists)", "role-template-references": ["$XSAPPNAME.CalmMcpClaude"] }
+  ],
+  "oauth2-configuration": {
+    "redirect-uris": ["https://claude.ai/api/mcp/auth_callback"],
+    "grant-types": ["authorization_code", "refresh_token"],
+    "credential-types": ["binding-secret"]
+  }
+}

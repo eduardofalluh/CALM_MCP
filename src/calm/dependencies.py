@@ -195,11 +195,35 @@ def _tenant_headers(ctx: Context, name: str) -> CALMHeaders:
                        signed_in_user=signed_in_person(token))
 
 
+def _connector_headers(ctx: Context, name: str, ask: bool) -> CALMHeaders:
+    """The Claude connector on BTP (CALM_SIGNIN_INSTANCE): every SAP Cloud ALM, our own included, is a
+    tenant opened with its key for a person its list allows; a name is never guessed."""
+    if name and tenants.is_default(name):
+        name = tenants.default_name()
+    if not name:
+        mine = tenant_names(ctx)
+        own = tenants.default_name()
+        if len(mine) == 1:
+            name = mine[0]  # the only one this person may use: no choice to make
+        elif ask and mine:
+            raise TenantChoiceNeeded([f"{n} (this connection's own SAP Cloud ALM)" if n == own else n
+                                      for n in mine])
+        elif own in mine:
+            name = own
+        elif mine:
+            raise ValueError(f"Name the SAP Cloud ALM to use (tenant): {', '.join(mine)}.")
+        else:
+            raise ValueError("You have no SAP Cloud ALM on this connector yet: ask its admins to give you access.")
+    return _tenant_headers(ctx, name)
+
+
 def get_calm_headers(ctx: Context, tenant: str | None = None, ask: bool = False) -> CALMHeaders:
     """Credentials for one SAP Cloud ALM. ``ask`` (tools that take ``tenant``): with no tenant named,
     a caller who may use client tenants is asked which one (TenantChoiceNeeded) instead of
     silently getting the connection's default."""
     name = str(tenant or "").strip()
+    if _request(ctx) is not None and tenants.signin():
+        return _connector_headers(ctx, name, ask)
     if name and not tenants.is_default(name):
         return _tenant_headers(ctx, name)
     if ask and not name:

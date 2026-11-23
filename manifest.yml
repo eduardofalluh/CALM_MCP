@@ -1,0 +1,20 @@
+# SAP BTP Cloud Foundry deployment of the SAP Cloud ALM MCP for the Claude connector.
+# Steps: docs/BTP_DEPLOY.md. Holds no secret: client keys are set with scripts/btp_set_client.sh.
+---
+applications:
+  - name: syntax-calm-mcp
+    memory: 512M
+    disk_quota: 1G
+    instances: 1
+    buildpacks:
+      - python_buildpack
+    command: python server.py --http --host 0.0.0.0 --port $PORT
+    health-check-type: port
+    services:
+      - calm-mcp-claude-auth
+    env:
+      CALM_SIGNIN_INSTANCE: calm-mcp-claude-auth
+      CALM_MULTI_TENANT: "true"
+      CALM_ENABLE_WRITES: "true"
+      CALM_DEFAULT_TENANT_NAME: syntax
+      LOG_LEVEL: INFO

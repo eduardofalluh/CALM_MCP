@@ -22,6 +22,7 @@ user's own machine and configuration, so it needs no sign-in.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -121,9 +122,37 @@ def allows(tenant: Tenant, claims: dict) -> bool:
     return bool(email) and any(email == a or (a.startswith("@") and email.endswith(a)) for a in tenant.allowed)
 
 
+def signin() -> dict | None:
+    """The connector's own sign-in on SAP BTP: the XSUAA instance named in CALM_SIGNIN_INSTANCE,
+    bound to this Cloud Foundry app (VCAP_SERVICES), found by exact name, never by scanning.
+    Its tokens are the only way in, and only with its one scope ("<xsappname>.Claude")."""
+    name = os.getenv("CALM_SIGNIN_INSTANCE", "").strip()
+    if not name:
+        return None
+    try:
+        services = json.loads(os.getenv("VCAP_SERVICES") or "{}")
+    except ValueError:
+        services = {}
+    found = [s for group in services.values() if isinstance(group, list)
+             for s in group if isinstance(s, dict) and s.get("name") == name]
+    if len(found) != 1:
+        raise RuntimeError(f"CALM_SIGNIN_INSTANCE is {name}, but that service instance is "
+                           f"{'not bound to this app' if not found else 'bound more than once'}.")
+    c = found[0].get("credentials") or {}
+    url, xsappname, clientid = str(c.get("url") or "").rstrip("/"), c.get("xsappname"), c.get("clientid")
+    if not (url.startswith("https://") and xsappname and clientid):
+        raise RuntimeError(f"The binding of {name} has no url / xsappname / clientid: is it an XSUAA instance?")
+    return {"url": url, "issuer": f"{url}/oauth/token", "xsappname": xsappname, "clientid": clientid,
+            "scope": f"{xsappname}.Claude"}
+
+
 def _issuers() -> dict[str, str]:
-    """Token issuer → its SAP login, for every tenant this server knows (default + configured)."""
+    """Token issuer → its SAP login, for every tenant this server knows (default + configured)
+    and the connector's own sign-in."""
     auths = [t.auth_url for t in configured().values() if t.auth_url]
+    own = signin()
+    if own:
+        auths.append(own["issuer"])
     try:
         auths.append(get_auth_url())
     except TenantNotConfiguredError:
@@ -153,9 +182,11 @@ def _signing_key(base: str, kid: str | None):
     return next(iter(keys.values())) if kid is None and len(keys) == 1 else None
 
 
-def verified_person(token: str | None) -> dict | None:
+def verified_person(token: str | None, require_role: bool = True) -> dict | None:
     """The claims of a person's SAP sign-in token, once this server has verified it
-    came from a SAP login it knows (signature, issuer, expiry) — else None."""
+    came from a SAP login it knows (signature, issuer, expiry) — else None. A token from the
+    connector's own sign-in must also be meant for it (audience) and, unless require_role is
+    False, carry its scope (the person was given the connector's role collection)."""
     if not token:
         return None
     try:
@@ -167,10 +198,15 @@ def verified_person(token: str | None) -> dict | None:
     key = _signing_key(base, kid) if base else None
     if key is None:
         return None
+    own = signin()
+    mine = bool(own) and iss == own["issuer"]
     try:
         claims = jwt.decode(token, key.key, algorithms=["RS256"], issuer=iss, leeway=30,
-                            options={"verify_aud": False, "require": ["exp", "iss"]})
+                            audience=[own["xsappname"], own["clientid"]] if mine else None,
+                            options={"verify_aud": mine, "require": ["exp", "iss"]})
     except jwt.PyJWTError:
+        return None
+    if mine and require_role and own["scope"] not in (claims.get("scope") or []):
         return None
     if claims.get("grant_type") in (None, "", "client_credentials") or not claims.get("user_name"):
         return None  # a key's token, not a person

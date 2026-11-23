@@ -1,0 +1,20 @@
+# Only the server goes to Cloud Foundry: no secrets, local state, tests or working files.
+.git/
+.gitignore
+.env
+.env.*
+.claude/
+venv/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.test_shim/
+tests/
+test_*.py
+docs/
+deploy/
+scripts/
+*.log
+*.md
+*.html

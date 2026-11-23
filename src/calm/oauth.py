@@ -9,6 +9,7 @@ See: https://modelcontextprotocol.io/specification/2026-07-28/basic/authorizatio
 
 from __future__ import annotations
 
+import json
 import os
 
 
@@ -83,10 +84,17 @@ def get_authorization_server_metadata(auth_url: str, issuer: str | None = None) 
 
 
 def public_mcp_url(headers: dict) -> str:
-    """This server's MCP address as clients use it: MCP_PUBLIC_URL, else the request's host."""
+    """This server's MCP address as clients use it: MCP_PUBLIC_URL, else the Cloud Foundry app's one
+    route, else the request's host."""
     explicit = os.getenv("MCP_PUBLIC_URL", "").strip().rstrip("/")
     if explicit:
         return explicit
+    try:
+        uris = json.loads(os.getenv("VCAP_APPLICATION") or "{}").get("application_uris") or []
+    except (ValueError, AttributeError):
+        uris = []
+    if len(uris) == 1:  # never guess between several routes
+        return f"https://{uris[0]}/mcp"
     host = (headers.get("x-forwarded-host") or headers.get("host") or "localhost").split(",")[0].strip()
     local = host.split(":")[0] in ("localhost", "127.0.0.1", "[::1]")
     proto = (headers.get("x-forwarded-proto") or ("http" if local else "https")).split(",")[0].strip()
@@ -99,14 +107,31 @@ def issuer_for(mcp_url: str) -> str:
 
 
 def connector_metadata(mcp_url: str) -> dict:
-    """RFC 9728 metadata as Claude needs it: ``resource`` is exactly the MCP address
-    and the authorization server is this server, which describes the SAP login."""
-    return {
+    """RFC 9728 metadata as Claude needs it: ``resource`` is exactly the MCP address. The
+    authorization server is the connector's own sign-in on BTP when there is one (with its one
+    scope), else this server, which describes the tenant's SAP login."""
+    from src.calm.tenants import signin
+
+    own = signin()
+    meta = {
         "resource": mcp_url,
-        "authorization_servers": [issuer_for(mcp_url)],
+        "authorization_servers": [own["issuer"] if own else issuer_for(mcp_url)],
         "bearer_methods_supported": ["header"],
         "resource_documentation": "https://help.sap.com/docs/cloud-alm-api",
     }
+    if own:
+        meta["scopes_supported"] = [own["scope"]]
+    return meta
+
+
+def _challenge(mcp_url: str, error: str | None = None) -> str:
+    from src.calm.tenants import signin
+
+    own = signin()
+    value = f'Bearer resource_metadata="{issuer_for(mcp_url)}/.well-known/oauth-protected-resource/mcp"'
+    if own:
+        value += ', scope="%s"' % own["scope"]
+    return value + (f', error="{error}"' if error else "")
 
 
 def has_credential(headers: dict) -> bool:
@@ -121,43 +146,67 @@ def has_credential(headers: dict) -> bool:
 
 
 class OAuthMiddleware:
-    """HTTP mode: serves the sign-in metadata, and answers an MCP request that has no
-    credential at all with 401 + where to sign in (Claude only starts the SAP login
-    on a 401). A request with any credential, or a server with its own, is untouched."""
+    """HTTP mode: serves the sign-in metadata, and answers an MCP request that can't get in with
+    401 + where to sign in (Claude only starts a sign-in on a 401, and signs in again on one).
+    With the connector's own sign-in on BTP, only a valid token from it gets through (403 when the
+    person lacks its role); otherwise a request with any credential, or a server with its own, is
+    untouched."""
 
     def __init__(self, app) -> None:
         self.app = app
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] == "http":
-            response = self._answer(scope)
+            response = await self._answer(scope)
             if response is not None:
                 await response(scope, receive, send)
                 return
         await self.app(scope, receive, send)
 
     @staticmethod
-    def _answer(scope):
+    async def _answer(scope):
+        from starlette.concurrency import run_in_threadpool
         from starlette.responses import JSONResponse
 
         from src.calm.config import TenantNotConfiguredError, get_auth_base_url
+        from src.calm.tenants import signin, verified_person
 
         path = scope.get("path", "")
         headers = {k.decode("latin-1").lower(): v.decode("latin-1") for k, v in scope.get("headers", [])}
+        own = signin()
         if path.startswith("/.well-known/oauth-protected-resource"):
             return JSONResponse(connector_metadata(public_mcp_url(headers)))
         if path.startswith(("/.well-known/oauth-authorization-server", "/.well-known/openid-configuration")):
+            if own:
+                return None  # Claude reads the sign-in service's own metadata
             try:
                 auth_url = get_auth_base_url()
             except TenantNotConfiguredError as exc:
                 return JSONResponse({"error": "tenant_not_configured", "error_description": str(exc)}, status_code=503)
             return JSONResponse(get_authorization_server_metadata(auth_url, issuer_for(public_mcp_url(headers))))
-        if path.rstrip("/") == "/mcp" and scope.get("method") != "OPTIONS" and not has_credential(headers):
-            where = f"{issuer_for(public_mcp_url(headers))}/.well-known/oauth-protected-resource"
+        if path.rstrip("/") != "/mcp" or scope.get("method") == "OPTIONS":
+            return None
+        if own:
+            scheme, _, token = headers.get("authorization", "").partition(" ")
+            token = token.strip() if scheme.lower() == "bearer" else ""
+            if token and await run_in_threadpool(verified_person, token):
+                return None
+            if token and await run_in_threadpool(verified_person, token, False):
+                return JSONResponse(
+                    {"error": "insufficient_scope",
+                     "error_description": "You are signed in, but you don't have the SAP Cloud ALM connector's role "
+                                          "yet: ask its admins for the role collection."},
+                    status_code=403, headers={"WWW-Authenticate": _challenge(public_mcp_url(headers),
+                                                                             "insufficient_scope")})
+            return JSONResponse(
+                {"error": "invalid_token", "error_description": "Sign in to the SAP Cloud ALM connector."},
+                status_code=401, headers={"WWW-Authenticate": _challenge(public_mcp_url(headers),
+                                                                         "invalid_token" if token else None)})
+        if not has_credential(headers):
             return JSONResponse(
                 {"error": "invalid_token", "error_description": "Sign in to SAP Cloud ALM to use this connector."},
                 status_code=401,
-                headers={"WWW-Authenticate": f'Bearer resource_metadata="{where}"'},
+                headers={"WWW-Authenticate": _challenge(public_mcp_url(headers))},
             )
         return None
 

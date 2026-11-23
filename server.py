@@ -36,6 +36,7 @@ from fastmcp import FastMCP
 from starlette.middleware import Middleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
+from src.calm.audit import AuditMiddleware
 from src.calm.toon_middleware import ToonOutputMiddleware, TruncationAlertMiddleware
 from src.calm.tools import (
     admin,
@@ -205,6 +206,9 @@ mcp.add_middleware(ToonOutputMiddleware())
 # collection, since all list getters page through client._get_all.
 mcp.add_middleware(TruncationAlertMiddleware())
 
+# One audit line per tool call (who, which CALM, which tool, the outcome) — never the content.
+mcp.add_middleware(AuditMiddleware())
+
 # ============================================================================
 # PHASE 3 COMPLETE: Tool Consolidation
 # ============================================================================
@@ -282,11 +286,24 @@ def main() -> None:
         # Outermost, so it sees the real Host before _TrustProxyMiddleware rewrites it:
         # serves the OAuth metadata and asks a caller with no credential to sign in.
         from src.calm.oauth import OAuthMiddleware
+        from src.calm.tenants import signin
         middleware.insert(0, Middleware(OAuthMiddleware))
-        log.info("OAuth sign-in for %s (set MCP_PUBLIC_URL to the address clients use)",
-                 os.getenv("MCP_PUBLIC_URL") or "the address each request names")
 
-        mcp.run(transport="streamable-http", host=args.host, port=args.port, middleware=middleware)
+        try:
+            own = signin()
+        except RuntimeError as exc:  # a misbound sign-in would open the wrong door: refuse to start
+            log.error("Not starting: %s", exc)
+            sys.exit(1)
+        extra: dict[str, Any] = {}
+        if own:
+            # Stateless: any app instance answers any call, and no session can be replayed by
+            # someone else; every call carries and proves its own sign-in.
+            extra = {"stateless_http": True, "json_response": True}
+            log.info("Claude connector sign-in: %s (scope %s)", own["url"], own["scope"])
+        log.info("OAuth sign-in for %s (set MCP_PUBLIC_URL to the address clients use)",
+                 os.getenv("MCP_PUBLIC_URL") or "the Cloud Foundry route or the address each request names")
+
+        mcp.run(transport="streamable-http", host=args.host, port=args.port, middleware=middleware, **extra)
     else:
         log.info("Starting CALM MCP on stdio")
         mcp.run()

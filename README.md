@@ -437,6 +437,10 @@ the server: signature, issuer, expiry) who is on its `ALLOWED_USERS`. Changes th
 key, so CALM shows "API" and comments end "Added by <person> via AI agent" — unless the person signed in to that
 very tenant, when their own token is used. A local (stdio) MCP needs no sign-in.
 
+**On SAP BTP for the Claude connector:** see [docs/BTP_DEPLOY.md](docs/BTP_DEPLOY.md) — the connector signs people
+in through its own XSUAA instance, every CALM (ours included) is a tenant with its own allowed people, and clients are
+added with `scripts/btp_set_client.sh` (the secret at a hidden prompt).
+
 **Adding a client from a chat (admins):** with `CALM_ADMINS` (emails), `CALM_TENANT_STORE` (a file path on a volume
 that survives restarts and that every copy of the MCP shares) and `CALM_TENANT_STORE_KEY` (generate one with
 `python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`) set on the hosted MCP,

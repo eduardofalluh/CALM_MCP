@@ -99,6 +99,8 @@ def register(mcp: FastMCP) -> None:
         "tenants" lists the SAP Cloud ALMs (customers) you may pick with the
         `tenant` argument of the other tools; pass `tenant` here to check that one.
         """
+        if not (tenant and str(tenant).strip()) and tenants.signin():
+            tenant = "default"  # on the Claude connector our own CALM is a tenant like the others
         if tenant and str(tenant).strip():
             answer = {"server": "sap-cloud-alm", "tenant": str(tenant).strip(), "tenants": tenant_names(ctx)}
             try:
