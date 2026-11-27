@@ -221,6 +221,16 @@ def test_connector_never_sends_its_own_sign_in_to_calm(connector):
     assert get_calm_headers(jane, "acme", ask=True).token == "acme-id-token"
 
 
+def test_connector_only_trusts_its_own_sign_in_to_say_who_someone_is(connector):
+    # A token from a client's SAP login, even a valid one naming someone on a list, opens nothing on the
+    # connector: a client's login could name anyone.
+    acme_person = _http({"Authorization": f"Bearer {_token('jane.doe@example.com', ACME_AUTH)}"})
+    assert tenants.verified_person(_token("jane.doe@example.com", ACME_AUTH)) is None
+    assert tenant_names(acme_person) == []
+    with pytest.raises(ValueError, match="needs your own SAP sign-in"):
+        get_calm_headers(acme_person, "acme")
+
+
 def test_connector_with_one_calm_uses_it_and_with_none_says_so(connector):
     carol, _ = _connector("carol@example.com")  # only syntax (by domain)
     assert get_calm_headers(carol, None, ask=True).base_url == "https://home-cloudalm.eu10.alm.cloud.sap"

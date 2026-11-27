@@ -194,11 +194,13 @@ def verified_person(token: str | None, require_role: bool = True) -> dict | None
         kid = jwt.get_unverified_header(token).get("kid")
     except jwt.PyJWTError:
         return None
+    own = signin()
+    if own and iss != own["issuer"]:
+        return None  # on the Claude connector only its own sign-in says who someone is, never a client's login
     base = _issuers().get(iss) if isinstance(iss, str) else None
     key = _signing_key(base, kid) if base else None
     if key is None:
         return None
-    own = signin()
     mine = bool(own) and iss == own["issuer"]
     try:
         claims = jwt.decode(token, key.key, algorithms=["RS256"], issuer=iss, leeway=30,
