@@ -242,6 +242,10 @@ health.register(mcp)
 # Admins add / change / remove clients (SAP Cloud ALMs) from a chat; secrets only via a terminal command
 admin.register(mcp)
 
+# People sign in with a client's own SAP login (tenants with ALLOWED_USERS=signin): its link and return address
+from src.calm import person_signin  # noqa: E402
+person_signin.register(mcp)
+
 # Advanced write operations (generic escape hatches for any CALM API endpoint)
 advanced_write.register(mcp)
 

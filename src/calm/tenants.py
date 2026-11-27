@@ -7,7 +7,9 @@ from env vars / secrets, never in code:
 
     CALM_TENANT_<NAME>_IDENTITY_ZONE   CALM_TENANT_<NAME>_REGION_ZONE
     CALM_TENANT_<NAME>_CLIENT_ID       CALM_TENANT_<NAME>_CLIENT_SECRET
-    CALM_TENANT_<NAME>_ALLOWED_USERS   emails and / or @domains allowed to use it
+    CALM_TENANT_<NAME>_ALLOWED_USERS   emails and / or @domains allowed to use it, or
+                                       "signin": each person signs in with the client's own
+                                       SAP login and it decides (person_signin.py), no list
     (optional CALM_TENANT_<NAME>_BASE_URL / _AUTH_URL, as CALM_BASE_URL / CALM_AUTH_URL)
 
 or added by an admin from a chat (tenant_store.py, tools/admin.py); a name set on the
@@ -16,7 +18,8 @@ server wins over the same name added from a chat.
 The server opens a tenant with that tenant's own key, so on the shared HTTP
 server it serves only a person whose SAP sign-in token it has verified itself
 (signature against SAP's published keys, issuer, expiry) and who is on the
-tenant's list; a tenant with no list serves nobody. A local (stdio) MCP is the
+tenant's list (or, for a "signin" tenant, who signs in to its SAP); a tenant with no
+list serves nobody. A local (stdio) MCP is the
 user's own machine and configuration, so it needs no sign-in.
 """
 
@@ -53,6 +56,11 @@ class Tenant:
     client_secret: str
     allowed: tuple[str, ...]
     missing: tuple[str, ...]  # env vars still to set before it can be used
+
+    @property
+    def signin(self) -> bool:
+        """Each person signs in with this client's own SAP login, which decides who gets in."""
+        return "signin" in self.allowed
 
 
 def norm(name: str) -> str:
@@ -117,9 +125,11 @@ def person_email(claims: dict) -> str:
 
 
 def allows(tenant: Tenant, claims: dict) -> bool:
-    """Whether the verified person is on the tenant's list (an email, or their @domain)."""
+    """Whether the verified person may use the tenant: on its list (an email, or their @domain), or
+    anyone for a "signin" tenant, whose own SAP login then decides."""
     email = person_email(claims)
-    return bool(email) and any(email == a or (a.startswith("@") and email.endswith(a)) for a in tenant.allowed)
+    return bool(email) and (tenant.signin or any(email == a or (a.startswith("@") and email.endswith(a))
+                                                 for a in tenant.allowed))
 
 
 def signin() -> dict | None:

@@ -4,7 +4,8 @@
                            that every copy of the MCP shares
     CALM_TENANT_STORE_KEY  the key that encrypts it (a Fernet key; a deployment secret)
 
-The whole file is encrypted — client secrets and the lists of allowed people alike.
+The whole file is encrypted — client secrets, the lists of allowed people and people's own
+sign-ins to clients (person_signin.py) alike.
 Secrets reach it only through the one-time terminal command (tools/admin.py), never
 through a chat. Pending additions (waiting for their secret) are kept here too, so
 any copy of the MCP can receive the secret.
@@ -134,4 +135,5 @@ def remove(name: str) -> None:
     data = load()
     data["tenants"].pop(name, None)
     data["pending"] = {h: p for h, p in data["pending"].items() if p["name"] != name}
+    data["signins"] = {k: s for k, s in data.get("signins", {}).items() if s.get("tenant") != name}
     save(data)

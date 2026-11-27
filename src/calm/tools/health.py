@@ -15,7 +15,7 @@ from src.calm.config import (
     get_base_url,
 )
 from src.calm import tenants
-from src.calm.dependencies import get_calm_headers, tenant_names, writes_enabled
+from src.calm.dependencies import TenantChoiceNeeded, get_calm_headers, tenant_names, writes_enabled
 from src.calm.tm_dependencies import tm_configured, tm_writes_enabled
 from src.calm.token_manager import get_managed_token
 
@@ -105,6 +105,8 @@ def register(mcp: FastMCP) -> None:
             answer = {"server": "sap-cloud-alm", "tenant": str(tenant).strip(), "tenants": tenant_names(ctx)}
             try:
                 h = get_calm_headers(ctx, tenant)
+            except TenantChoiceNeeded as exc:  # e.g. a client each person signs in to: its link
+                return {**answer, "token_configured": False, **exc.answer}
             except Exception as exc:  # noqa: BLE001 — a diagnostic reports, never fails
                 return {**answer, "token_configured": False, "error": str(exc)[:500]}
             return {**answer, "token_configured": True, "token_source": h.token_source,

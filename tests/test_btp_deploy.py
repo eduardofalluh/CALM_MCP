@@ -76,6 +76,13 @@ def test_the_client_script_sets_a_client_and_never_prints_the_secret(fake_cf):
     assert "check SAP Cloud ALM tenant lutron" in out.stdout
 
 
+def test_the_client_script_can_let_each_person_sign_in_with_the_clients_sap(fake_cf):
+    out = _script(fake_cf, answers="NHL\nnhl-cloudalm\nus10\nsb-calm!b2\nsecret-test-value\nsignin\n")
+    assert out.returncode == 0, out.stderr
+    assert "set-env syntax-calm-mcp CALM_TENANT_NHL_ALLOWED_USERS signin" in fake_cf.log.read_text().splitlines()
+    assert "secret-test-value" not in out.stdout + out.stderr
+
+
 def test_the_client_script_changes_only_what_is_typed_and_removes(fake_cf):
     out = _script(fake_cf, answers="Lutron\n\n\n\n\nbob@example.com\n")
     assert out.returncode == 0, out.stderr

@@ -51,7 +51,13 @@ The design follows the SuccessFactors Intelligence Platform (SIP) connector, whi
    ```
 
    - **Our own CALM:** name `syntax`, zone `illumiti-corp-cloudalm`, region `eu10`, the internal CALM API key, and `@syntax.com` or named people. It is what "default" means.
-   - **Each client:** a short name (`lutron`), the zone, region and key from that client's CALM API service key, and the people allowed.
+   - **Each client:** a short name (`lutron`), the zone, region and key from that client's CALM API service key, and who may use it: the people allowed, or `signin` (next point).
+   - **`signin` instead of a list:** each person signs in with the client's own SAP login the first time they open it in a chat (Claude shows a link), and the client's SAP decides who gets in. No list to keep, and CALM records the person instead of "API". The client's BTP admin does this once on their CALM API service instance:
+     - adds `https://<route>/signin/callback` to its OAuth redirect URIs;
+     - allows the `authorization_code` and `refresh_token` grants;
+     - (the same `oauth2-configuration` block as in the CALM API setup guide).
+
+     Each consultant needs a user in the client's subaccount with the CALM API permissions. Someone who can't sign in, or has no CALM API permission there, gets "Access not granted".
 7. **The connector's client ID and secret for Ken.** Do this together with Ken (for example on a screen share), so the secret goes straight into the connector dialog and nowhere else.
 
    ```bash
@@ -75,7 +81,7 @@ The design follows the SuccessFactors Intelligence Platform (SIP) connector, whi
 
 | Task | How |
 |---|---|
-| Add a client, change who may use it, set a new key | `scripts/btp_set_client.sh` |
+| Add a client, change who may use it (or `signin`), set a new key | `scripts/btp_set_client.sh` |
 | Remove a client | `scripts/btp_set_client.sh --remove lutron` |
 | Let someone use the connector at all | Add them to the role collection CALM MCP Claude |
 | See who used which client | `cf logs syntax-calm-mcp --recent \| grep AUDIT` |
@@ -86,7 +92,8 @@ The design follows the SuccessFactors Intelligence Platform (SIP) connector, whi
 ## Good to know
 
 - **Clients added from a chat** (`calm_admin_clients`) need a lasting disk, which Cloud Foundry doesn't have. Use the script, and don't set `CALM_TENANT_STORE` here.
+- **People's sign-ins to `signin` clients** are kept in the app's memory here (no lasting disk): run one instance, and people sign in again after every restart, including the one `scripts/btp_set_client.sh` does.
 - **Changes in a client's CALM** are made with that client's key, so CALM shows "API" and comments end "Added by <person> via AI agent".
 - **Only claude.ai's return address is registered,** so Claude Code in a terminal can't sign in to this connector.
 - **GenAI Studio's connection** is a separate deployment and is unaffected.
-- **What wasn't tested yet:** a real sign-in with this subaccount's XSUAA, and the first `cf push` on BTP. The tests cover the code with generated keys and a stand-in `cf`.
+- **What wasn't tested yet:** a real sign-in with this subaccount's XSUAA, a real sign-in to a `signin` client's SAP, and the first `cf push` on BTP. The tests cover the code with generated keys, a faked SAP login and a stand-in `cf`.

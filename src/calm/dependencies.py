@@ -20,7 +20,8 @@ Base URL resolution order:
 Several tenants on one connection (``tenant`` on the tools, see tenants.py):
   a named tenant is opened with its own server-configured key; on the HTTP server
   only for a person whose SAP sign-in this server verified and who is on that
-  tenant's list (their own token when they signed in to that very tenant).
+  tenant's list (their own token when they signed in to that very tenant). A "signin"
+  tenant has no list: each person signs in with its own SAP login (person_signin.py).
 
 Cross-tenant safety (fail-closed):
   The server env credential (CALM_CLIENT_ID/SECRET) belongs to ONE tenant. In a
@@ -47,9 +48,10 @@ import os
 
 from fastmcp import Context
 
-from . import tenants
+from . import person_signin, tenants
 from .config import TenantNotConfiguredError, build_auth_url, build_base_url, get_auth_url, get_base_url
 from .models import CALMHeaders
+from .oauth import issuer_for, public_mcp_url
 from .token_manager import get_managed_token, get_or_create_token_manager
 
 log = logging.getLogger("calm-mcp.auth")
@@ -133,6 +135,24 @@ class TenantChoiceNeeded(ValueError):
         super().__init__(f"{self.answer['message']} Choices: {', '.join(choices)}.")
 
 
+class SignInNeeded(TenantChoiceNeeded):
+    """A client where each person signs in with its own SAP login, and this person hasn't (or it ran out):
+    a read answers with the link, a write fails with it, exactly like a tenant choice."""
+
+    def __init__(self, tenant: str, link: str) -> None:
+        self.answer = {
+            "status": "sign_in_needed",
+            "Tenant": tenant,
+            "Sign In Link": link,
+            "message": (f"{tenant}'s SAP Cloud ALM is opened with each person's own {tenant} SAP login. Give the "
+                        "user this link exactly as it is: it opens that SAP sign-in in their browser, works for "
+                        f"{person_signin.LINK_TTL // 60} minutes and only for them. When they say they're done, "
+                        "call again with the same tenant. If SAP doesn't let them in, they have no access to "
+                        f"{tenant}'s SAP Cloud ALM."),
+        }
+        ValueError.__init__(self, f"{self.answer['message']} Sign-in link: {link}")
+
+
 def tenant_names(ctx: Context) -> list[str]:
     """The tenants this caller may pick with ``tenant`` (every one on a local MCP)."""
     everyone = tenants.configured()
@@ -184,6 +204,12 @@ def _tenant_headers(ctx: Context, name: str) -> CALMHeaders:
     if person is not None and person.get("iss") == entry.auth_url:
         # They signed in to this very tenant: their own token, so CALM records them.
         token, source = bearer, f"signed-in user (OAuth), tenant {entry.name}"
+    elif person is not None and entry.signin:
+        # No list for this client: the person's own sign-in to its SAP decides, and CALM records them.
+        token = person_signin.token_for(person, entry)
+        if token is None:
+            raise SignInNeeded(entry.name, person_signin.link(issuer_for(public_mcp_url(hdrs)), person, entry))
+        source = f"signed-in user (OAuth), tenant {entry.name}"
     else:
         token = get_or_create_token_manager(entry.client_id, entry.client_secret, entry.auth_url).get_token()
         source = f"client_credentials (tenant {entry.name})"

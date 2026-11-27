@@ -949,7 +949,9 @@ async def main() -> int:
 
     # ================= Several tenants on one connection (`tenant`) =================
     acme_env = {"CALM_TENANT_ACME_IDENTITY_ZONE": "acme-cloudalm", "CALM_TENANT_ACME_REGION_ZONE": "us10",
-                "CALM_TENANT_ACME_CLIENT_ID": "acme-test-id", "CALM_TENANT_ACME_CLIENT_SECRET": "acme-test-value"}
+                "CALM_TENANT_ACME_CLIENT_ID": "acme-test-id", "CALM_TENANT_ACME_CLIENT_SECRET": "acme-test-value",
+                # people sign in with acme's own SAP on the hosted MCP; a local MCP still opens it with its key
+                "CALM_TENANT_ACME_ALLOWED_USERS": "signin"}
     async with stdio_client(_make_params(shim_dir, acme_env)) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -966,6 +968,8 @@ async def main() -> int:
             check("calm_health checks a tenant",
                   health.get("base_url") == "https://acme-cloudalm.us10.alm.cloud.sap"
                   and health.get("token_source") == "client_credentials (tenant acme)", f"got {health}")
+            check("a client people sign in to is opened with its key on a local MCP (no sign-in link)",
+                  health.get("status") != "sign_in_needed" and health.get("token_configured") is True, f"got {health}")
             res = await session.call_tool("list_sap_cloud_alm_projects", {"tenant": "Acme"})
             text = json.dumps(_payload(res))
             check("projects come from the named tenant", "Acme Project" in text and "Test Project A" not in text,

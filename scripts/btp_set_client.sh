@@ -27,7 +27,7 @@ read -rp "Identity zone (identityzone in its CALM API key): " zone
 read -rp "Region (in the key's url, e.g. us10 or eu10): " region
 read -rp "Client ID (clientid): " cid
 read -rsp "Client secret (clientsecret; typing is hidden): " secret; echo
-read -rp "Who may use it (emails and/or @domains, comma separated): " users
+read -rp "Who may use it (emails and/or @domains, comma separated; or signin = each person signs in with the client's own SAP login): " users
 
 [ -z "$zone" ] || [[ "$zone" =~ ^[a-z0-9][a-z0-9-]{1,62}$ ]] || { echo "Identity zone: lower-case letters, digits and -."; exit 1; }
 [ -z "$region" ] || [[ "$region" =~ ^[a-z0-9][a-z0-9-]{1,19}$ ]] || { echo "Region: e.g. us10, eu10."; exit 1; }

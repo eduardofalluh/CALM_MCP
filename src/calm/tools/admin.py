@@ -59,10 +59,12 @@ def _admin(ctx: Context) -> str:
 def _people(value) -> list[str]:
     items = value if isinstance(value, list) else re.split(r"[\s,;]+", str(value or ""))
     people = [str(p).strip().lower() for p in items if str(p).strip()]
+    if people == ["signin"]:  # no list: each person signs in with the client's own SAP login
+        return people
     bad = [p for p in people if not _PERSON.fullmatch(p)]
     if bad or not people:
         raise ValueError("allowed_users: the emails and / or @domains (e.g. @syntax.com) of the people who may use "
-                         "this client" + (f"; not an email or @domain: {', '.join(bad)}" if bad else "") + ".")
+                         'this client, or "signin" to let each person sign in with its own SAP login' + (f"; not an email or @domain: {', '.join(bad)}" if bad else "") + ".")
     return people
 
 
@@ -144,8 +146,10 @@ def register(mcp: FastMCP) -> None:
           list        the clients, who may use each, and those waiting for their secret
           add         name (short, e.g. "centerra"), identity_zone, region_zone, client_id (from the
                       client's CALM API service key: identityzone, the region in its url e.g. us10,
-                      clientid) and allowed_users (emails and / or @domains) → a command for the secret
-          allow       name, allowed_users → replaces who may use the client
+                      clientid) and allowed_users (emails and / or @domains, or "signin": no list,
+                      each person signs in with the client's own SAP login, which decides who
+                      gets in) → a command for the secret
+          allow       name, allowed_users → replaces who may use the client (or "signin")
           new_secret  name (client_id too if the new key has a new one) → a command for the new
                       secret; the current one keeps working until it is saved
           remove      name → the client is gone for everyone
